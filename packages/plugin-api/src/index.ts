@@ -155,6 +155,19 @@ export interface EnvironmentImportRequest {
   readonly name?: string;
 }
 
+export interface EnvironmentDirectoryEntry {
+  readonly name: string;
+  readonly path: string;
+  readonly isEnvironment: boolean;
+}
+
+export interface EnvironmentDirectoryListing {
+  readonly path: string;
+  readonly parentPath?: string;
+  readonly isEnvironment: boolean;
+  readonly entries: readonly EnvironmentDirectoryEntry[];
+}
+
 export interface EnvironmentExecutionRequest {
   readonly source: string;
   readonly fileName: string;
@@ -168,6 +181,7 @@ export interface ExecutionEnvironmentProvider {
   list(): Promise<readonly ExecutionEnvironment[]>;
   create(request: EnvironmentCreateRequest): Promise<ExecutionEnvironment>;
   importExisting(request: EnvironmentImportRequest): Promise<ExecutionEnvironment>;
+  browseDirectories?(path?: string): Promise<EnvironmentDirectoryListing>;
   remove(environmentId: string): Promise<void>;
   installPackages(environmentId: string, packages: readonly string[]): Promise<ExecutionEnvironment>;
   run(

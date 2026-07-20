@@ -6,6 +6,7 @@ import {
   PluginManager,
 } from "@tinyide/core";
 import type {
+  EnvironmentDirectoryListing,
   ExecutionEnvironment,
   ExecutionEnvironmentProvider,
   LanguageProvider,
@@ -95,6 +96,8 @@ interface AppState {
   selectedEnvironmentId: string | undefined;
   environmentBusy: boolean;
   environmentForm: "create" | "import" | "packages" | undefined;
+  environmentBrowser: EnvironmentDirectoryListing | undefined;
+  environmentBrowserLoading: boolean;
   logs: string[];
   notice: string | undefined;
   error: string | undefined;
@@ -136,6 +139,8 @@ const state: AppState = {
   selectedEnvironmentId: undefined,
   environmentBusy: false,
   environmentForm: undefined,
+  environmentBrowser: undefined,
+  environmentBrowserLoading: false,
   logs: ["tinyIde core initialized", `platform version ${PLATFORM_VERSION}`],
   notice: undefined,
   error: undefined,
@@ -602,8 +607,15 @@ function renderEnvironments(): string {
   const createForm = state.environmentForm === "create"
     ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-create"><strong>Criar novo ambiente</strong><label>Nome<input name="name" value=".venv" aria-label="Nome do ambiente" /></label><label>Local opcional<input name="path" placeholder="Vazio usa .tinyide/environments/python/.venv" aria-label="Local do novo ambiente" /></label><small>O diretório informado não pode existir. O Python será criado com python -m venv.</small><div><button class="primary-button" type="submit">Criar ambiente</button><button type="button" data-command="environment.form.cancel">Cancelar</button></div></form>`
     : "";
+  const browser = state.environmentBrowser;
+  const browserEntries = browser?.entries
+    .map((entry) => `<button type="button" class="environment-browser__entry${entry.isEnvironment ? " is-environment" : ""}" data-command="environment.browse" data-browser-path="${escapeHtml(entry.path)}"><span>${entry.isEnvironment ? "PY" : "D"}</span><strong>${escapeHtml(entry.name)}</strong>${entry.isEnvironment ? "<small>Ambiente Python</small>" : ""}</button>`)
+    .join("") ?? "";
+  const browserPanel = browser
+    ? `<div class="environment-browser"><div class="environment-browser__path"><button type="button" data-command="environment.browse" data-browser-path="${escapeHtml(browser.parentPath ?? browser.path)}" ${browser.parentPath ? "" : "disabled"}>Subir</button><code>${escapeHtml(browser.path)}</code></div>${browser.isEnvironment ? `<div class="environment-browser__selected"><strong>Ambiente Python válido</strong><button type="button" class="primary-button" data-command="environment.choosePath" data-browser-path="${escapeHtml(browser.path)}">Selecionar esta pasta</button></div>` : ""}<div class="environment-browser__entries">${browserEntries || '<p class="muted">Nenhuma subpasta.</p>'}</div></div>`
+    : `<div class="environment-browser__empty"><button type="button" data-command="environment.browse">Procurar pastas</button></div>`;
   const importForm = state.environmentForm === "import"
-    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-import"><strong>Abrir ambiente existente</strong><label>Caminho do venv<input name="path" placeholder="/caminho/do/projeto/.venv" aria-label="Caminho do ambiente existente" /></label><label>Nome opcional<input name="name" placeholder="Usa o nome da pasta" aria-label="Nome do ambiente existente" /></label><small>O diretório precisa conter pyvenv.cfg e um executável Python válido.</small><div><button class="primary-button" type="submit">Validar e adicionar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></div></form>`
+    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-import"><strong>Abrir ambiente existente</strong><label>Ambiente selecionado<input name="path" readonly placeholder="Use o navegador abaixo" aria-label="Caminho do ambiente existente" /></label>${browserPanel}<label>Nome opcional<input name="name" placeholder="Usa o nome da pasta" aria-label="Nome do ambiente existente" /></label><small>Selecione uma pasta marcada como “Ambiente Python”. Ela precisa conter pyvenv.cfg e o executável Python.</small><div><button class="primary-button" type="submit">Adicionar ambiente</button><button type="button" data-command="environment.form.cancel">Cancelar</button></div></form>`
     : "";
   const packagesForm = state.environmentForm === "packages"
     ? `<form class="environment-manager__form" data-form="environment-packages"><input name="packages" placeholder="django requests" aria-label="Pacotes" /><button class="primary-button" type="submit">Instalar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></form>`
@@ -760,6 +772,26 @@ async function importExecutionEnvironment(path: string, name: string): Promise<v
     state.environmentBusy = false;
     render();
   }
+}
+
+async function browseEnvironmentDirectory(rawPath?: unknown): Promise<void> {
+  const provider = environmentProvider();
+  if (!provider?.browseDirectories) throw new Error("O plugin não oferece navegação de diretórios.");
+  state.environmentBrowserLoading = true;
+  render();
+  try {
+    state.environmentBrowser = await provider.browseDirectories(typeof rawPath === "string" ? rawPath : undefined);
+  } finally {
+    state.environmentBrowserLoading = false;
+    render();
+  }
+}
+
+function chooseEnvironmentPath(rawPath: unknown): void {
+  if (typeof rawPath !== "string") throw new Error("Caminho inválido.");
+  const input = appRoot.querySelector<HTMLInputElement>('[data-form="environment-import"] input[name="path"]');
+  if (!input) throw new Error("Formulário de ambiente não está aberto.");
+  input.value = rawPath;
 }
 
 async function installEnvironmentPackages(): Promise<void> {
@@ -935,7 +967,7 @@ function bindInteractions(): void {
       event.stopPropagation();
       const command = element.dataset.command;
       if (!command) return;
-      const argument = element.dataset.pluginUrl ?? element.dataset.pluginId ?? element.dataset.environmentId ?? element.dataset.entryPath;
+      const argument = element.dataset.pluginUrl ?? element.dataset.pluginId ?? element.dataset.environmentId ?? element.dataset.browserPath ?? element.dataset.entryPath;
       void commands.execute(command, argument).catch(showError);
     });
   });
@@ -1017,12 +1049,16 @@ commands.register("language.lint", lintActiveDocument);
 commands.register("language.run", runActiveDocument);
 commands.register("environment.refresh", refreshEnvironments);
 commands.register("environment.create", createExecutionEnvironment);
-commands.register("environment.import", () => {
+commands.register("environment.import", async () => {
   state.sidebarView = "environments";
   state.sidebarVisible = true;
   state.environmentForm = "import";
+  state.environmentBrowser = undefined;
   render();
+  await browseEnvironmentDirectory();
 });
+commands.register("environment.browse", browseEnvironmentDirectory);
+commands.register("environment.choosePath", chooseEnvironmentPath);
 commands.register("environment.packages", installEnvironmentPackages);
 commands.register("environment.remove", removeSelectedEnvironment);
 commands.register("environment.open", openEnvironment);
@@ -1030,7 +1066,7 @@ commands.register("environment.close", closeEnvironment);
 commands.register("environment.select", selectEnvironment);
 commands.register("environment.packagesFor", packagesForEnvironment);
 commands.register("environment.removeById", removeEnvironmentById);
-commands.register("environment.form.cancel", () => { state.environmentForm = undefined; render(); });
+commands.register("environment.form.cancel", () => { state.environmentForm = undefined; state.environmentBrowser = undefined; render(); });
 commands.register("environment.run", runWithSelectedEnvironment);
 commands.register("view.explorer", () => { state.sidebarView = "explorer"; state.sidebarVisible = true; render(); });
 commands.register("view.plugins", () => {
