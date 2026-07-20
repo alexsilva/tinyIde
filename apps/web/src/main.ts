@@ -864,10 +864,10 @@ function renderTreeEntries(entries: WorkspaceEntry[], depth = 0): string {
         const children = expanded
           ? `<div class="tree-children">${entry.children?.length ? renderTreeEntries(entry.children, depth + 1) : '<div class="tree-empty">Pasta vazia</div>'}</div>`
           : "";
-        return `<div class="tree-node"><button class="tree-entry tree-entry--directory" type="button" data-command="workspace.toggleDirectory" data-entry-path="${escapeHtml(entry.path)}" style="padding-left:${padding}px"><span class="tree-chevron">${renderIcon(expanded ? "chevronDown" : "chevronRight")}</span><span class="tree-entry__icon">${renderIcon(expanded ? "folderOpen" : "folder")}</span><span>${escapeHtml(entry.name)}</span></button>${children}</div>`;
+        return `<div class="tree-node"><button class="tree-entry tree-entry--directory" type="button" data-command="workspace.toggleDirectory" data-entry-path="${escapeHtml(entry.path)}" style="padding-left:${padding}px"><span class="tree-chevron">${renderIcon(expanded ? "chevronDown" : "chevronRight")}</span><span class="tree-entry__icon">${renderIcon(expanded ? "folderOpen" : "folder")}</span><span class="tree-entry__label">${escapeHtml(entry.name)}</span></button>${children}</div>`;
       }
 
-      return `<button class="tree-entry${active}" type="button" data-command="file.openWorkspace" data-entry-path="${escapeHtml(entry.path)}" style="padding-left:${padding + 16}px"><span class="tree-entry__icon">${renderIcon("file")}</span><span>${escapeHtml(entry.name)}</span></button>`;
+      return `<button class="tree-entry${active}" type="button" data-command="file.openWorkspace" data-entry-path="${escapeHtml(entry.path)}" style="padding-left:${padding + 16}px"><span class="tree-entry__icon">${renderIcon("file")}</span><span class="tree-entry__label">${escapeHtml(entry.name)}</span></button>`;
     })
     .join("");
 }

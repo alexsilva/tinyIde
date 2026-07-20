@@ -873,13 +873,17 @@ body.is-resizing-panel * {
 .tree-children {
   display: flex;
   flex-direction: column;
+  width: 100%;
+  min-width: 0;
 }
 
 .tree-entry {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 8px;
   width: 100%;
+  min-width: 0;
   min-height: 26px;
   padding: 5px 8px;
   border: 0;
@@ -887,8 +891,12 @@ body.is-resizing-panel * {
   background: transparent;
   color: #c6cad2;
   font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
   text-align: left;
+  white-space: nowrap;
   cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
 }
 
 .tree-entry:hover {
@@ -907,6 +915,8 @@ body.is-resizing-panel * {
 .tree-chevron {
   display: inline-grid;
   width: 14px;
+  min-width: 14px;
+  flex: 0 0 14px;
   place-items: center;
   color: #939bab;
 }
@@ -936,6 +946,8 @@ body.is-resizing-panel * {
 .tree-entry__icon {
   display: inline-grid;
   width: 16px;
+  min-width: 16px;
+  flex: 0 0 16px;
   place-items: center;
   color: #7aa2f7;
 }
@@ -944,6 +956,13 @@ body.is-resizing-panel * {
   width: 15px;
   height: 15px;
   flex-basis: 15px;
+}
+
+.tree-entry__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .editor-area {
