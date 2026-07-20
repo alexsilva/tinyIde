@@ -6,10 +6,11 @@ import {
   PluginManager,
 } from "@tinyide/core";
 import type {
-  EnvironmentDirectoryListing,
-  EnvironmentExecutionRequest,
-  ExecutionEnvironment,
-  ExecutionEnvironmentProvider,
+  RuntimeDirectoryListing,
+  RuntimeExecutionRequest,
+  Runtime,
+  RuntimeManager,
+  RuntimeProvider,
   LanguageProvider,
   PluginManifest,
   PluginRecord,
@@ -52,8 +53,8 @@ interface StoredSession {
   readonly panelHeight: number;
   readonly workspaceName?: string;
   readonly expandedDirectories: string[];
-  readonly openedEnvironmentIds: string[];
-  readonly selectedEnvironmentId?: string;
+  readonly openedRuntimeIds: string[];
+  readonly selectedRuntimeId?: string;
   readonly workspaceHandleStored: boolean;
   readonly runProfile: RunProfile;
   readonly plugins: Array<{ readonly id: string; readonly enabled: boolean }>;
@@ -270,7 +271,7 @@ interface PluginCatalogEntry {
   readonly manifestUrl: string;
 }
 
-type SidebarView = "explorer" | "plugins" | "environments";
+type SidebarView = "explorer" | "plugins" | "runtimes";
 type WorkspaceAccess = "granted" | "prompt" | "denied" | "unavailable";
 
 interface AppState {
@@ -291,15 +292,15 @@ interface AppState {
   languageActionRunning: boolean;
   availablePlugins: PluginCatalogEntry[];
   pluginCatalogLoading: boolean;
-  environments: ExecutionEnvironment[];
-  openedEnvironmentIds: Set<string>;
-  selectedEnvironmentId: string | undefined;
-  environmentBusy: boolean;
-  environmentForm: "create" | "import" | "packages" | "run" | undefined;
-  environmentBrowser: EnvironmentDirectoryListing | undefined;
-  environmentBrowserLoading: boolean;
-  environmentBrowserOpen: boolean;
-  environmentSelectedPath: string | undefined;
+  runtimes: Runtime[];
+  openedRuntimeIds: Set<string>;
+  selectedRuntimeId: string | undefined;
+  runtimeBusy: boolean;
+  runtimeForm: "create" | "import" | "packages" | "run" | undefined;
+  runtimeBrowser: RuntimeDirectoryListing | undefined;
+  runtimeBrowserLoading: boolean;
+  runtimeBrowserOpen: boolean;
+  runtimeSelectedPath: string | undefined;
   runProfile: RunProfile;
   logs: string[];
   notice: string | undefined;
@@ -342,15 +343,15 @@ const state: AppState = {
   languageActionRunning: false,
   availablePlugins: [],
   pluginCatalogLoading: false,
-  environments: [],
-  openedEnvironmentIds: new Set<string>(),
-  selectedEnvironmentId: undefined,
-  environmentBusy: false,
-  environmentForm: undefined,
-  environmentBrowser: undefined,
-  environmentBrowserLoading: false,
-  environmentBrowserOpen: false,
-  environmentSelectedPath: undefined,
+  runtimes: [],
+  openedRuntimeIds: new Set<string>(),
+  selectedRuntimeId: undefined,
+  runtimeBusy: false,
+  runtimeForm: undefined,
+  runtimeBrowser: undefined,
+  runtimeBrowserLoading: false,
+  runtimeBrowserOpen: false,
+  runtimeSelectedPath: undefined,
   runProfile: readRunProfile(),
   logs: ["tinyIde core initialized", `platform version ${PLATFORM_VERSION}`],
   notice: undefined,
@@ -397,8 +398,8 @@ function buildSessionSummary(): StoredSession {
     panelHeight: state.panelHeight,
     ...(state.workspaceName ? { workspaceName: state.workspaceName } : {}),
     expandedDirectories: [...state.expandedDirectories],
-    openedEnvironmentIds: [...state.openedEnvironmentIds],
-    ...(state.selectedEnvironmentId ? { selectedEnvironmentId: state.selectedEnvironmentId } : {}),
+    openedRuntimeIds: [...state.openedRuntimeIds],
+    ...(state.selectedRuntimeId ? { selectedRuntimeId: state.selectedRuntimeId } : {}),
     workspaceHandleStored: Boolean(state.workspaceHandle),
     runProfile: state.runProfile,
     plugins: plugins.list().map((plugin) => ({
@@ -478,7 +479,7 @@ function restoreSession(): void {
     const stored = JSON.parse(raw) as Partial<StoredSession> & {
       readonly openFilePaths?: string[];
     };
-    if (stored.sidebarView === "explorer" || stored.sidebarView === "plugins" || stored.sidebarView === "environments") {
+    if (stored.sidebarView === "explorer" || stored.sidebarView === "plugins" || stored.sidebarView === "runtimes") {
       state.sidebarView = stored.sidebarView;
     }
     if (typeof stored.sidebarVisible === "boolean") state.sidebarVisible = stored.sidebarVisible;
@@ -492,12 +493,12 @@ function restoreSession(): void {
         .forEach((path) => state.expandedDirectories.add(path));
     }
     if (typeof stored.activeFilePath === "string") state.activeFilePath = stored.activeFilePath;
-    if (Array.isArray(stored.openedEnvironmentIds)) {
-      stored.openedEnvironmentIds
+    if (Array.isArray(stored.openedRuntimeIds)) {
+      stored.openedRuntimeIds
         .filter((id): id is string => typeof id === "string")
-        .forEach((id) => state.openedEnvironmentIds.add(id));
+        .forEach((id) => state.openedRuntimeIds.add(id));
     }
-    if (typeof stored.selectedEnvironmentId === "string") state.selectedEnvironmentId = stored.selectedEnvironmentId;
+    if (typeof stored.selectedRuntimeId === "string") state.selectedRuntimeId = stored.selectedRuntimeId;
     if (stored.runProfile && typeof stored.runProfile === "object") state.runProfile = stored.runProfile;
     if (stored.workspaceHandleStored && state.workspaceName) state.workspaceAccess = "prompt";
   } catch {
@@ -580,7 +581,7 @@ async function initializeApplication(): Promise<void> {
       restorePlugins(),
       restoreApplicationState(),
     ]);
-    await refreshEnvironments();
+    await refreshRuntimes();
     if (state.sidebarView === "plugins") await loadPluginCatalog();
   } finally {
     applicationRestoreInProgress = false;
@@ -929,31 +930,35 @@ function languageProviderFor(document: OpenDocument | undefined): LanguageProvid
     .find((provider) => provider.extensions.some((extension) => lowerName.endsWith(extension)));
 }
 
-function environmentProvider(): ExecutionEnvironmentProvider | undefined {
-  return capabilities.getAll<ExecutionEnvironmentProvider>("execution.environment")[0];
+function runtimeProvider(): RuntimeProvider | undefined {
+  return capabilities.getAll<RuntimeProvider>("runtime.provider")[0];
 }
 
-function environmentProviderForExecution(
+function runtimeManager(): RuntimeManager | undefined {
+  return capabilities.getAll<RuntimeManager>("runtime.manager")[0];
+}
+
+function runtimeProviderForExecution(
   document: OpenDocument | undefined,
-): ExecutionEnvironmentProvider | undefined {
+): RuntimeProvider | undefined {
   if (!document) return undefined;
   const lowerName = document.name.toLowerCase();
   return capabilities
-    .getAll<ExecutionEnvironmentProvider>("execution.environment")
+    .getAll<RuntimeProvider>("runtime.provider")
     .find((provider) => provider.extensions.some((extension) => lowerName.endsWith(extension)));
 }
 
-async function refreshEnvironments(): Promise<void> {
-  const provider = environmentProvider();
+async function refreshRuntimes(): Promise<void> {
+  const provider = runtimeProvider();
   if (!provider) {
-    state.environments = [];
-    state.openedEnvironmentIds.clear();
-    state.selectedEnvironmentId = undefined;
-    state.environmentForm = undefined;
-    state.environmentBrowser = undefined;
-    state.environmentBrowserOpen = false;
-    state.environmentSelectedPath = undefined;
-    if (state.sidebarView === "environments") {
+    state.runtimes = [];
+    state.openedRuntimeIds.clear();
+    state.selectedRuntimeId = undefined;
+    state.runtimeForm = undefined;
+    state.runtimeBrowser = undefined;
+    state.runtimeBrowserOpen = false;
+    state.runtimeSelectedPath = undefined;
+    if (state.sidebarView === "runtimes") {
       state.sidebarView = "explorer";
     }
     render();
@@ -961,18 +966,11 @@ async function refreshEnvironments(): Promise<void> {
     return;
   }
 
-  state.environments = [...(await provider.list())];
-  const existingIds = new Set(state.environments.map((environment) => environment.id));
-  for (const environmentId of [...state.openedEnvironmentIds]) {
-    if (!existingIds.has(environmentId)) state.openedEnvironmentIds.delete(environmentId);
-  }
-  if (
-    state.selectedEnvironmentId &&
-    (!existingIds.has(state.selectedEnvironmentId) ||
-      !state.openedEnvironmentIds.has(state.selectedEnvironmentId))
-  ) {
-    state.selectedEnvironmentId = undefined;
-  }
+  state.runtimes = [...(await provider.list())];
+  const existingIds = new Set(state.runtimes.map((environment) => environment.id));
+  state.openedRuntimeIds = existingIds;
+  if (state.selectedRuntimeId && !existingIds.has(state.selectedRuntimeId)) state.selectedRuntimeId = undefined;
+  if (!state.selectedRuntimeId) state.selectedRuntimeId = state.runtimes[0]?.id;
   render();
   persistSession();
 }
@@ -1247,7 +1245,7 @@ async function openFileHandle(handle: BrowserFileHandle, path?: string): Promise
   state.workspaceName = state.workspaceName ?? "Arquivo avulso";
   await events.emit("file.opened", { name: file.name });
   log(`file.opened: ${file.name}`);
-  await refreshEnvironments();
+  await refreshRuntimes();
   persistSession();
 }
 
@@ -1424,7 +1422,7 @@ async function installPluginFromUrl(url: string): Promise<void> {
   }
 
   persistPlugins();
-  await refreshEnvironments();
+  await refreshRuntimes();
   showNotice(`Plugin '${installed.manifest.name}' instalado e ativado.`);
 }
 
@@ -1493,16 +1491,16 @@ function renderPlugins(): string {
   return `${header}${installForm}<div class="plugin-section"><h3 style="font-size:13px;color:#e8eaed;margin:16px 0 8px">Linguagens</h3><div class="plugin-list">${installedLanguages}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableLanguages}${!installedLanguages && !availableLanguages ? '<p class="muted">Nenhum plugin de linguagem.</p>' : ""}</div></div><div class="plugin-section"><h3 style="font-size:13px;color:#e8eaed;margin:16px 0 8px">Ferramentas</h3><div class="plugin-list">${installedTools}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableTools}${!installedTools && !availableTools ? '<p class="muted">Nenhum plugin de ferramenta.</p>' : ""}</div></div>`;
 }
 
-function renderEnvironments(): string {
-  const provider = environmentProvider();
+function renderRuntimes(): string {
+  const provider = runtimeProvider();
   if (!provider) {
     return `<div class="empty-state"><p>Nenhum plugin de ambiente instalado.</p>${renderButton("Abrir plugins", "plugin", { command: "view.plugins", size: "small" })}</div>`;
   }
 
-  const cards = state.environments
+  const cards = state.runtimes
     .map((environment) => {
-      const opened = state.openedEnvironmentIds.has(environment.id);
-      const active = state.selectedEnvironmentId === environment.id;
+      const opened = state.openedRuntimeIds.has(environment.id);
+      const active = state.selectedRuntimeId === environment.id;
       const environmentData = { "environment-id": environment.id };
       const openAction = renderButton(opened ? "Fechar" : "Abrir", opened ? "close" : "folderOpen", {
         command: `environment.${opened ? "close" : "open"}`,
@@ -1533,30 +1531,30 @@ function renderEnvironments(): string {
     })
     .join("");
 
-  const createForm = state.environmentForm === "create"
-    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-create"><strong>Criar novo ambiente</strong><label>Nome<input name="name" value=".venv" aria-label="Nome do ambiente" /></label><label>Local opcional<input name="path" placeholder="Vazio usa .tinyide/environments/python/.venv" aria-label="Local do novo ambiente" /></label><small>O diretório informado não pode existir. O Python será criado com python -m venv.</small><div class="form-actions">${renderButton("Criar", "environment", { type: "submit", size: "small", variant: "primary", title: "Criar ambiente" })}${renderButton("Cancelar", "close", { command: "environment.form.cancel", size: "small" })}</div></form>`
+  const createForm = state.runtimeForm === "create"
+    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-create"><strong>Criar novo ambiente</strong><label>Nome<input name="name" value=".venv" aria-label="Nome do ambiente" /></label><label>Local opcional<input name="path" placeholder="Vazio usa .tinyide/runtimes/python/.venv" aria-label="Local do novo ambiente" /></label><small>O diretório informado não pode existir. O Python será criado com python -m venv.</small><div class="form-actions">${renderButton("Criar", "environment", { type: "submit", size: "small", variant: "primary", title: "Criar ambiente" })}${renderButton("Cancelar", "close", { command: "environment.form.cancel", size: "small" })}</div></form>`
     : "";
-  const importForm = state.environmentForm === "import"
-    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-import"><strong>Abrir ambiente existente</strong><label>Diretório do ambiente<div class="environment-path-picker"><input name="path" readonly value="${escapeHtml(state.environmentSelectedPath ?? "")}" placeholder="Nenhum diretório selecionado" aria-label="Caminho do ambiente existente" />${renderButton("Selecionar", "folderOpen", { command: "environment.browser.open", size: "small", title: "Selecionar diretório" })}</div></label><label>Nome opcional<input name="name" placeholder="Usa o nome da pasta" aria-label="Nome do ambiente existente" /></label><small>Escolha a pasta raiz do ambiente virtual, onde ficam pyvenv.cfg e bin/python ou Scripts/python.exe.</small><div class="form-actions">${renderButton("Adicionar", "download", { type: "submit", size: "small", variant: "primary", title: "Adicionar ambiente", disabled: !state.environmentSelectedPath })}${renderButton("Cancelar", "close", { command: "environment.form.cancel", size: "small" })}</div></form>`
+  const importForm = state.runtimeForm === "import"
+    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-import"><strong>Abrir ambiente existente</strong><label>Diretório do ambiente<div class="environment-path-picker"><input name="path" readonly value="${escapeHtml(state.runtimeSelectedPath ?? "")}" placeholder="Nenhum diretório selecionado" aria-label="Caminho do ambiente existente" />${renderButton("Selecionar", "folderOpen", { command: "environment.browser.open", size: "small", title: "Selecionar diretório" })}</div></label><label>Nome opcional<input name="name" placeholder="Usa o nome da pasta" aria-label="Nome do ambiente existente" /></label><small>Escolha a pasta raiz do ambiente virtual, onde ficam pyvenv.cfg e bin/python ou Scripts/python.exe.</small><div class="form-actions">${renderButton("Adicionar", "download", { type: "submit", size: "small", variant: "primary", title: "Adicionar ambiente", disabled: !state.runtimeSelectedPath })}${renderButton("Cancelar", "close", { command: "environment.form.cancel", size: "small" })}</div></form>`
     : "";
-  const packagesForm = state.environmentForm === "packages"
+  const packagesForm = state.runtimeForm === "packages"
     ? `<form class="environment-manager__form" data-form="environment-packages"><input name="packages" placeholder="django requests" aria-label="Pacotes" />${renderButton("Instalar", "download", { type: "submit", size: "small", variant: "primary" })}${renderButton("Cancelar", "close", { command: "environment.form.cancel", size: "small" })}</form>`
     : "";
 
-  const runForm = state.environmentForm === "run"
-    ? `<form class="environment-manager__form environment-manager__form--stacked run-profile-form" data-form="environment-run-profile"><strong>Perfil de execução</strong><label>Nome<input name="profileName" value="${escapeHtml(state.runProfile.name)}" /></label><label>Tipo<select name="mode"><option value="source" ${state.runProfile.mode === "source" ? "selected" : ""}>Arquivo aberto</option><option value="script" ${state.runProfile.mode === "script" ? "selected" : ""}>Script</option><option value="module" ${state.runProfile.mode === "module" ? "selected" : ""}>Módulo Python</option></select></label><label>Alvo<input name="target" value="${escapeHtml(state.runProfile.target)}" placeholder="src/main.py ou pacote.modulo" /></label><label>Diretório de trabalho<input name="workingDirectory" value="${escapeHtml(state.runProfile.workingDirectory)}" placeholder="Vazio usa a raiz do projeto" /></label><label>Argumentos<input name="arguments" value="${escapeHtml(state.runProfile.arguments)}" placeholder="--port 8000 --debug" /></label><label>Variáveis de ambiente<textarea name="environmentVariables" rows="5" placeholder="DJANGO_SETTINGS_MODULE=config.settings\nDEBUG=1">${escapeHtml(state.runProfile.environmentVariables)}</textarea></label><small>O ambiente virtual selecionado fornece o interpretador. Caminhos relativos são resolvidos a partir do projeto aberto.</small><div class="form-actions">${renderButton("Salvar perfil", "save", { type: "submit", size: "small", variant: "primary" })}${renderButton("Executar", "play", { command: "environment.run", size: "small", variant: "primary", disabled: !state.selectedEnvironmentId })}${renderButton("Cancelar", "close", { command: "environment.form.cancel", size: "small" })}</div></form>`
+  const runForm = state.runtimeForm === "run"
+    ? `<form class="environment-manager__form environment-manager__form--stacked run-profile-form" data-form="environment-run-profile"><strong>Perfil de execução</strong><label>Nome<input name="profileName" value="${escapeHtml(state.runProfile.name)}" /></label><label>Tipo<select name="mode"><option value="source" ${state.runProfile.mode === "source" ? "selected" : ""}>Arquivo aberto</option><option value="script" ${state.runProfile.mode === "script" ? "selected" : ""}>Script</option><option value="module" ${state.runProfile.mode === "module" ? "selected" : ""}>Módulo Python</option></select></label><label>Alvo<input name="target" value="${escapeHtml(state.runProfile.target)}" placeholder="src/main.py ou pacote.modulo" /></label><label>Diretório de trabalho<input name="workingDirectory" value="${escapeHtml(state.runProfile.workingDirectory)}" placeholder="Vazio usa a raiz do projeto" /></label><label>Argumentos<input name="arguments" value="${escapeHtml(state.runProfile.arguments)}" placeholder="--port 8000 --debug" /></label><label>Variáveis de ambiente<textarea name="environmentVariables" rows="5" placeholder="DJANGO_SETTINGS_MODULE=config.settings\nDEBUG=1">${escapeHtml(state.runProfile.environmentVariables)}</textarea></label><small>O ambiente virtual selecionado fornece o interpretador. Caminhos relativos são resolvidos a partir do projeto aberto.</small><div class="form-actions">${renderButton("Salvar perfil", "save", { type: "submit", size: "small", variant: "primary" })}${renderButton("Executar", "play", { command: "environment.run", size: "small", variant: "primary", disabled: !state.selectedRuntimeId })}${renderButton("Cancelar", "close", { command: "environment.form.cancel", size: "small" })}</div></form>`
     : "";
 
   return `<div class="environment-manager"><div class="environment-manager__toolbar">${renderButton("Atualizar", "refresh", { command: "environment.refresh", size: "small" })}${renderButton("Criar", "environment", { command: "environment.create", size: "small", variant: "primary", title: "Criar novo ambiente" })}${renderButton("Abrir", "folderOpen", { command: "environment.import", size: "small", title: "Abrir ambiente existente" })}${renderButton("Execução", "play", { command: "environment.runProfile", size: "small", title: "Configurar perfil de execução" })}</div>${createForm}${importForm}${packagesForm}${runForm}<div class="environment-list">${cards || '<div class="empty-state"><p>Nenhum ambiente registrado.</p><p>Use “Criar” ou “Abrir”.</p></div>'}</div></div>`;
 }
 
 function renderEnvironmentBrowserModal(): string {
-  if (!state.environmentBrowserOpen) return "";
-  const browser = state.environmentBrowser;
+  if (!state.runtimeBrowserOpen) return "";
+  const browser = state.runtimeBrowser;
   const entries = browser?.entries
     .map((entry) => `<button type="button" class="environment-browser__entry${entry.isEnvironment ? " is-environment" : ""}" data-command="environment.browse" data-browser-path="${escapeHtml(entry.path)}"><span class="environment-browser__icon">${renderIcon(entry.isEnvironment ? "environment" : "folder")}</span><strong>${escapeHtml(entry.name)}</strong>${entry.isEnvironment ? "<small>Ambiente Python</small>" : ""}</button>`)
     .join("") ?? "";
-  const content = state.environmentBrowserLoading
+  const content = state.runtimeBrowserLoading
     ? `<div class="environment-browser-modal__loading">Carregando diretórios...</div>`
     : browser
       ? `<div class="environment-browser__path">${renderButton("Pasta pai", "folderOpen", { command: "environment.browse", size: "small", disabled: !browser.parentPath, data: { "browser-path": browser.parentPath ?? browser.path } })}<code>${escapeHtml(browser.path)}</code></div>${browser.isEnvironment ? `<div class="environment-browser__selected"><div><strong>Ambiente Python válido</strong><small>${escapeHtml(browser.path)}</small></div>${renderButton("Selecionar", "check", { command: "environment.choosePath", size: "small", variant: "primary", title: "Selecionar este diretório", data: { "browser-path": browser.path } })}</div>` : `<p class="muted">Navegue até a pasta raiz de um ambiente virtual Python.</p>`}<div class="environment-browser__entries">${entries || '<p class="muted">Nenhuma subpasta.</p>'}</div>`
@@ -1566,7 +1564,7 @@ function renderEnvironmentBrowserModal(): string {
 
 function renderSidebar(): string {
   const title = state.sidebarView === "explorer" ? "EXPLORER" : state.sidebarView === "plugins" ? "PLUGINS" : "AMBIENTES";
-  const content = state.sidebarView === "explorer" ? renderWorkspaceEntries() : state.sidebarView === "plugins" ? renderPlugins() : renderEnvironments();
+  const content = state.sidebarView === "explorer" ? renderWorkspaceEntries() : state.sidebarView === "plugins" ? renderPlugins() : renderRuntimes();
   return `<aside id="sidebar-panel" class="sidebar ${state.sidebarVisible ? "" : "is-hidden"}"><header class="sidebar__header">${title}</header><div class="sidebar__content">${content}</div></aside>`;
 }
 
@@ -1653,21 +1651,21 @@ async function runActiveDocument(): Promise<void> {
   }
 }
 
-async function createExecutionEnvironment(): Promise<void> {
-  const provider = environmentProvider();
+async function createRuntime(): Promise<void> {
+  const provider = runtimeProvider();
   if (!provider) throw new Error("Nenhum plugin de ambiente disponível.");
-  state.sidebarView = "environments";
+  state.sidebarView = "runtimes";
   state.sidebarVisible = true;
-  state.environmentForm = "create";
+  state.runtimeForm = "create";
   render();
 }
 
-async function submitExecutionEnvironment(name: string): Promise<void> {
-  const provider = environmentProvider();
+async function submitRuntime(name: string): Promise<void> {
+  const provider = runtimeProvider();
   if (!provider) throw new Error("Nenhum plugin de ambiente disponível.");
   const normalizedName = name.trim();
   if (!normalizedName) throw new Error("Informe o nome do ambiente.");
-  state.environmentBusy = true;
+  state.runtimeBusy = true;
   state.notice = `Criando ambiente '${normalizedName}'...`;
   state.error = undefined;
   render();
@@ -1679,25 +1677,25 @@ async function submitExecutionEnvironment(name: string): Promise<void> {
       name: normalizedName,
       ...(path ? { path } : {}),
     });
-    await refreshEnvironments();
-    state.openedEnvironmentIds.add(environment.id);
-    state.selectedEnvironmentId = environment.id;
-    state.environmentForm = undefined;
+    await refreshRuntimes();
+    state.openedRuntimeIds.add(environment.id);
+    state.selectedRuntimeId = environment.id;
+    state.runtimeForm = undefined;
     showNotice(`Ambiente '${environment.name}' criado.`);
     persistSession();
   } finally {
-    state.environmentBusy = false;
+    state.runtimeBusy = false;
     render();
     persistSession();
   }
 }
 
-async function importExecutionEnvironment(path: string, name: string): Promise<void> {
-  const provider = environmentProvider();
+async function importRuntime(path: string, name: string): Promise<void> {
+  const provider = runtimeProvider();
   if (!provider) throw new Error("Nenhum plugin de ambiente disponível.");
   const normalizedPath = path.trim();
   if (!normalizedPath) throw new Error("Informe o caminho do ambiente existente.");
-  state.environmentBusy = true;
+  state.runtimeBusy = true;
   state.notice = `Validando ambiente em '${normalizedPath}'...`;
   state.error = undefined;
   render();
@@ -1707,128 +1705,128 @@ async function importExecutionEnvironment(path: string, name: string): Promise<v
       path: normalizedPath,
       ...(normalizedName ? { name: normalizedName } : {}),
     });
-    await refreshEnvironments();
-    state.openedEnvironmentIds.add(environment.id);
-    state.selectedEnvironmentId = environment.id;
-    state.environmentForm = undefined;
-    state.environmentBrowser = undefined;
-    state.environmentBrowserOpen = false;
-    state.environmentSelectedPath = undefined;
+    await refreshRuntimes();
+    state.openedRuntimeIds.add(environment.id);
+    state.selectedRuntimeId = environment.id;
+    state.runtimeForm = undefined;
+    state.runtimeBrowser = undefined;
+    state.runtimeBrowserOpen = false;
+    state.runtimeSelectedPath = undefined;
     showNotice(`Ambiente existente '${environment.name}' adicionado e aberto.`);
     persistSession();
   } finally {
-    state.environmentBusy = false;
+    state.runtimeBusy = false;
     render();
   }
 }
 
 async function browseEnvironmentDirectory(rawPath?: unknown): Promise<void> {
-  const provider = environmentProvider();
+  const provider = runtimeProvider();
   if (!provider?.browseDirectories) throw new Error("O plugin não oferece navegação de diretórios.");
-  state.environmentBrowserOpen = true;
-  state.environmentBrowserLoading = true;
+  state.runtimeBrowserOpen = true;
+  state.runtimeBrowserLoading = true;
   render();
   try {
-    state.environmentBrowser = await provider.browseDirectories(typeof rawPath === "string" ? rawPath : undefined);
+    state.runtimeBrowser = await provider.browseDirectories(typeof rawPath === "string" ? rawPath : undefined);
   } finally {
-    state.environmentBrowserLoading = false;
+    state.runtimeBrowserLoading = false;
     render();
   }
 }
 
 function chooseEnvironmentPath(rawPath: unknown): void {
   if (typeof rawPath !== "string") throw new Error("Caminho inválido.");
-  state.environmentSelectedPath = rawPath;
-  state.environmentBrowserOpen = false;
+  state.runtimeSelectedPath = rawPath;
+  state.runtimeBrowserOpen = false;
   render();
 }
 
 async function installEnvironmentPackages(): Promise<void> {
-  if (!state.selectedEnvironmentId) throw new Error("Selecione um ambiente virtual.");
-  state.environmentForm = "packages";
+  if (!state.selectedRuntimeId) throw new Error("Selecione um ambiente virtual.");
+  state.runtimeForm = "packages";
   render();
 }
 
 async function submitEnvironmentPackages(value: string): Promise<void> {
-  const provider = environmentProvider();
-  const environmentId = state.selectedEnvironmentId;
+  const provider = runtimeProvider();
+  const environmentId = state.selectedRuntimeId;
   if (!provider || !environmentId) throw new Error("Selecione um ambiente virtual.");
   if (!value.trim()) throw new Error("Informe ao menos um pacote.");
   const packages = value.trim().split(/\s+/);
-  state.environmentBusy = true;
+  state.runtimeBusy = true;
   state.notice = `Instalando ${packages.join(", ")}...`;
   state.error = undefined;
   render();
   try {
     await provider.installPackages(environmentId, packages);
-    await refreshEnvironments();
-    state.environmentForm = undefined;
+    await refreshRuntimes();
+    state.runtimeForm = undefined;
     showNotice("Pacotes instalados no ambiente selecionado.");
     persistSession();
   } finally {
-    state.environmentBusy = false;
+    state.runtimeBusy = false;
     render();
   }
 }
 
 async function removeSelectedEnvironment(): Promise<void> {
-  const provider = environmentProvider();
-  const environmentId = state.selectedEnvironmentId;
+  const provider = runtimeProvider();
+  const environmentId = state.selectedRuntimeId;
   if (!provider || !environmentId) throw new Error("Selecione um ambiente virtual.");
-  const environment = state.environments.find((candidate) => candidate.id === environmentId);
-  state.environmentBusy = true;
+  const environment = state.runtimes.find((candidate) => candidate.id === environmentId);
+  state.runtimeBusy = true;
   state.notice = `Removendo ambiente '${environment?.name ?? environmentId}'...`;
   state.error = undefined;
   render();
   try {
     await provider.remove(environmentId);
-    state.openedEnvironmentIds.delete(environmentId);
-    state.selectedEnvironmentId = undefined;
-    await refreshEnvironments();
+    state.openedRuntimeIds.delete(environmentId);
+    state.selectedRuntimeId = undefined;
+    await refreshRuntimes();
     showNotice(`Ambiente '${environment?.name ?? environmentId}' removido.`);
     persistSession();
   } finally {
-    state.environmentBusy = false;
+    state.runtimeBusy = false;
     render();
   }
 }
 
 function openEnvironment(rawId: unknown): void {
   if (typeof rawId !== "string") throw new Error("Ambiente inválido.");
-  if (!state.environments.some((environment) => environment.id === rawId)) {
+  if (!state.runtimes.some((environment) => environment.id === rawId)) {
     throw new Error("Ambiente não encontrado.");
   }
-  state.openedEnvironmentIds.add(rawId);
-  state.selectedEnvironmentId = rawId;
+  state.openedRuntimeIds.add(rawId);
+  state.selectedRuntimeId = rawId;
   render();
   persistSession();
 }
 
 function closeEnvironment(rawId: unknown): void {
   if (typeof rawId !== "string") throw new Error("Ambiente inválido.");
-  state.openedEnvironmentIds.delete(rawId);
-  if (state.selectedEnvironmentId === rawId) {
-    state.selectedEnvironmentId = [...state.openedEnvironmentIds][0];
+  state.openedRuntimeIds.delete(rawId);
+  if (state.selectedRuntimeId === rawId) {
+    state.selectedRuntimeId = [...state.openedRuntimeIds][0];
   }
   render();
   persistSession();
 }
 
 function selectEnvironment(rawId: unknown): void {
-  if (typeof rawId !== "string" || !state.openedEnvironmentIds.has(rawId)) {
+  if (typeof rawId !== "string" || !state.openedRuntimeIds.has(rawId)) {
     throw new Error("Abra o ambiente antes de selecioná-lo.");
   }
-  state.selectedEnvironmentId = rawId;
+  state.selectedRuntimeId = rawId;
   render();
   persistSession();
 }
 
 function packagesForEnvironment(rawId: unknown): void {
   if (typeof rawId !== "string") throw new Error("Ambiente inválido.");
-  state.openedEnvironmentIds.add(rawId);
-  state.selectedEnvironmentId = rawId;
-  state.environmentForm = "packages";
-  state.sidebarView = "environments";
+  state.openedRuntimeIds.add(rawId);
+  state.selectedRuntimeId = rawId;
+  state.runtimeForm = "packages";
+  state.sidebarView = "runtimes";
   state.sidebarVisible = true;
   render();
   persistSession();
@@ -1836,19 +1834,19 @@ function packagesForEnvironment(rawId: unknown): void {
 
 async function removeEnvironmentById(rawId: unknown): Promise<void> {
   if (typeof rawId !== "string") throw new Error("Ambiente inválido.");
-  state.selectedEnvironmentId = rawId;
+  state.selectedRuntimeId = rawId;
   await removeSelectedEnvironment();
 }
 
-async function runWithSelectedEnvironment(): Promise<void> {
+async function runWithSelectedRuntime(): Promise<void> {
   const active = activeDocument();
-  const provider = environmentProviderForExecution(active);
-  const environmentId = state.selectedEnvironmentId;
+  const provider = runtimeProviderForExecution(active);
+  const environmentId = state.selectedRuntimeId;
   if (!active || !provider) throw new Error("Nenhum plugin de ambiente disponível para este arquivo.");
   if (!environmentId) throw new Error("Crie ou selecione um ambiente virtual antes de executar.");
 
-  const environment = state.environments.find((candidate) => candidate.id === environmentId);
-  state.environmentBusy = true;
+  const environment = state.runtimes.find((candidate) => candidate.id === environmentId);
+  state.runtimeBusy = true;
   state.panelVisible = true;
   state.notice = `Executando '${active.name}' em ${environment?.name ?? environmentId}...`;
   state.error = undefined;
@@ -1864,7 +1862,7 @@ async function runWithSelectedEnvironment(): Promise<void> {
         ? { workingDirectory: profile.workingDirectory.trim() }
         : {}),
     };
-    const request: EnvironmentExecutionRequest = profile.mode === "module"
+    const request: RuntimeExecutionRequest = profile.mode === "module"
       ? {
           mode: "module" as const,
           moduleName: profile.target.trim(),
@@ -1901,26 +1899,26 @@ async function runWithSelectedEnvironment(): Promise<void> {
       if (output) output.scrollTop = output.scrollHeight;
     });
   } finally {
-    state.environmentBusy = false;
+    state.runtimeBusy = false;
     render();
   }
 }
 
 function renderEnvironmentToolbar(): string {
   const active = activeDocument();
-  const provider = environmentProvider();
+  const provider = runtimeProvider();
   if (!provider) return "";
 
-  const openedEnvironments = state.environments.filter((environment) => state.openedEnvironmentIds.has(environment.id));
+  const openedEnvironments = state.runtimes.filter((environment) => state.openedRuntimeIds.has(environment.id));
   const options = openedEnvironments
-    .map((environment) => `<option value="${escapeHtml(environment.id)}" ${environment.id === state.selectedEnvironmentId ? "selected" : ""}>${escapeHtml(environment.name)}${environment.version ? ` · ${escapeHtml(environment.version)}` : ""}</option>`)
+    .map((environment) => `<option value="${escapeHtml(environment.id)}" ${environment.id === state.selectedRuntimeId ? "selected" : ""}>${escapeHtml(environment.name)}${environment.version ? ` · ${escapeHtml(environment.version)}` : ""}</option>`)
     .join("");
-  const selected = state.environments.find((environment) => environment.id === state.selectedEnvironmentId);
-  const canRun = Boolean(active && environmentProviderForExecution(active) && state.selectedEnvironmentId);
+  const selected = state.runtimes.find((environment) => environment.id === state.selectedRuntimeId);
+  const canRun = Boolean(active && runtimeProviderForExecution(active) && state.selectedRuntimeId);
   const runTitle = active
     ? `Executar ${active.name} no ambiente ativo`
     : "Abra um arquivo Python para executar";
-  return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">${renderIcon("environment")}<span>${escapeHtml(provider.name)}</span></span>${renderButton("Gerenciar", "environment", { command: "view.environments", size: "small", title: "Gerenciar ambientes" })}<select data-environment-select aria-label="Ambiente aberto" ${state.environmentBusy ? "disabled" : ""}><option value="" ${state.selectedEnvironmentId ? "" : "selected"}>${options ? "Selecione um ambiente aberto" : "Nenhum ambiente aberto"}</option>${options}</select><span class="runtime-toolbar__current">${selected ? `Ativo: ${escapeHtml(selected.name)}${selected.version ? ` · ${escapeHtml(selected.version)}` : ""}` : "Nenhum ambiente ativo"}</span><span class="runtime-toolbar__profile">${escapeHtml(state.runProfile.name)} · ${escapeHtml(state.runProfile.mode)}</span>${renderButton("Configurar", "saveAs", { command: "environment.runProfile", size: "small", title: "Configurar perfil de execução" })}${renderButton(state.environmentBusy ? "Processando" : "Executar", "play", { command: "environment.run", size: "small", variant: "primary", disabled: !canRun || state.environmentBusy, title: runTitle })}</div>`;
+  return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">${renderIcon("environment")}<span>${escapeHtml(provider.name)}</span></span>${renderButton("Gerenciar", "environment", { command: "view.runtimes", size: "small", title: "Gerenciar ambientes" })}<select data-environment-select aria-label="Ambiente aberto" ${state.runtimeBusy ? "disabled" : ""}><option value="" ${state.selectedRuntimeId ? "" : "selected"}>${options ? "Selecione um ambiente aberto" : "Nenhum ambiente aberto"}</option>${options}</select><span class="runtime-toolbar__current">${selected ? `Ativo: ${escapeHtml(selected.name)}${selected.version ? ` · ${escapeHtml(selected.version)}` : ""}` : "Nenhum ambiente ativo"}</span><span class="runtime-toolbar__profile">${escapeHtml(state.runProfile.name)} · ${escapeHtml(state.runProfile.mode)}</span>${renderButton("Configurar", "saveAs", { command: "environment.runProfile", size: "small", title: "Configurar perfil de execução" })}${renderButton(state.runtimeBusy ? "Processando" : "Executar", "play", { command: "environment.run", size: "small", variant: "primary", disabled: !canRun || state.runtimeBusy, title: runTitle })}</div>`;
 }
 
 function renderFileMenu(): string {
@@ -1937,8 +1935,8 @@ function render(): void {
   const active = activeDocument();
   const dirty = active ? active.content !== active.savedContent : false;
   const runtimeToolbar = renderEnvironmentToolbar();
-  const environmentActivity = environmentProvider()
-    ? renderActivityButton("view.environments", "environment", "Ambientes", state.sidebarView === "environments")
+  const environmentActivity = runtimeProvider()
+    ? renderActivityButton("view.runtimes", "environment", "Ambientes", state.sidebarView === "runtimes")
     : "";
   const sidebarMaximum = sidebarMaximumWidth();
   const panelMaximum = panelMaximumHeight();
@@ -2125,22 +2123,22 @@ function bindInteractions(): void {
   });
   appRoot.querySelector<HTMLSelectElement>("[data-environment-select]")?.addEventListener("change", (event) => {
     const value = (event.currentTarget as HTMLSelectElement).value;
-    state.selectedEnvironmentId = value || undefined;
-    state.environmentForm = undefined;
+    state.selectedRuntimeId = value || undefined;
+    state.runtimeForm = undefined;
     render();
     persistSession();
   });
   appRoot.querySelector<HTMLFormElement>('[data-form="environment-create"]')?.addEventListener("submit", (event) => {
     event.preventDefault();
     const name = new FormData(event.currentTarget as HTMLFormElement).get("name");
-    void submitExecutionEnvironment(typeof name === "string" ? name : "").catch(showError);
+    void submitRuntime(typeof name === "string" ? name : "").catch(showError);
   });
   appRoot.querySelector<HTMLFormElement>('[data-form="environment-import"]')?.addEventListener("submit", (event) => {
     event.preventDefault();
     const formData = new FormData(event.currentTarget as HTMLFormElement);
     const path = formData.get("path");
     const name = formData.get("name");
-    void importExecutionEnvironment(
+    void importRuntime(
       typeof path === "string" ? path : "",
       typeof name === "string" ? name : "",
     ).catch(showError);
@@ -2170,7 +2168,7 @@ function bindInteractions(): void {
     parseEnvironmentVariables(profile.environmentVariables);
     state.runProfile = profile;
     localStorage.setItem(RUN_PROFILE_STORAGE_KEY, JSON.stringify(profile));
-    state.environmentForm = undefined;
+    state.runtimeForm = undefined;
     showNotice(`Perfil '${profile.name}' salvo.`);
     persistSession();
   });
@@ -2190,19 +2188,19 @@ commands.register("file.save", () => saveFile(false));
 commands.register("file.saveAs", () => saveFile(true));
 commands.register("language.lint", lintActiveDocument);
 commands.register("language.run", runActiveDocument);
-commands.register("environment.refresh", refreshEnvironments);
-commands.register("environment.create", createExecutionEnvironment);
+commands.register("environment.refresh", refreshRuntimes);
+commands.register("environment.create", createRuntime);
 commands.register("environment.import", async () => {
-  state.sidebarView = "environments";
+  state.sidebarView = "runtimes";
   state.sidebarVisible = true;
-  state.environmentForm = "import";
-  state.environmentBrowser = undefined;
-  state.environmentBrowserOpen = false;
-  state.environmentSelectedPath = undefined;
+  state.runtimeForm = "import";
+  state.runtimeBrowser = undefined;
+  state.runtimeBrowserOpen = false;
+  state.runtimeSelectedPath = undefined;
   render();
 });
 commands.register("environment.browser.open", () => browseEnvironmentDirectory());
-commands.register("environment.browser.close", () => { state.environmentBrowserOpen = false; render(); });
+commands.register("environment.browser.close", () => { state.runtimeBrowserOpen = false; render(); });
 commands.register("environment.browse", browseEnvironmentDirectory);
 commands.register("environment.choosePath", chooseEnvironmentPath);
 commands.register("environment.packages", installEnvironmentPackages);
@@ -2213,19 +2211,19 @@ commands.register("environment.select", selectEnvironment);
 commands.register("environment.packagesFor", packagesForEnvironment);
 commands.register("environment.removeById", removeEnvironmentById);
 commands.register("environment.runProfile", () => {
-  state.sidebarView = "environments";
+  state.sidebarView = "runtimes";
   state.sidebarVisible = true;
-  state.environmentForm = "run";
+  state.runtimeForm = "run";
   render();
 });
 commands.register("environment.form.cancel", () => {
-  state.environmentForm = undefined;
-  state.environmentBrowser = undefined;
-  state.environmentBrowserOpen = false;
-  state.environmentSelectedPath = undefined;
+  state.runtimeForm = undefined;
+  state.runtimeBrowser = undefined;
+  state.runtimeBrowserOpen = false;
+  state.runtimeSelectedPath = undefined;
   render();
 });
-commands.register("environment.run", runWithSelectedEnvironment);
+commands.register("environment.run", runWithSelectedRuntime);
 commands.register("file.close", closeFile);
 commands.register("file.activate", activateFile);
 commands.register("view.explorer", () => { state.sidebarView = "explorer"; state.sidebarVisible = true; render(); persistSession(); });
@@ -2238,11 +2236,11 @@ commands.register("view.plugins", () => {
   }
   persistSession();
 });
-commands.register("view.environments", async () => {
-  if (!environmentProvider()) throw new Error("Nenhum plugin de ambiente está ativo.");
-  state.sidebarView = "environments";
+commands.register("view.runtimes", async () => {
+  if (!runtimeProvider()) throw new Error("Nenhum plugin de ambiente está ativo.");
+  state.sidebarView = "runtimes";
   state.sidebarVisible = true;
-  await refreshEnvironments();
+  await refreshRuntimes();
   render();
   persistSession();
 });
@@ -2257,14 +2255,14 @@ commands.register("plugin.enable", async (rawId: unknown) => {
   const plugin = await plugins.enable(rawId);
   await plugins.activate(rawId, { commands, events, capabilities, subscriptions: [] });
   persistPlugins();
-  await refreshEnvironments();
+  await refreshRuntimes();
   showNotice(`Plugin '${plugin.manifest.name}' habilitado.`);
 });
 commands.register("plugin.disable", async (rawId: unknown) => {
   if (typeof rawId !== "string") throw new Error("Plugin id must be a string.");
   const plugin = await plugins.disable(rawId);
   persistPlugins();
-  await refreshEnvironments();
+  await refreshRuntimes();
   showNotice(`Plugin '${plugin.manifest.name}' desabilitado.`);
 });
 commands.register("plugin.uninstall", async (rawId: unknown) => {
@@ -2273,7 +2271,7 @@ commands.register("plugin.uninstall", async (rawId: unknown) => {
   await plugins.uninstall(rawId);
   pluginSourceUrls.delete(rawId);
   persistPlugins();
-  await refreshEnvironments();
+  await refreshRuntimes();
   showNotice(`Plugin '${pluginName}' removido.`);
 });
 
@@ -2287,9 +2285,9 @@ capabilities.register("core.events", events);
 capabilities.register("core.plugins", plugins);
 
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && state.environmentBrowserOpen) {
+  if (event.key === "Escape" && state.runtimeBrowserOpen) {
     event.preventDefault();
-    state.environmentBrowserOpen = false;
+    state.runtimeBrowserOpen = false;
     render();
     return;
   }

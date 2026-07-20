@@ -128,12 +128,11 @@ export interface LanguageProvider {
   readonly extensions: readonly string[];
   highlight(source: string): readonly SyntaxToken[];
   lint(source: string, fileName: string): Promise<readonly TextDiagnostic[]>;
-  run?(source: string, fileName: string): Promise<ScriptExecutionResult>;
 }
 
 export const LANGUAGE_PROVIDER_CAPABILITY = "language.provider";
 
-export interface ExecutionEnvironment {
+export interface Runtime {
   readonly id: string;
   readonly name: string;
   readonly status: "ready" | "creating" | "error";
@@ -145,30 +144,30 @@ export interface ExecutionEnvironment {
   readonly error?: string;
 }
 
-export interface EnvironmentCreateRequest {
+export interface RuntimeCreateRequest {
   readonly name: string;
   readonly path?: string;
 }
 
-export interface EnvironmentImportRequest {
+export interface RuntimeImportRequest {
   readonly path: string;
   readonly name?: string;
 }
 
-export interface EnvironmentDirectoryEntry {
+export interface RuntimeDirectoryEntry {
   readonly name: string;
   readonly path: string;
-  readonly isEnvironment: boolean;
+  readonly isRuntime: boolean;
 }
 
-export interface EnvironmentDirectoryListing {
+export interface RuntimeDirectoryListing {
   readonly path: string;
   readonly parentPath?: string;
-  readonly isEnvironment: boolean;
-  readonly entries: readonly EnvironmentDirectoryEntry[];
+  readonly isRuntime: boolean;
+  readonly entries: readonly RuntimeDirectoryEntry[];
 }
 
-export interface EnvironmentExecutionRequest {
+export interface RuntimeExecutionRequest {
   readonly mode?: "source" | "script" | "module";
   readonly source?: string;
   readonly fileName?: string;
@@ -179,23 +178,28 @@ export interface EnvironmentExecutionRequest {
   readonly environmentVariables?: Readonly<Record<string, string>>;
 }
 
-export interface ExecutionEnvironmentProvider {
+export interface RuntimeProvider {
   readonly id: string;
   readonly name: string;
   readonly extensions: readonly string[];
-  list(): Promise<readonly ExecutionEnvironment[]>;
-  create(request: EnvironmentCreateRequest): Promise<ExecutionEnvironment>;
-  importExisting(request: EnvironmentImportRequest): Promise<ExecutionEnvironment>;
-  browseDirectories?(path?: string): Promise<EnvironmentDirectoryListing>;
-  remove(environmentId: string): Promise<void>;
-  installPackages(environmentId: string, packages: readonly string[]): Promise<ExecutionEnvironment>;
+  list(): Promise<readonly Runtime[]>;
   run(
-    environmentId: string,
-    request: EnvironmentExecutionRequest,
+    runtimeId: string,
+    request: RuntimeExecutionRequest,
   ): Promise<ScriptExecutionResult>;
 }
 
-export const EXECUTION_ENVIRONMENT_CAPABILITY = "execution.environment";
+export interface RuntimeManager {
+  create?(request: RuntimeCreateRequest): Promise<Runtime>;
+  importExisting?(request: RuntimeImportRequest): Promise<Runtime>;
+  browseDirectories?(path?: string): Promise<RuntimeDirectoryListing>;
+  remove?(runtimeId: string): Promise<void>;
+  installPackages?(runtimeId: string, packages: readonly string[]): Promise<Runtime>;
+}
+
+export const RUNTIME_PROVIDER_CAPABILITY = "runtime.provider";
+
+export const RUNTIME_MANAGER_CAPABILITY = "runtime.manager";
 
 export interface PluginHost {
   activate(plugin: PluginRecord, context: PluginContext): Promise<void>;
