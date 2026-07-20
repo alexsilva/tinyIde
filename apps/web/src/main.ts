@@ -14,7 +14,8 @@ import type {
 import "./styles.css";
 
 const PLATFORM_VERSION = "0.4.0";
-const PLUGIN_STORAGE_KEY = "tinyide.installedPlugins";
+const PLUGIN_STORAGE_KEY = "tinyide.installedPlugins.v2";
+const LEGACY_PLUGIN_STORAGE_KEY = "tinyide.installedPlugins";
 
 interface BrowserWritable {
   write(data: string): Promise<void>;
@@ -61,6 +62,17 @@ interface OpenDocument {
   savedContent: string;
 }
 
+interface StoredPlugin {
+  readonly manifest: PluginManifest;
+  readonly sourceUrl: string;
+  readonly enabled: boolean;
+}
+
+interface PluginCatalogEntry {
+  readonly manifest: PluginManifest;
+  readonly manifestUrl: string;
+}
+
 type SidebarView = "explorer" | "plugins";
 
 interface AppState {
@@ -74,6 +86,8 @@ interface AppState {
   activeDocument: OpenDocument | undefined;
   diagnostics: TextDiagnostic[];
   languageActionRunning: boolean;
+  availablePlugins: PluginCatalogEntry[];
+  pluginCatalogLoading: boolean;
   logs: string[];
   notice: string | undefined;
   error: string | undefined;
@@ -86,24 +100,13 @@ const appRoot = root;
 const events = new EventBus();
 const commands = new CommandRegistry();
 const capabilities = new CapabilityRegistry();
-const developmentManifests = import.meta.glob("../../../plugins/*/plugin.json", {
-  eager: true,
-  import: "default",
-}) as Record<string, PluginManifest>;
-const developmentModules = import.meta.glob("../../../plugins/*/src/index.js");
-const moduleLoaders = new Map<string, () => Promise<unknown>>();
-
-for (const [manifestPath, manifest] of Object.entries(developmentManifests)) {
-  const modulePath = manifestPath.replace(/plugin\.json$/, "src/index.js");
-  const loader = developmentModules[modulePath];
-  if (loader) moduleLoaders.set(manifest.id, loader);
-}
+const pluginSourceUrls = new Map<string, string>();
 
 const pluginHost = new ModulePluginHost({
   loadModule(plugin) {
-    const loader = moduleLoaders.get(plugin.manifest.id);
-    if (!loader) throw new Error(`Plugin module not found: ${plugin.manifest.id}`);
-    return loader();
+    const sourceUrl = pluginSourceUrls.get(plugin.manifest.id);
+    if (!sourceUrl) throw new Error(`Plugin source URL not found: ${plugin.manifest.id}`);
+    return import(/* @vite-ignore */ sourceUrl);
   },
 });
 const plugins = new PluginManager({ platformVersion: PLATFORM_VERSION, events, host: pluginHost });
@@ -119,6 +122,8 @@ const state: AppState = {
   activeDocument: undefined,
   diagnostics: [],
   languageActionRunning: false,
+  availablePlugins: [],
+  pluginCatalogLoading: false,
   logs: ["tinyIde core initialized", `platform version ${PLATFORM_VERSION}`],
   notice: undefined,
   error: undefined,
@@ -178,25 +183,90 @@ function showError(error: unknown): void {
 }
 
 function persistPlugins(): void {
+  const stored: StoredPlugin[] = plugins
+    .list()
+    .map((plugin) => {
+      const sourceUrl = pluginSourceUrls.get(plugin.manifest.id);
+      if (!sourceUrl) return undefined;
+      return {
+        manifest: plugin.manifest,
+        sourceUrl,
+        enabled: plugin.state === "active" || plugin.state === "enabled",
+      };
+    })
+    .filter((plugin): plugin is StoredPlugin => plugin !== undefined);
+
   localStorage.setItem(
     PLUGIN_STORAGE_KEY,
-    JSON.stringify(plugins.list().map((plugin) => plugin.manifest)),
+    JSON.stringify(stored),
   );
 }
 
 async function restorePlugins(): Promise<void> {
+  localStorage.removeItem(LEGACY_PLUGIN_STORAGE_KEY);
   const rawValue = localStorage.getItem(PLUGIN_STORAGE_KEY);
   if (!rawValue) return;
   try {
-    const manifests = JSON.parse(rawValue) as unknown;
-    if (!Array.isArray(manifests)) throw new Error("Stored plugin metadata is invalid.");
-    for (const manifest of manifests) {
-      const pluginManifest = manifest as PluginManifest;
-      if (!plugins.get(pluginManifest.id)) await plugins.install(pluginManifest);
+    const storedPlugins = JSON.parse(rawValue) as unknown;
+    if (!Array.isArray(storedPlugins)) throw new Error("Stored plugin metadata is invalid.");
+
+    for (const stored of storedPlugins as StoredPlugin[]) {
+      if (!stored || typeof stored.sourceUrl !== "string" || typeof stored.enabled !== "boolean") {
+        throw new Error("Stored plugin entry is invalid.");
+      }
+      const installed = await plugins.install(stored.manifest);
+      pluginSourceUrls.set(installed.manifest.id, stored.sourceUrl);
+      if (stored.enabled) {
+        await plugins.enable(installed.manifest.id);
+        await plugins.activate(installed.manifest.id, {
+          commands,
+          events,
+          capabilities,
+          subscriptions: [],
+        });
+      }
     }
   } catch (error) {
     localStorage.removeItem(PLUGIN_STORAGE_KEY);
     showError(error);
+  }
+}
+
+async function loadPluginCatalog(): Promise<void> {
+  state.pluginCatalogLoading = true;
+  render();
+
+  try {
+    const response = await fetch("/dev-plugins/index.json", { cache: "no-store" });
+    if (!response.ok) {
+      state.availablePlugins = [];
+      return;
+    }
+
+    const catalog = (await response.json()) as { plugins?: Array<{ manifestUrl?: unknown }> };
+    const manifestUrls = (catalog.plugins ?? [])
+      .map((entry) => entry.manifestUrl)
+      .filter((url): url is string => typeof url === "string");
+
+    const entries = await Promise.all(
+      manifestUrls.map(async (manifestUrl): Promise<PluginCatalogEntry | undefined> => {
+        const absoluteManifestUrl = new URL(manifestUrl, window.location.href).href;
+        const manifestResponse = await fetch(absoluteManifestUrl, { cache: "no-store" });
+        if (!manifestResponse.ok) return undefined;
+        return {
+          manifest: (await manifestResponse.json()) as PluginManifest,
+          manifestUrl: absoluteManifestUrl,
+        };
+      }),
+    );
+    state.availablePlugins = entries.filter(
+      (entry): entry is PluginCatalogEntry => entry !== undefined,
+    );
+  } catch {
+    state.availablePlugins = [];
+  } finally {
+    state.pluginCatalogLoading = false;
+    render();
   }
 }
 
@@ -376,11 +446,36 @@ async function saveFile(forceSaveAs = false): Promise<void> {
 async function installPluginFromUrl(url: string): Promise<void> {
   const normalizedUrl = url.trim();
   if (!normalizedUrl) throw new Error("Informe a URL de um manifesto de plugin.");
-  const response = await fetch(normalizedUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
+  const manifestUrl = new URL(normalizedUrl, window.location.href).href;
+  const response = await fetch(manifestUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
   if (!response.ok) throw new Error(`Manifest request failed with status ${response.status}.`);
   const installed = await plugins.install((await response.json()) as unknown);
+  const declaredEntrypoint = installed.manifest.entrypoints?.frontend;
+
+  if (!declaredEntrypoint) {
+    await plugins.uninstall(installed.manifest.id);
+    throw new Error(`Plugin '${installed.manifest.name}' não declara entrypoint frontend.`);
+  }
+
+  const sourceUrl = new URL(declaredEntrypoint, manifestUrl).href;
+  pluginSourceUrls.set(installed.manifest.id, sourceUrl);
+
+  try {
+    await plugins.enable(installed.manifest.id);
+    await plugins.activate(installed.manifest.id, {
+      commands,
+      events,
+      capabilities,
+      subscriptions: [],
+    });
+  } catch (error) {
+    pluginSourceUrls.delete(installed.manifest.id);
+    await plugins.uninstall(installed.manifest.id);
+    throw error;
+  }
+
   persistPlugins();
-  showNotice(`Plugin '${installed.manifest.name}' instalado.`);
+  showNotice(`Plugin '${installed.manifest.name}' instalado e ativado.`);
 }
 
 function renderTreeEntries(entries: WorkspaceEntry[], depth = 0): string {
@@ -412,14 +507,20 @@ function renderWorkspaceEntries(): string {
 }
 
 function pluginActions(plugin: PluginRecord): string {
-  const action = plugin.state === "enabled" ? "plugin.disable" : "plugin.enable";
-  const label = plugin.state === "enabled" ? "Desabilitar" : "Habilitar";
+  const active = plugin.state === "active" || plugin.state === "enabled";
+  const action = active ? "plugin.disable" : "plugin.enable";
+  const label = active ? "Desabilitar" : "Habilitar";
   return `<div class="plugin-actions"><button data-command="${action}" data-plugin-id="${escapeHtml(plugin.manifest.id)}">${label}</button><button data-command="plugin.uninstall" data-plugin-id="${escapeHtml(plugin.manifest.id)}">Remover</button></div>`;
 }
 
 function renderPlugins(): string {
-  const cards = plugins.list().map((plugin) => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(plugin.manifest.name)}</strong><span class="state-badge">${escapeHtml(plugin.state)}</span></div><p>${escapeHtml(plugin.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(plugin.manifest.id)} · ${escapeHtml(plugin.manifest.version)}</small>${pluginActions(plugin)}</article>`).join("");
-  return `<form class="plugin-install" data-form="plugin-install"><label for="plugin-url">Manifesto remoto</label><div class="input-row"><input id="plugin-url" name="url" type="url" placeholder="https://registry.example/plugin.json" required /><button class="primary-button" type="submit">Instalar</button></div></form><div class="plugin-list">${cards || '<div class="empty-state"><p>Nenhum plugin instalado.</p></div>'}</div>`;
+  const installedCards = plugins.list().map((plugin) => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(plugin.manifest.name)}</strong><span class="state-badge">${escapeHtml(plugin.state)}</span></div><p>${escapeHtml(plugin.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(plugin.manifest.id)} · ${escapeHtml(plugin.manifest.version)}</small>${pluginActions(plugin)}</article>`).join("");
+  const availableCards = state.availablePlugins
+    .filter((entry) => !plugins.get(entry.manifest.id))
+    .map((entry) => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(entry.manifest.name)}</strong><span class="state-badge">disponível</span></div><p>${escapeHtml(entry.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(entry.manifest.id)} · ${escapeHtml(entry.manifest.version)}</small><div class="plugin-actions"><button class="primary-button" data-command="plugin.installFromUrl" data-plugin-url="${escapeHtml(entry.manifestUrl)}">Instalar</button></div></article>`)
+    .join("");
+
+  return `<form class="plugin-install" data-form="plugin-install"><label for="plugin-url">Manifesto remoto</label><div class="input-row"><input id="plugin-url" name="url" type="url" placeholder="https://registry.example/plugin.json" required /><button class="primary-button" type="submit">Instalar</button></div></form><div class="plugin-section"><h3>Instalados</h3><div class="plugin-list">${installedCards || '<div class="empty-state"><p>Nenhum plugin instalado.</p></div>'}</div></div><div class="plugin-section"><h3>Disponíveis</h3><div class="plugin-list">${state.pluginCatalogLoading ? '<p class="muted">Carregando catálogo...</p>' : availableCards || '<p class="muted">Nenhum plugin disponível.</p>'}</div></div>`;
 }
 
 function renderSidebar(): string {
@@ -510,7 +611,7 @@ function bindInteractions(): void {
       event.stopPropagation();
       const command = element.dataset.command;
       if (!command) return;
-      const argument = element.dataset.pluginId ?? element.dataset.entryPath;
+      const argument = element.dataset.pluginUrl ?? element.dataset.pluginId ?? element.dataset.entryPath;
       void commands.execute(command, argument).catch(showError);
     });
   });
@@ -565,7 +666,14 @@ commands.register("file.saveAs", () => saveFile(true));
 commands.register("language.lint", lintActiveDocument);
 commands.register("language.run", runActiveDocument);
 commands.register("view.explorer", () => { state.sidebarView = "explorer"; state.sidebarVisible = true; render(); });
-commands.register("view.plugins", () => { state.sidebarView = "plugins"; state.sidebarVisible = true; render(); });
+commands.register("view.plugins", () => {
+  state.sidebarView = "plugins";
+  state.sidebarVisible = true;
+  render();
+  if (!state.availablePlugins.length && !state.pluginCatalogLoading) {
+    void loadPluginCatalog();
+  }
+});
 commands.register("sidebar.toggle", () => { state.sidebarVisible = !state.sidebarVisible; render(); });
 commands.register("panel.toggle", () => { state.panelVisible = !state.panelVisible; render(); });
 commands.register("plugin.installFromUrl", async (rawUrl: unknown) => {
@@ -574,7 +682,10 @@ commands.register("plugin.installFromUrl", async (rawUrl: unknown) => {
 });
 commands.register("plugin.enable", async (rawId: unknown) => {
   if (typeof rawId !== "string") throw new Error("Plugin id must be a string.");
-  const plugin = await plugins.enable(rawId); persistPlugins(); showNotice(`Plugin '${plugin.manifest.name}' habilitado.`);
+  const plugin = await plugins.enable(rawId);
+  await plugins.activate(rawId, { commands, events, capabilities, subscriptions: [] });
+  persistPlugins();
+  showNotice(`Plugin '${plugin.manifest.name}' habilitado.`);
 });
 commands.register("plugin.disable", async (rawId: unknown) => {
   if (typeof rawId !== "string") throw new Error("Plugin id must be a string.");
@@ -582,7 +693,11 @@ commands.register("plugin.disable", async (rawId: unknown) => {
 });
 commands.register("plugin.uninstall", async (rawId: unknown) => {
   if (typeof rawId !== "string") throw new Error("Plugin id must be a string.");
-  const pluginName = plugins.get(rawId)?.manifest.name ?? rawId; await plugins.uninstall(rawId); persistPlugins(); showNotice(`Plugin '${pluginName}' removido.`);
+  const pluginName = plugins.get(rawId)?.manifest.name ?? rawId;
+  await plugins.uninstall(rawId);
+  pluginSourceUrls.delete(rawId);
+  persistPlugins();
+  showNotice(`Plugin '${pluginName}' removido.`);
 });
 
 events.on<{ name: string }>("workspace.opened", ({ name }) => log(`workspace.opened: ${name}`));
@@ -624,7 +739,7 @@ declare global {
       readonly events: EventBus;
       readonly capabilities: CapabilityRegistry;
       readonly plugins: PluginManager;
-      installManifest(manifest: PluginManifest): Promise<PluginRecord>;
+      installPlugin(manifestUrl: string): Promise<void>;
     };
   }
 }
@@ -634,26 +749,9 @@ window.tinyIde = {
   events,
   capabilities,
   plugins,
-  installManifest: async (manifest) => {
-    const installed = await plugins.install(manifest);
-    persistPlugins();
-    render();
-    return installed;
-  },
+  installPlugin: installPluginFromUrl,
 };
 
-async function activateDevelopmentPlugins(): Promise<void> {
-  for (const manifest of Object.values(developmentManifests)) {
-    if (!plugins.get(manifest.id)) await plugins.install(manifest);
-    const current = plugins.get(manifest.id);
-    if (current?.state === "installed" || current?.state === "disabled") await plugins.enable(manifest.id);
-    if (plugins.get(manifest.id)?.state === "enabled") {
-      await plugins.activate(manifest.id, { commands, events, capabilities, subscriptions: [] });
-    }
-  }
-}
-
-void activateDevelopmentPlugins()
-  .then(restorePlugins)
+void restorePlugins()
   .then(render)
   .catch(showError);
