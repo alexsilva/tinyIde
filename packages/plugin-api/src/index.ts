@@ -1,0 +1,91 @@
+export interface Disposable {
+  dispose(): void;
+}
+
+export type CommandHandler<Arguments extends unknown[] = unknown[], Result = unknown> = (
+  ...args: Arguments
+) => Result | Promise<Result>;
+
+export interface CommandRegistryApi {
+  register<Arguments extends unknown[], Result>(
+    id: string,
+    handler: CommandHandler<Arguments, Result>,
+  ): Disposable;
+
+  execute<Result = unknown>(id: string, ...args: unknown[]): Promise<Result>;
+  has(id: string): boolean;
+  list(): readonly string[];
+}
+
+export type EventListener<Payload> = (payload: Payload) => void | Promise<void>;
+
+export interface EventBusApi {
+  on<Payload>(event: string, listener: EventListener<Payload>): Disposable;
+  emit<Payload>(event: string, payload: Payload): Promise<void>;
+}
+
+export interface CapabilityRegistryApi {
+  register<Provider>(id: string, provider: Provider): Disposable;
+  get<Provider>(id: string): Provider;
+  tryGet<Provider>(id: string): Provider | undefined;
+  getAll<Provider>(id: string): readonly Provider[];
+  has(id: string): boolean;
+}
+
+export interface PluginEngineRequirement {
+  readonly tinyide: string;
+}
+
+export interface PluginEntrypoints {
+  readonly frontend?: string;
+  readonly backend?: string;
+}
+
+export interface PluginManifest {
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly version: string;
+  readonly publisher: string;
+  readonly engines: PluginEngineRequirement;
+  readonly entrypoints?: PluginEntrypoints;
+  readonly activationEvents?: readonly string[];
+  readonly permissions?: readonly string[];
+  readonly contributes?: Readonly<Record<string, unknown>>;
+  readonly dependencies?: Readonly<Record<string, string>>;
+}
+
+export type PluginState =
+  | "discovered"
+  | "installed"
+  | "disabled"
+  | "enabled"
+  | "activating"
+  | "active"
+  | "deactivating"
+  | "failed"
+  | "uninstalled";
+
+export interface PluginRecord {
+  readonly manifest: PluginManifest;
+  readonly state: PluginState;
+  readonly installedAt: string;
+  readonly error?: string;
+}
+
+export interface PluginContext {
+  readonly commands: CommandRegistryApi;
+  readonly events: EventBusApi;
+  readonly capabilities: CapabilityRegistryApi;
+  readonly subscriptions: Disposable[];
+}
+
+export interface PluginModule {
+  activate(context: PluginContext): void | Promise<void>;
+  deactivate?(): void | Promise<void>;
+}
+
+export interface PluginHost {
+  activate(plugin: PluginRecord, context: PluginContext): Promise<void>;
+  deactivate(plugin: PluginRecord): Promise<void>;
+}

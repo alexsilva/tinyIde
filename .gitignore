@@ -3,6 +3,8 @@
 site/
 node_modules/
 dist/
+coverage/
+.vite/
 .DS_Store
 *.log
 
