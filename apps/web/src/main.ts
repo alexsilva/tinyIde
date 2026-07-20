@@ -415,17 +415,37 @@ function renderActivityButton(
 
 type ResizeTarget = "sidebar" | "panel";
 
+function viewportWidth(): number {
+  return Math.max(0, appRoot.clientWidth || window.innerWidth);
+}
+
+function viewportHeight(): number {
+  return Math.max(0, appRoot.clientHeight || window.innerHeight);
+}
+
+function sidebarMinimumWidth(): number {
+  const width = viewportWidth();
+  if (width <= 420) return 96;
+  if (width <= 620) return 120;
+  if (width <= 760) return 150;
+  return MIN_SIDEBAR_WIDTH;
+}
+
 function sidebarMaximumWidth(): number {
-  const availableWidth = window.innerWidth - 48 - 320;
+  const width = viewportWidth();
+  const activityWidth = width <= 760 ? 42 : 48;
+  const editorReserve = width <= 420 ? 120 : width <= 620 ? 180 : 280;
+  const availableWidth = width - activityWidth - 5 - editorReserve;
+  const minimum = sidebarMinimumWidth();
   return Math.max(
-    MIN_SIDEBAR_WIDTH,
+    minimum,
     Math.min(MAX_SIDEBAR_WIDTH, availableWidth),
   );
 }
 
 function panelMaximumHeight(): number {
   const editorArea = appRoot.querySelector<HTMLElement>(".editor-area");
-  const availableHeight = (editorArea?.clientHeight ?? window.innerHeight) - 36 - 120;
+  const availableHeight = (editorArea?.clientHeight || viewportHeight()) - 36 - 96;
   return Math.max(
     MIN_PANEL_HEIGHT,
     Math.min(MAX_PANEL_HEIGHT, availableHeight),
@@ -434,8 +454,32 @@ function panelMaximumHeight(): number {
 
 function resizeBounds(target: ResizeTarget): { minimum: number; maximum: number } {
   return target === "sidebar"
-    ? { minimum: MIN_SIDEBAR_WIDTH, maximum: sidebarMaximumWidth() }
+    ? { minimum: sidebarMinimumWidth(), maximum: sidebarMaximumWidth() }
     : { minimum: MIN_PANEL_HEIGHT, maximum: panelMaximumHeight() };
+}
+
+function syncLayoutToViewport(): void {
+  const shell = appRoot.querySelector<HTMLElement>(".ide-shell");
+  if (!shell) return;
+
+  const sidebarBounds = resizeBounds("sidebar");
+  const panelBounds = resizeBounds("panel");
+  const sidebarWidth = Math.round(clamp(state.sidebarWidth, sidebarBounds.minimum, sidebarBounds.maximum));
+  const panelHeight = Math.round(clamp(state.panelHeight, panelBounds.minimum, panelBounds.maximum));
+
+  shell.style.setProperty("--sidebar-width", `${sidebarWidth}px`);
+  shell.style.setProperty("--panel-height", `${panelHeight}px`);
+  shell.style.setProperty("--viewport-width", `${viewportWidth()}px`);
+  shell.style.setProperty("--viewport-height", `${viewportHeight()}px`);
+
+  const sidebarSeparator = appRoot.querySelector<HTMLElement>('[data-resize="sidebar"]');
+  sidebarSeparator?.setAttribute("aria-valuemin", String(sidebarBounds.minimum));
+  sidebarSeparator?.setAttribute("aria-valuemax", String(sidebarBounds.maximum));
+  sidebarSeparator?.setAttribute("aria-valuenow", String(sidebarWidth));
+
+  const panelSeparator = appRoot.querySelector<HTMLElement>('[data-resize="panel"]');
+  panelSeparator?.setAttribute("aria-valuemax", String(panelBounds.maximum));
+  panelSeparator?.setAttribute("aria-valuenow", String(panelHeight));
 }
 
 function resizeValue(target: ResizeTarget): number {
@@ -1419,11 +1463,13 @@ function render(): void {
     : "";
   const sidebarMaximum = sidebarMaximumWidth();
   const panelMaximum = panelMaximumHeight();
+  const renderedSidebarWidth = Math.round(clamp(state.sidebarWidth, sidebarMinimumWidth(), sidebarMaximum));
+  const renderedPanelHeight = Math.round(clamp(state.panelHeight, MIN_PANEL_HEIGHT, panelMaximum));
 
   appRoot.innerHTML = `
     <div
       class="ide-shell ${runtimeToolbar ? "" : "ide-shell--runtime-hidden"}"
-      style="--sidebar-width:${state.sidebarWidth}px;--panel-height:${state.panelHeight}px"
+      style="--sidebar-width:${renderedSidebarWidth}px;--panel-height:${renderedPanelHeight}px"
     >
       <header class="titlebar">
         <div class="brand">tinyIde</div>
@@ -1501,6 +1547,7 @@ function render(): void {
     </div>
   `;
   bindInteractions();
+  syncLayoutToViewport();
 }
 
 function bindInteractions(): void {
@@ -1746,10 +1793,17 @@ window.addEventListener("keydown", (event) => {
 window.addEventListener("click", () => {
   if (state.fileMenuOpen) { state.fileMenuOpen = false; render(); }
 });
-window.addEventListener("resize", () => {
-  applyResizeValue("sidebar", state.sidebarWidth);
-  applyResizeValue("panel", state.panelHeight);
-});
+let viewportSyncFrame: number | undefined;
+function scheduleViewportSync(): void {
+  if (viewportSyncFrame !== undefined) cancelAnimationFrame(viewportSyncFrame);
+  viewportSyncFrame = requestAnimationFrame(() => {
+    viewportSyncFrame = undefined;
+    syncLayoutToViewport();
+  });
+}
+
+window.addEventListener("resize", scheduleViewportSync);
+new ResizeObserver(scheduleViewportSync).observe(appRoot);
 
 render();
 

@@ -874,7 +874,9 @@ body.is-resizing-panel * {
   justify-items: center;
   gap: 12px;
   min-height: 0;
+  min-width: 0;
   padding: 32px;
+  overflow: hidden;
   text-align: center;
 }
 
@@ -885,7 +887,9 @@ body.is-resizing-panel * {
 
 .welcome-screen p,
 .welcome-screen small {
+  max-width: 100%;
   color: #9098a6;
+  overflow-wrap: anywhere;
 }
 
 .welcome-actions {
@@ -893,6 +897,7 @@ body.is-resizing-panel * {
   grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 8px;
   width: min(100%, 360px);
+  min-width: 0;
 }
 
 .welcome-actions .ui-button {
@@ -1006,7 +1011,12 @@ body.is-resizing-panel * {
   grid-template-rows: 36px minmax(0, 1fr) 5px var(--panel-height, 190px);
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   background: #17191f;
+}
+
+.editor-area > * {
+  min-width: 0;
 }
 
 .editor-area--panel-hidden {
@@ -1262,7 +1272,9 @@ body.is-resizing-panel * {
   display: flex;
   align-items: center;
   gap: 18px;
+  min-width: 0;
   height: 34px;
+  overflow: hidden;
   padding: 0 14px;
   border-bottom: 1px solid #23262e;
 }
@@ -1515,5 +1527,27 @@ body.is-resizing-panel * {
   .runtime-toolbar select {
     min-width: 120px;
     max-width: 34vw;
+  }
+
+  .welcome-screen {
+    padding: 16px 10px;
+  }
+
+  .welcome-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .panel-tabs {
+    gap: 10px;
+    padding-inline: 8px;
+  }
+
+  .panel-tabs button {
+    min-width: 0;
+  }
+
+  .panel-tabs button span:not(.counter) {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 }
