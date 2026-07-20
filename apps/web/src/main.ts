@@ -15,6 +15,10 @@ import type {
   PluginRecord,
   TextDiagnostic,
 } from "@tinyide/plugin-api";
+import {
+  readApplicationSnapshot,
+  writeApplicationSnapshot,
+} from "./session-store";
 import "./styles.css";
 
 const PLATFORM_VERSION = "0.4.0";
@@ -22,7 +26,8 @@ const PLUGIN_STORAGE_KEY = "tinyide.installedPlugins.v2";
 const LEGACY_PLUGIN_STORAGE_KEY = "tinyide.installedPlugins";
 const LAYOUT_STORAGE_KEY = "tinyide.layout.v1";
 const RUN_PROFILE_STORAGE_KEY = "tinyide.pythonRunProfile.v1";
-const SESSION_STORAGE_KEY = "tinyide.session.v1";
+const SESSION_STORAGE_KEY = "tinyide.session.v2";
+const LEGACY_SESSION_STORAGE_KEY = "tinyide.session.v1";
 const DEFAULT_SIDEBAR_WIDTH = 280;
 const DEFAULT_PANEL_HEIGHT = 190;
 const MIN_SIDEBAR_WIDTH = 180;
@@ -36,13 +41,52 @@ interface StoredLayout {
 }
 
 interface StoredSession {
-  readonly openFilePaths: string[];
+  readonly version: 2;
+  readonly savedAt: string;
+  readonly openDocumentKeys: string[];
   readonly activeFilePath?: string;
   readonly sidebarView: SidebarView;
   readonly sidebarVisible: boolean;
+  readonly sidebarWidth: number;
   readonly panelVisible: boolean;
+  readonly panelHeight: number;
   readonly workspaceName?: string;
   readonly expandedDirectories: string[];
+  readonly openedEnvironmentIds: string[];
+  readonly selectedEnvironmentId?: string;
+  readonly workspaceHandleStored: boolean;
+  readonly runProfile: RunProfile;
+  readonly plugins: Array<{ readonly id: string; readonly enabled: boolean }>;
+}
+
+interface StoredWorkspaceEntry {
+  readonly name: string;
+  readonly kind: "file" | "directory";
+  readonly path: string;
+  readonly children?: StoredWorkspaceEntry[];
+}
+
+interface StoredDocumentSnapshot {
+  readonly name: string;
+  readonly path?: string;
+  readonly content: string;
+  readonly savedContent: string;
+  readonly handle?: BrowserFileHandle;
+  readonly selectionStart: number;
+  readonly selectionEnd: number;
+  readonly scrollTop: number;
+  readonly scrollLeft: number;
+}
+
+interface StoredApplicationSnapshot {
+  readonly version: 1;
+  readonly savedAt: string;
+  readonly workspaceName?: string;
+  readonly workspaceHandle?: BrowserDirectoryHandle;
+  readonly workspaceEntries: StoredWorkspaceEntry[];
+  readonly documents: StoredDocumentSnapshot[];
+  readonly diagnostics: TextDiagnostic[];
+  readonly logs: string[];
 }
 
 interface RunProfile {
@@ -163,16 +207,24 @@ interface BrowserWritable {
   close(): Promise<void>;
 }
 
-interface BrowserFileHandle {
-  readonly kind: "file";
+interface BrowserHandlePermissionDescriptor {
+  readonly mode?: "read" | "readwrite";
+}
+
+interface BrowserHandle {
   readonly name: string;
+  queryPermission?(descriptor?: BrowserHandlePermissionDescriptor): Promise<PermissionState>;
+  requestPermission?(descriptor?: BrowserHandlePermissionDescriptor): Promise<PermissionState>;
+}
+
+interface BrowserFileHandle extends BrowserHandle {
+  readonly kind: "file";
   getFile(): Promise<File>;
   createWritable(): Promise<BrowserWritable>;
 }
 
-interface BrowserDirectoryHandle {
+interface BrowserDirectoryHandle extends BrowserHandle {
   readonly kind: "directory";
-  readonly name: string;
   values(): AsyncIterable<BrowserEntryHandle>;
 }
 
@@ -190,7 +242,7 @@ interface FilePickerWindow extends Window {
 interface WorkspaceEntry {
   readonly name: string;
   readonly kind: "file" | "directory";
-  readonly handle: BrowserEntryHandle;
+  readonly handle?: BrowserEntryHandle;
   readonly path: string;
   children?: WorkspaceEntry[];
 }
@@ -201,6 +253,10 @@ interface OpenDocument {
   path?: string;
   content: string;
   savedContent: string;
+  selectionStart: number;
+  selectionEnd: number;
+  scrollTop: number;
+  scrollLeft: number;
 }
 
 interface StoredPlugin {
@@ -215,6 +271,7 @@ interface PluginCatalogEntry {
 }
 
 type SidebarView = "explorer" | "plugins" | "environments";
+type WorkspaceAccess = "granted" | "prompt" | "denied" | "unavailable";
 
 interface AppState {
   sidebarVisible: boolean;
@@ -224,6 +281,8 @@ interface AppState {
   fileMenuOpen: boolean;
   sidebarView: SidebarView;
   workspaceName: string | undefined;
+  workspaceHandle: BrowserDirectoryHandle | undefined;
+  workspaceAccess: WorkspaceAccess;
   workspaceEntries: WorkspaceEntry[];
   expandedDirectories: Set<string>;
   openFiles: OpenDocument[];
@@ -273,6 +332,8 @@ const state: AppState = {
   fileMenuOpen: false,
   sidebarView: "explorer",
   workspaceName: undefined,
+  workspaceHandle: undefined,
+  workspaceAccess: "unavailable",
   workspaceEntries: [],
   expandedDirectories: new Set<string>(),
   openFiles: [],
@@ -298,39 +359,233 @@ const state: AppState = {
 
 function activeDocument(): OpenDocument | undefined {
   if (!state.activeFilePath || !state.openFiles.length) return undefined;
-  return state.openFiles.find((doc) => (doc.path ?? doc.name) === state.activeFilePath);
+  return state.openFiles.find((document) => documentKey(document) === state.activeFilePath);
 }
 
-function persistSession(): void {
-  const session: StoredSession = {
-    openFilePaths: state.openFiles.filter((doc) => doc.path).map((doc) => doc.path!),
+function documentKey(document: Pick<OpenDocument, "name" | "path">): string {
+  return document.path ?? document.name;
+}
+
+function serializeWorkspaceEntries(entries: WorkspaceEntry[]): StoredWorkspaceEntry[] {
+  return entries.map((entry) => ({
+    name: entry.name,
+    kind: entry.kind,
+    path: entry.path,
+    ...(entry.children ? { children: serializeWorkspaceEntries(entry.children) } : {}),
+  }));
+}
+
+function deserializeWorkspaceEntries(entries: StoredWorkspaceEntry[]): WorkspaceEntry[] {
+  return entries.map((entry) => ({
+    name: entry.name,
+    kind: entry.kind,
+    path: entry.path,
+    ...(entry.children ? { children: deserializeWorkspaceEntries(entry.children) } : {}),
+  }));
+}
+
+function buildSessionSummary(): StoredSession {
+  return {
+    version: 2,
+    savedAt: new Date().toISOString(),
+    openDocumentKeys: state.openFiles.map(documentKey),
     ...(state.activeFilePath ? { activeFilePath: state.activeFilePath } : {}),
     sidebarView: state.sidebarView,
     sidebarVisible: state.sidebarVisible,
+    sidebarWidth: state.sidebarWidth,
     panelVisible: state.panelVisible,
+    panelHeight: state.panelHeight,
     ...(state.workspaceName ? { workspaceName: state.workspaceName } : {}),
     expandedDirectories: [...state.expandedDirectories],
+    openedEnvironmentIds: [...state.openedEnvironmentIds],
+    ...(state.selectedEnvironmentId ? { selectedEnvironmentId: state.selectedEnvironmentId } : {}),
+    workspaceHandleStored: Boolean(state.workspaceHandle),
+    runProfile: state.runProfile,
+    plugins: plugins.list().map((plugin) => ({
+      id: plugin.manifest.id,
+      enabled: plugin.state === "active" || plugin.state === "enabled",
+    })),
   };
-  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+}
+
+function buildApplicationSnapshot(includeHandles = true): StoredApplicationSnapshot {
+  return {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    ...(state.workspaceName ? { workspaceName: state.workspaceName } : {}),
+    ...(includeHandles && state.workspaceHandle ? { workspaceHandle: state.workspaceHandle } : {}),
+    workspaceEntries: serializeWorkspaceEntries(state.workspaceEntries),
+    documents: state.openFiles.map((document) => ({
+      name: document.name,
+      ...(document.path ? { path: document.path } : {}),
+      content: document.content,
+      savedContent: document.savedContent,
+      ...(includeHandles && document.handle ? { handle: document.handle } : {}),
+      selectionStart: document.selectionStart,
+      selectionEnd: document.selectionEnd,
+      scrollTop: document.scrollTop,
+      scrollLeft: document.scrollLeft,
+    })),
+    diagnostics: state.diagnostics,
+    logs: state.logs,
+  };
+}
+
+let applicationRestoreInProgress = false;
+let snapshotTimeout: ReturnType<typeof setTimeout> | undefined;
+
+async function persistApplicationSnapshotNow(): Promise<void> {
+  if (applicationRestoreInProgress) return;
+  try {
+    await writeApplicationSnapshot(buildApplicationSnapshot(true));
+  } catch (error) {
+    console.warn("Unable to persist file-system handles; saving a content-only snapshot.", error);
+    await writeApplicationSnapshot(buildApplicationSnapshot(false));
+  }
+}
+
+function scheduleApplicationSnapshot(delay = 200): void {
+  if (applicationRestoreInProgress) return;
+  if (snapshotTimeout) clearTimeout(snapshotTimeout);
+  snapshotTimeout = setTimeout(() => {
+    snapshotTimeout = undefined;
+    void persistApplicationSnapshotNow().catch((error) => {
+      console.error("Unable to persist the tinyIde application snapshot.", error);
+    });
+  }, delay);
+}
+
+function flushApplicationSnapshot(): void {
+  if (snapshotTimeout) {
+    clearTimeout(snapshotTimeout);
+    snapshotTimeout = undefined;
+  }
+  void persistApplicationSnapshotNow().catch((error) => {
+    console.error("Unable to flush the tinyIde application snapshot.", error);
+  });
+}
+
+function persistSession(): void {
+  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(buildSessionSummary()));
+  localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
+  scheduleApplicationSnapshot();
 }
 
 function restoreSession(): void {
   try {
-    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY) ?? localStorage.getItem(LEGACY_SESSION_STORAGE_KEY);
     if (!raw) return;
-    const stored = JSON.parse(raw) as Partial<StoredSession>;
+    const stored = JSON.parse(raw) as Partial<StoredSession> & {
+      readonly openFilePaths?: string[];
+    };
     if (stored.sidebarView === "explorer" || stored.sidebarView === "plugins" || stored.sidebarView === "environments") {
       state.sidebarView = stored.sidebarView;
     }
     if (typeof stored.sidebarVisible === "boolean") state.sidebarVisible = stored.sidebarVisible;
+    if (typeof stored.sidebarWidth === "number") state.sidebarWidth = clamp(stored.sidebarWidth, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
     if (typeof stored.panelVisible === "boolean") state.panelVisible = stored.panelVisible;
+    if (typeof stored.panelHeight === "number") state.panelHeight = clamp(stored.panelHeight, MIN_PANEL_HEIGHT, MAX_PANEL_HEIGHT);
     if (typeof stored.workspaceName === "string") state.workspaceName = stored.workspaceName;
     if (Array.isArray(stored.expandedDirectories)) {
-      stored.expandedDirectories.forEach((d) => state.expandedDirectories.add(d));
+      stored.expandedDirectories
+        .filter((path): path is string => typeof path === "string")
+        .forEach((path) => state.expandedDirectories.add(path));
     }
     if (typeof stored.activeFilePath === "string") state.activeFilePath = stored.activeFilePath;
+    if (Array.isArray(stored.openedEnvironmentIds)) {
+      stored.openedEnvironmentIds
+        .filter((id): id is string => typeof id === "string")
+        .forEach((id) => state.openedEnvironmentIds.add(id));
+    }
+    if (typeof stored.selectedEnvironmentId === "string") state.selectedEnvironmentId = stored.selectedEnvironmentId;
+    if (stored.runProfile && typeof stored.runProfile === "object") state.runProfile = stored.runProfile;
+    if (stored.workspaceHandleStored && state.workspaceName) state.workspaceAccess = "prompt";
   } catch {
-    // ignore corrupt session
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+  }
+}
+
+async function workspacePermission(
+  handle: BrowserDirectoryHandle,
+  request: boolean,
+): Promise<WorkspaceAccess> {
+  const permissionMethod = request ? handle.requestPermission : handle.queryPermission;
+  if (!permissionMethod) return "granted";
+  try {
+    return await permissionMethod.call(handle, { mode: "readwrite" });
+  } catch {
+    return request ? "denied" : "prompt";
+  }
+}
+
+async function hydrateExpandedDirectories(): Promise<void> {
+  const expandedPaths = [...state.expandedDirectories].sort(
+    (left, right) => left.split("/").length - right.split("/").length,
+  );
+  for (const path of expandedPaths) {
+    const entry = findWorkspaceEntry(state.workspaceEntries, path);
+    if (!entry || entry.kind !== "directory" || !entry.handle) {
+      state.expandedDirectories.delete(path);
+      continue;
+    }
+    entry.children = await readDirectory(entry.handle as BrowserDirectoryHandle, entry.path);
+  }
+}
+
+async function restoreApplicationState(): Promise<void> {
+  const snapshot = await readApplicationSnapshot<StoredApplicationSnapshot>();
+  if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.documents)) return;
+
+  state.workspaceName = snapshot.workspaceName ?? state.workspaceName;
+  state.workspaceHandle = snapshot.workspaceHandle;
+  state.workspaceEntries = Array.isArray(snapshot.workspaceEntries)
+    ? deserializeWorkspaceEntries(snapshot.workspaceEntries)
+    : [];
+  state.openFiles = snapshot.documents.map((document) => ({
+    name: document.name,
+    ...(document.path ? { path: document.path } : {}),
+    ...(document.handle ? { handle: document.handle } : {}),
+    content: document.content,
+    savedContent: document.savedContent,
+    selectionStart: Number(document.selectionStart) || 0,
+    selectionEnd: Number(document.selectionEnd) || 0,
+    scrollTop: Number(document.scrollTop) || 0,
+    scrollLeft: Number(document.scrollLeft) || 0,
+  }));
+  if (Array.isArray(snapshot.diagnostics)) state.diagnostics = snapshot.diagnostics;
+  if (Array.isArray(snapshot.logs) && snapshot.logs.every((line) => typeof line === "string")) {
+    state.logs = snapshot.logs;
+  }
+
+  if (state.workspaceHandle) {
+    state.workspaceAccess = await workspacePermission(state.workspaceHandle, false);
+    if (state.workspaceAccess === "granted") {
+      state.workspaceName = state.workspaceHandle.name;
+      state.workspaceEntries = await readDirectory(state.workspaceHandle);
+      await hydrateExpandedDirectories();
+    }
+  } else {
+    state.workspaceAccess = state.workspaceName ? "unavailable" : "granted";
+  }
+
+  if (!state.activeFilePath || !state.openFiles.some((document) => documentKey(document) === state.activeFilePath)) {
+    state.activeFilePath = state.openFiles[0] ? documentKey(state.openFiles[0]) : undefined;
+  }
+}
+
+async function initializeApplication(): Promise<void> {
+  applicationRestoreInProgress = true;
+  try {
+    await Promise.all([
+      restorePlugins(),
+      restoreApplicationState(),
+    ]);
+    await refreshEnvironments();
+    if (state.sidebarView === "plugins") await loadPluginCatalog();
+  } finally {
+    applicationRestoreInProgress = false;
+    render();
+    persistSession();
   }
 }
 
@@ -363,6 +618,7 @@ function activateFile(rawPath: unknown): void {
   state.activeFilePath = rawPath;
   state.diagnostics = [];
   render();
+  persistSession();
 }
 
 const escapeHtml = (value: string): string =>
@@ -701,6 +957,7 @@ async function refreshEnvironments(): Promise<void> {
       state.sidebarView = "explorer";
     }
     render();
+    persistSession();
     return;
   }
 
@@ -717,6 +974,7 @@ async function refreshEnvironments(): Promise<void> {
     state.selectedEnvironmentId = undefined;
   }
   render();
+  persistSession();
 }
 
 function renderHighlightedSource(source: string, provider: LanguageProvider): string {
@@ -742,6 +1000,7 @@ function log(message: string): void {
   }).format(new Date());
   state.logs = [...state.logs, `[${timestamp}] ${message}`].slice(-100);
   render();
+  scheduleApplicationSnapshot();
 }
 
 let noticeTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -791,6 +1050,7 @@ function persistPlugins(): void {
     PLUGIN_STORAGE_KEY,
     JSON.stringify(stored),
   );
+  persistSession();
 }
 
 async function restorePlugins(): Promise<void> {
@@ -889,6 +1149,8 @@ async function openWorkspace(): Promise<void> {
     throw new Error("Este navegador não oferece seleção de pasta. Use 'Abrir arquivo'.");
   }
   const handle = await pickerWindow.showDirectoryPicker();
+  state.workspaceHandle = handle;
+  state.workspaceAccess = "granted";
   state.workspaceName = handle.name;
   state.workspaceEntries = await readDirectory(handle);
   state.expandedDirectories.clear();
@@ -901,6 +1163,27 @@ async function openWorkspace(): Promise<void> {
   persistSession();
 }
 
+async function reconnectWorkspace(): Promise<void> {
+  if (!state.workspaceHandle) {
+    await openWorkspace();
+    return;
+  }
+
+  const permission = await workspacePermission(state.workspaceHandle, true);
+  state.workspaceAccess = permission;
+  if (permission !== "granted") {
+    persistSession();
+    throw new Error("Acesso à pasta não foi concedido.");
+  }
+
+  state.workspaceName = state.workspaceHandle.name;
+  state.workspaceEntries = await readDirectory(state.workspaceHandle);
+  await hydrateExpandedDirectories();
+  await events.emit("workspace.opened", { name: state.workspaceHandle.name });
+  showNotice(`Acesso à pasta '${state.workspaceHandle.name}' restaurado.`);
+  persistSession();
+}
+
 function newFile(): void {
   state.fileMenuOpen = false;
   state.workspaceName = state.workspaceName ?? "Arquivos locais";
@@ -908,6 +1191,10 @@ function newFile(): void {
     name: "sem-titulo.txt",
     content: "",
     savedContent: "",
+    selectionStart: 0,
+    selectionEnd: 0,
+    scrollTop: 0,
+    scrollLeft: 0,
   };
   const docKey = doc.path ?? doc.name;
   const existing = state.openFiles.findIndex((d) => (d.path ?? d.name) === docKey);
@@ -919,6 +1206,7 @@ function newFile(): void {
   state.activeFilePath = docKey;
   state.diagnostics = [];
   render();
+  persistSession();
   requestAnimationFrame(() => appRoot.querySelector<HTMLTextAreaElement>("[data-editor]")?.focus());
 }
 
@@ -926,8 +1214,27 @@ async function openFileHandle(handle: BrowserFileHandle, path?: string): Promise
   const file = await handle.getFile();
   const content = await file.text();
   const doc: OpenDocument = path
-    ? { name: file.name, handle, path, content, savedContent: content }
-    : { name: file.name, handle, content, savedContent: content };
+    ? {
+        name: file.name,
+        handle,
+        path,
+        content,
+        savedContent: content,
+        selectionStart: 0,
+        selectionEnd: 0,
+        scrollTop: 0,
+        scrollLeft: 0,
+      }
+    : {
+        name: file.name,
+        handle,
+        content,
+        savedContent: content,
+        selectionStart: 0,
+        selectionEnd: 0,
+        scrollTop: 0,
+        scrollLeft: 0,
+      };
   const docKey = doc.path ?? doc.name;
   const existing = state.openFiles.findIndex((d) => (d.path ?? d.name) === docKey);
   if (existing !== -1) {
@@ -959,7 +1266,15 @@ async function openFileFromPicker(): Promise<void> {
     const file = input.files?.[0];
     if (!file) return;
     const content = await file.text();
-    const doc: OpenDocument = { name: file.name, content, savedContent: content };
+    const doc: OpenDocument = {
+      name: file.name,
+      content,
+      savedContent: content,
+      selectionStart: 0,
+      selectionEnd: 0,
+      scrollTop: 0,
+      scrollLeft: 0,
+    };
     const docKey = doc.path ?? doc.name;
     const existing = state.openFiles.findIndex((d) => (d.path ?? d.name) === docKey);
     if (existing !== -1) {
@@ -971,6 +1286,7 @@ async function openFileFromPicker(): Promise<void> {
     state.workspaceName = "Arquivo avulso";
     await events.emit("file.opened", { name: file.name });
     log(`file.opened: ${file.name}`);
+    persistSession();
   });
   input.click();
 }
@@ -1004,6 +1320,7 @@ async function toggleWorkspaceDirectory(rawPath: unknown): Promise<void> {
   }
 
   if (!entry.children) {
+    if (!entry.handle) throw new Error("Restaure o acesso à pasta antes de expandir este diretório.");
     entry.children = await readDirectory(entry.handle as BrowserDirectoryHandle, entry.path);
   }
   state.expandedDirectories.add(rawPath);
@@ -1015,10 +1332,12 @@ async function openWorkspaceFile(rawPath: unknown): Promise<void> {
   if (typeof rawPath !== "string") throw new Error("Caminho de arquivo inválido.");
   const entry = findWorkspaceEntry(state.workspaceEntries, rawPath);
   if (!entry || entry.kind !== "file") throw new Error(`Arquivo não encontrado: ${rawPath}`);
+  if (!entry.handle) throw new Error("Restaure o acesso à pasta antes de abrir este arquivo.");
   await openFileHandle(entry.handle as BrowserFileHandle, entry.path);
 }
 
 async function saveToHandle(document: OpenDocument, handle: BrowserFileHandle): Promise<void> {
+  const previousKey = documentKey(document);
   const writable = await handle.createWritable();
   try {
     await writable.write(document.content);
@@ -1028,8 +1347,10 @@ async function saveToHandle(document: OpenDocument, handle: BrowserFileHandle): 
   document.handle = handle;
   document.name = handle.name;
   document.savedContent = document.content;
+  if (state.activeFilePath === previousKey) state.activeFilePath = documentKey(document);
   await events.emit("file.saved", { name: document.name });
   showNotice(`'${document.name}' salvo.`);
+  persistSession();
 }
 
 function downloadDocument(document: OpenDocument): void {
@@ -1043,6 +1364,7 @@ function downloadDocument(document: OpenDocument): void {
   document.savedContent = document.content;
   void events.emit("file.saved", { name: document.name });
   showNotice(`Download de '${document.name}' iniciado.`);
+  persistSession();
 }
 
 const documentObject = document;
@@ -1127,7 +1449,15 @@ function renderTreeEntries(entries: WorkspaceEntry[], depth = 0): string {
 }
 
 function renderWorkspaceEntries(): string {
-  const actions = `<div class="explorer-actions">${renderButton("Novo", "fileAdd", { command: "file.new", size: "small", title: "Novo arquivo" })}${renderButton("Arquivo", "file", { command: "file.openPicker", size: "small", title: "Abrir arquivo" })}${renderButton("Pasta", "folderOpen", { command: "workspace.open", size: "small", title: "Abrir pasta" })}</div>`;
+  const restoreAccess = state.workspaceName && state.workspaceAccess !== "granted"
+    ? renderButton(state.workspaceHandle ? "Restaurar" : "Reabrir", "refresh", {
+        command: "workspace.reconnect",
+        size: "small",
+        variant: "primary",
+        title: state.workspaceHandle ? "Restaurar acesso à pasta lembrada" : "Selecionar novamente a pasta lembrada",
+      })
+    : "";
+  const actions = `<div class="explorer-actions">${renderButton("Novo", "fileAdd", { command: "file.new", size: "small", title: "Novo arquivo" })}${renderButton("Arquivo", "file", { command: "file.openPicker", size: "small", title: "Abrir arquivo" })}${renderButton("Pasta", "folderOpen", { command: "workspace.open", size: "small", title: "Abrir pasta" })}${restoreAccess}</div>`;
   if (!state.workspaceName) {
     return `${actions}<div class="empty-state"><p>Nenhum arquivo ou pasta aberto.</p></div>`;
   }
@@ -1278,6 +1608,7 @@ async function lintActiveDocument(): Promise<void> {
   } finally {
     state.languageActionRunning = false;
     render();
+    persistSession();
   }
 }
 
@@ -1318,6 +1649,7 @@ async function runActiveDocument(): Promise<void> {
   } finally {
     state.languageActionRunning = false;
     render();
+    persistSession();
   }
 }
 
@@ -1352,9 +1684,11 @@ async function submitExecutionEnvironment(name: string): Promise<void> {
     state.selectedEnvironmentId = environment.id;
     state.environmentForm = undefined;
     showNotice(`Ambiente '${environment.name}' criado.`);
+    persistSession();
   } finally {
     state.environmentBusy = false;
     render();
+    persistSession();
   }
 }
 
@@ -1381,6 +1715,7 @@ async function importExecutionEnvironment(path: string, name: string): Promise<v
     state.environmentBrowserOpen = false;
     state.environmentSelectedPath = undefined;
     showNotice(`Ambiente existente '${environment.name}' adicionado e aberto.`);
+    persistSession();
   } finally {
     state.environmentBusy = false;
     render();
@@ -1429,6 +1764,7 @@ async function submitEnvironmentPackages(value: string): Promise<void> {
     await refreshEnvironments();
     state.environmentForm = undefined;
     showNotice("Pacotes instalados no ambiente selecionado.");
+    persistSession();
   } finally {
     state.environmentBusy = false;
     render();
@@ -1450,6 +1786,7 @@ async function removeSelectedEnvironment(): Promise<void> {
     state.selectedEnvironmentId = undefined;
     await refreshEnvironments();
     showNotice(`Ambiente '${environment?.name ?? environmentId}' removido.`);
+    persistSession();
   } finally {
     state.environmentBusy = false;
     render();
@@ -1464,6 +1801,7 @@ function openEnvironment(rawId: unknown): void {
   state.openedEnvironmentIds.add(rawId);
   state.selectedEnvironmentId = rawId;
   render();
+  persistSession();
 }
 
 function closeEnvironment(rawId: unknown): void {
@@ -1473,6 +1811,7 @@ function closeEnvironment(rawId: unknown): void {
     state.selectedEnvironmentId = [...state.openedEnvironmentIds][0];
   }
   render();
+  persistSession();
 }
 
 function selectEnvironment(rawId: unknown): void {
@@ -1481,6 +1820,7 @@ function selectEnvironment(rawId: unknown): void {
   }
   state.selectedEnvironmentId = rawId;
   render();
+  persistSession();
 }
 
 function packagesForEnvironment(rawId: unknown): void {
@@ -1491,6 +1831,7 @@ function packagesForEnvironment(rawId: unknown): void {
   state.sidebarView = "environments";
   state.sidebarVisible = true;
   render();
+  persistSession();
 }
 
 async function removeEnvironmentById(rawId: unknown): Promise<void> {
@@ -1720,25 +2061,47 @@ function bindInteractions(): void {
   });
   applyResizeValue("sidebar", state.sidebarWidth);
   applyResizeValue("panel", state.panelHeight);
-  appRoot.querySelector<HTMLTextAreaElement>("[data-editor]")?.addEventListener("input", (event) => {
+  const editor = appRoot.querySelector<HTMLTextAreaElement>("[data-editor]");
+  const currentDocument = activeDocument();
+  if (editor && currentDocument) {
+    requestAnimationFrame(() => {
+      const start = Math.min(currentDocument.selectionStart, editor.value.length);
+      const end = Math.min(Math.max(currentDocument.selectionEnd, start), editor.value.length);
+      editor.setSelectionRange(start, end);
+      editor.scrollTop = currentDocument.scrollTop;
+      editor.scrollLeft = currentDocument.scrollLeft;
+    });
+  }
+  editor?.addEventListener("input", (event) => {
     const doc = activeDocument();
     if (!doc) return;
-    doc.content = (event.currentTarget as HTMLTextAreaElement).value;
+    const input = event.currentTarget as HTMLTextAreaElement;
+    doc.content = input.value;
+    doc.selectionStart = input.selectionStart;
+    doc.selectionEnd = input.selectionEnd;
+    doc.scrollTop = input.scrollTop;
+    doc.scrollLeft = input.scrollLeft;
+    persistSession();
     render();
-    requestAnimationFrame(() => {
-      const editor = appRoot.querySelector<HTMLTextAreaElement>("[data-editor]");
-      if (editor) {
-        editor.focus();
-        editor.selectionStart = editor.selectionEnd = editor.value.length;
-      }
-    });
   });
-  const editor = appRoot.querySelector<HTMLTextAreaElement>("[data-editor]");
   const syntaxLayer = appRoot.querySelector<HTMLElement>("[data-syntax-layer]");
   editor?.addEventListener("scroll", () => {
+    const doc = activeDocument();
+    if (doc) {
+      doc.scrollTop = editor.scrollTop;
+      doc.scrollLeft = editor.scrollLeft;
+      scheduleApplicationSnapshot(300);
+    }
     if (!syntaxLayer) return;
     syntaxLayer.scrollTop = editor.scrollTop;
     syntaxLayer.scrollLeft = editor.scrollLeft;
+  });
+  editor?.addEventListener("select", () => {
+    const doc = activeDocument();
+    if (!doc) return;
+    doc.selectionStart = editor.selectionStart;
+    doc.selectionEnd = editor.selectionEnd;
+    scheduleApplicationSnapshot(300);
   });
   appRoot.querySelectorAll<HTMLElement>("[data-diagnostic-line]").forEach((element) => {
     element.addEventListener("click", () => {
@@ -1750,6 +2113,9 @@ function bindInteractions(): void {
       const offset = lines.slice(0, Math.max(0, line - 1)).reduce((total, value) => total + value.length + 1, 0);
       textarea.focus();
       textarea.setSelectionRange(offset, offset);
+      doc.selectionStart = offset;
+      doc.selectionEnd = offset;
+      scheduleApplicationSnapshot();
     });
   });
   appRoot.querySelector<HTMLFormElement>('[data-form="plugin-install"]')?.addEventListener("submit", (event) => {
@@ -1762,6 +2128,7 @@ function bindInteractions(): void {
     state.selectedEnvironmentId = value || undefined;
     state.environmentForm = undefined;
     render();
+    persistSession();
   });
   appRoot.querySelector<HTMLFormElement>('[data-form="environment-create"]')?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1805,6 +2172,7 @@ function bindInteractions(): void {
     localStorage.setItem(RUN_PROFILE_STORAGE_KEY, JSON.stringify(profile));
     state.environmentForm = undefined;
     showNotice(`Perfil '${profile.name}' salvo.`);
+    persistSession();
   });
 }
 
@@ -1815,6 +2183,7 @@ commands.register("menu.file.toggle", () => {
 commands.register("file.new", newFile);
 commands.register("file.openPicker", openFileFromPicker);
 commands.register("workspace.open", openWorkspace);
+commands.register("workspace.reconnect", reconnectWorkspace);
 commands.register("workspace.toggleDirectory", toggleWorkspaceDirectory);
 commands.register("file.openWorkspace", openWorkspaceFile);
 commands.register("file.save", () => saveFile(false));
@@ -1958,8 +2327,6 @@ function scheduleViewportSync(): void {
 window.addEventListener("resize", scheduleViewportSync);
 new ResizeObserver(scheduleViewportSync).observe(appRoot);
 
-render();
-
 declare global {
   interface Window {
     tinyIde: {
@@ -1968,6 +2335,7 @@ declare global {
       readonly capabilities: CapabilityRegistry;
       readonly plugins: PluginManager;
       installPlugin(manifestUrl: string): Promise<void>;
+      getSessionSummary(): StoredSession;
     };
   }
 }
@@ -1978,9 +2346,19 @@ window.tinyIde = {
   capabilities,
   plugins,
   installPlugin: installPluginFromUrl,
+  getSessionSummary: buildSessionSummary,
 };
 
 restoreSession();
-void restorePlugins()
-  .then(render)
-  .catch(showError);
+render();
+void initializeApplication().catch(showError);
+
+window.addEventListener("pagehide", () => {
+  persistSession();
+  flushApplicationSnapshot();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "hidden") return;
+  persistSession();
+  flushApplicationSnapshot();
+});
