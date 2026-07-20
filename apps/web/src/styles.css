@@ -59,6 +59,48 @@ button {
   gap: 2px;
 }
 
+.menu-item {
+  position: relative;
+}
+
+.file-menu {
+  position: absolute;
+  z-index: 20;
+  top: 30px;
+  left: 0;
+  display: grid;
+  min-width: 220px;
+  padding: 6px;
+  border: 1px solid #3a3f49;
+  border-radius: 5px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+  background: #252932;
+}
+
+.file-menu button {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.file-menu button:hover {
+  background: #343a46;
+}
+
+.file-menu span {
+  margin-left: 24px;
+  color: #8b93a1;
+}
+
+.file-menu hr {
+  width: 100%;
+  margin: 5px 0;
+  border: 0;
+  border-top: 1px solid #3a3f49;
+}
+
 .menu button,
 .titlebar button {
   padding: 4px 8px;
@@ -174,6 +216,58 @@ button {
   text-transform: uppercase;
 }
 
+.explorer-actions {
+  display: grid;
+  gap: 6px;
+  padding: 4px 4px 12px;
+  border-bottom: 1px solid #2b2f38;
+}
+
+.explorer-actions button,
+.welcome-actions button,
+.editor-toolbar button {
+  padding: 7px 9px;
+  border: 1px solid #3c4655;
+  border-radius: 4px;
+  background: #292f39;
+  color: #dfe3e8;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.explorer-actions button:hover,
+.welcome-actions button:hover,
+.editor-toolbar button:hover {
+  background: #343b47;
+}
+
+.welcome-screen {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 12px;
+  min-height: 0;
+  padding: 32px;
+  text-align: center;
+}
+
+.welcome-screen h1,
+.welcome-screen p {
+  margin: 0;
+}
+
+.welcome-screen p,
+.welcome-screen small {
+  color: #9098a6;
+}
+
+.welcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
 .tree {
   display: flex;
   flex-direction: column;
@@ -228,6 +322,45 @@ button {
   overflow: hidden;
   border-bottom: 1px solid #2b2f38;
   background: #181b21;
+}
+
+.code-editor {
+  display: grid;
+  grid-template-rows: 42px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  border-bottom: 1px solid #2b2f38;
+  background: #1b1e25;
+  color: #cdd2da;
+  font-size: 12px;
+}
+
+.editor-toolbar > div {
+  display: flex;
+  gap: 6px;
+}
+
+.code-input {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 20px 24px;
+  background: #17191f;
+  color: #d6dae1;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 4;
 }
 
 .editor-tab {
