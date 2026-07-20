@@ -93,6 +93,7 @@ interface AppState {
   environments: ExecutionEnvironment[];
   selectedEnvironmentId: string | undefined;
   environmentBusy: boolean;
+  environmentForm: "create" | "packages" | undefined;
   logs: string[];
   notice: string | undefined;
   error: string | undefined;
@@ -132,6 +133,7 @@ const state: AppState = {
   environments: [],
   selectedEnvironmentId: undefined,
   environmentBusy: false,
+  environmentForm: undefined,
   logs: ["tinyIde core initialized", `platform version ${PLATFORM_VERSION}`],
   notice: undefined,
   error: undefined,
@@ -661,16 +663,24 @@ async function runActiveDocument(): Promise<void> {
 async function createExecutionEnvironment(): Promise<void> {
   const provider = environmentProviderFor(state.activeDocument);
   if (!provider) throw new Error("Nenhum plugin de ambiente disponível para este arquivo.");
-  const name = window.prompt("Nome do ambiente virtual:", ".venv");
-  if (!name) return;
+  state.environmentForm = "create";
+  render();
+}
+
+async function submitExecutionEnvironment(name: string): Promise<void> {
+  const provider = environmentProviderFor(state.activeDocument);
+  if (!provider) throw new Error("Nenhum plugin de ambiente disponível para este arquivo.");
+  const normalizedName = name.trim();
+  if (!normalizedName) throw new Error("Informe o nome do ambiente.");
   state.environmentBusy = true;
-  state.notice = `Criando ambiente '${name}'...`;
+  state.notice = `Criando ambiente '${normalizedName}'...`;
   state.error = undefined;
   render();
   try {
-    const environment = await provider.create(name);
+    const environment = await provider.create(normalizedName);
     await refreshEnvironments();
     state.selectedEnvironmentId = environment.id;
+    state.environmentForm = undefined;
     showNotice(`Ambiente '${environment.name}' criado.`);
   } finally {
     state.environmentBusy = false;
@@ -679,11 +689,16 @@ async function createExecutionEnvironment(): Promise<void> {
 }
 
 async function installEnvironmentPackages(): Promise<void> {
+  if (!state.selectedEnvironmentId) throw new Error("Selecione um ambiente virtual.");
+  state.environmentForm = "packages";
+  render();
+}
+
+async function submitEnvironmentPackages(value: string): Promise<void> {
   const provider = environmentProviderFor(state.activeDocument);
   const environmentId = state.selectedEnvironmentId;
   if (!provider || !environmentId) throw new Error("Selecione um ambiente virtual.");
-  const value = window.prompt("Pacotes para instalar, separados por espaço:", "");
-  if (!value?.trim()) return;
+  if (!value.trim()) throw new Error("Informe ao menos um pacote.");
   const packages = value.trim().split(/\s+/);
   state.environmentBusy = true;
   state.notice = `Instalando ${packages.join(", ")}...`;
@@ -692,7 +707,28 @@ async function installEnvironmentPackages(): Promise<void> {
   try {
     await provider.installPackages(environmentId, packages);
     await refreshEnvironments();
+    state.environmentForm = undefined;
     showNotice("Pacotes instalados no ambiente selecionado.");
+  } finally {
+    state.environmentBusy = false;
+    render();
+  }
+}
+
+async function removeSelectedEnvironment(): Promise<void> {
+  const provider = environmentProviderFor(state.activeDocument);
+  const environmentId = state.selectedEnvironmentId;
+  if (!provider || !environmentId) throw new Error("Selecione um ambiente virtual.");
+  const environment = state.environments.find((candidate) => candidate.id === environmentId);
+  state.environmentBusy = true;
+  state.notice = `Removendo ambiente '${environment?.name ?? environmentId}'...`;
+  state.error = undefined;
+  render();
+  try {
+    await provider.remove(environmentId);
+    state.selectedEnvironmentId = undefined;
+    await refreshEnvironments();
+    showNotice(`Ambiente '${environment?.name ?? environmentId}' removido.`);
   } finally {
     state.environmentBusy = false;
     render();
@@ -755,7 +791,14 @@ function renderEnvironmentToolbar(): string {
   const options = state.environments
     .map((environment) => `<option value="${escapeHtml(environment.id)}" ${environment.id === state.selectedEnvironmentId ? "selected" : ""}>${escapeHtml(environment.name)}${environment.version ? ` · ${escapeHtml(environment.version)}` : ""}</option>`)
     .join("");
-  return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">${escapeHtml(provider.name)}</span><select data-environment-select aria-label="Ambiente de execução" ${state.environmentBusy ? "disabled" : ""}><option value="">${options ? "Selecione um ambiente" : "Nenhum ambiente"}</option>${options}</select><button data-command="environment.refresh" ${state.environmentBusy ? "disabled" : ""}>Atualizar</button><button data-command="environment.create" ${state.environmentBusy ? "disabled" : ""}>Novo ambiente</button><button data-command="environment.packages" ${!state.selectedEnvironmentId || state.environmentBusy ? "disabled" : ""}>Pacotes</button><button class="primary-button" data-command="environment.run" ${!state.selectedEnvironmentId || state.environmentBusy ? "disabled" : ""}>${state.environmentBusy ? "Executando..." : "Executar"}</button></div>`;
+  const selected = state.environments.find((environment) => environment.id === state.selectedEnvironmentId);
+  const createForm = state.environmentForm === "create"
+    ? `<form class="runtime-toolbar__form" data-form="environment-create"><input name="name" value=".venv" aria-label="Nome do ambiente" /><button class="primary-button" type="submit">Criar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></form>`
+    : "";
+  const packagesForm = state.environmentForm === "packages"
+    ? `<form class="runtime-toolbar__form" data-form="environment-packages"><input name="packages" placeholder="django requests" aria-label="Pacotes" /><button class="primary-button" type="submit">Instalar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></form>`
+    : "";
+  return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">${escapeHtml(provider.name)}</span><select data-environment-select aria-label="Ambiente de execução" ${state.environmentBusy ? "disabled" : ""}><option value="" ${state.selectedEnvironmentId ? "" : "selected"}>${options ? "Selecione um ambiente" : "Nenhum ambiente"}</option>${options}</select><span class="runtime-toolbar__current">${selected ? `Ativo: ${escapeHtml(selected.name)}${selected.version ? ` · ${escapeHtml(selected.version)}` : ""}` : "Nenhum ambiente ativo"}</span><button data-command="environment.refresh" ${state.environmentBusy ? "disabled" : ""}>Atualizar</button><button data-command="environment.create" ${state.environmentBusy ? "disabled" : ""}>Novo ambiente</button><button data-command="environment.packages" ${!state.selectedEnvironmentId || state.environmentBusy ? "disabled" : ""}>Pacotes</button><button data-command="environment.remove" ${!state.selectedEnvironmentId || state.environmentBusy ? "disabled" : ""}>Remover</button><button class="primary-button" data-command="environment.run" ${!state.selectedEnvironmentId || state.environmentBusy ? "disabled" : ""}>${state.environmentBusy ? "Processando..." : "Executar"}</button>${createForm}${packagesForm}</div>`;
 }
 
 function renderFileMenu(): string {
@@ -823,7 +866,18 @@ function bindInteractions(): void {
   appRoot.querySelector<HTMLSelectElement>("[data-environment-select]")?.addEventListener("change", (event) => {
     const value = (event.currentTarget as HTMLSelectElement).value;
     state.selectedEnvironmentId = value || undefined;
+    state.environmentForm = undefined;
     render();
+  });
+  appRoot.querySelector<HTMLFormElement>('[data-form="environment-create"]')?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const name = new FormData(event.currentTarget as HTMLFormElement).get("name");
+    void submitExecutionEnvironment(typeof name === "string" ? name : "").catch(showError);
+  });
+  appRoot.querySelector<HTMLFormElement>('[data-form="environment-packages"]')?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const packages = new FormData(event.currentTarget as HTMLFormElement).get("packages");
+    void submitEnvironmentPackages(typeof packages === "string" ? packages : "").catch(showError);
   });
 }
 
@@ -843,6 +897,8 @@ commands.register("language.run", runActiveDocument);
 commands.register("environment.refresh", refreshEnvironments);
 commands.register("environment.create", createExecutionEnvironment);
 commands.register("environment.packages", installEnvironmentPackages);
+commands.register("environment.remove", removeSelectedEnvironment);
+commands.register("environment.form.cancel", () => { state.environmentForm = undefined; render(); });
 commands.register("environment.run", runWithSelectedEnvironment);
 commands.register("view.explorer", () => { state.sidebarView = "explorer"; state.sidebarVisible = true; render(); });
 commands.register("view.plugins", () => {

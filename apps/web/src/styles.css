@@ -66,6 +66,40 @@ button {
   color: #d8dce4;
 }
 
+.runtime-toolbar__current {
+  max-width: 260px;
+  overflow: hidden;
+  color: #aeb6c3;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-toolbar__form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid #3a3f49;
+}
+
+.runtime-toolbar__form input {
+  width: 180px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #3a3f49;
+  border-radius: 4px;
+  outline: none;
+  background: #17191f;
+  color: #e1e4ea;
+  font-size: 12px;
+}
+
+.runtime-toolbar__form input:focus {
+  border-color: #7aa2f7;
+}
+
 .runtime-toolbar button {
   height: 26px;
   padding: 0 10px;
