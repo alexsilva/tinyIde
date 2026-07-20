@@ -35,6 +35,8 @@ body,
 #app {
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   margin: 0;
   overflow: hidden;
 }
@@ -177,6 +179,9 @@ button:disabled {
   display: grid;
   grid-template-rows: 36px 36px minmax(0, 1fr) 24px;
   height: 100%;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
   background: #17191f;
 }
 
@@ -236,6 +241,15 @@ button:disabled {
   max-width: 260px;
   overflow: hidden;
   color: #aeb6c3;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-toolbar__profile {
+  max-width: 180px;
+  overflow: hidden;
+  color: #8fa9d1;
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -303,6 +317,25 @@ button:disabled {
   border-radius: 4px;
   background: #15171c;
   color: #e1e4ea;
+}
+
+.environment-manager__form select,
+.environment-manager__form textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid #3a3f49;
+  border-radius: 4px;
+  outline: none;
+  background: #15171c;
+  color: #e1e4ea;
+}
+
+.environment-manager__form textarea {
+  resize: vertical;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .environment-manager__form--stacked {
@@ -662,7 +695,9 @@ button:disabled {
 .workbench {
   display: grid;
   grid-template-columns: 48px var(--sidebar-width, 280px) 5px minmax(0, 1fr);
+  width: 100%;
   min-height: 0;
+  min-width: 0;
 }
 
 .workbench--sidebar-hidden {
@@ -1447,7 +1482,7 @@ body.is-resizing-panel * {
   }
 
   .workbench {
-    grid-template-columns: 42px minmax(190px, min(var(--sidebar-width, 280px), 42vw)) 5px minmax(0, 1fr);
+    grid-template-columns: 42px minmax(150px, min(var(--sidebar-width, 280px), 46vw)) 5px minmax(0, 1fr);
   }
 
   .workbench--sidebar-hidden {
@@ -1464,5 +1499,21 @@ body.is-resizing-panel * {
 
   .editor__content {
     padding-left: 18px;
+  }
+}
+
+@media (max-width: 520px) {
+  .workbench {
+    grid-template-columns: 42px minmax(130px, min(var(--sidebar-width, 280px), 56vw)) 5px minmax(0, 1fr);
+  }
+
+  .runtime-toolbar__current,
+  .runtime-toolbar__profile {
+    display: none;
+  }
+
+  .runtime-toolbar select {
+    min-width: 120px;
+    max-width: 34vw;
   }
 }

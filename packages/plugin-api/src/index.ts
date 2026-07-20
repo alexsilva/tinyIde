@@ -169,9 +169,14 @@ export interface EnvironmentDirectoryListing {
 }
 
 export interface EnvironmentExecutionRequest {
-  readonly source: string;
-  readonly fileName: string;
+  readonly mode?: "source" | "script" | "module";
+  readonly source?: string;
+  readonly fileName?: string;
+  readonly scriptPath?: string;
+  readonly moduleName?: string;
   readonly args?: readonly string[];
+  readonly workingDirectory?: string;
+  readonly environmentVariables?: Readonly<Record<string, string>>;
 }
 
 export interface ExecutionEnvironmentProvider {

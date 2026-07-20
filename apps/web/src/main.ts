@@ -7,6 +7,7 @@ import {
 } from "@tinyide/core";
 import type {
   EnvironmentDirectoryListing,
+  EnvironmentExecutionRequest,
   ExecutionEnvironment,
   ExecutionEnvironmentProvider,
   LanguageProvider,
@@ -20,6 +21,7 @@ const PLATFORM_VERSION = "0.4.0";
 const PLUGIN_STORAGE_KEY = "tinyide.installedPlugins.v2";
 const LEGACY_PLUGIN_STORAGE_KEY = "tinyide.installedPlugins";
 const LAYOUT_STORAGE_KEY = "tinyide.layout.v1";
+const RUN_PROFILE_STORAGE_KEY = "tinyide.pythonRunProfile.v1";
 const DEFAULT_SIDEBAR_WIDTH = 280;
 const DEFAULT_PANEL_HEIGHT = 190;
 const MIN_SIDEBAR_WIDTH = 180;
@@ -30,6 +32,82 @@ const MAX_PANEL_HEIGHT = 640;
 interface StoredLayout {
   readonly sidebarWidth?: number;
   readonly panelHeight?: number;
+}
+
+interface RunProfile {
+  readonly name: string;
+  readonly mode: "source" | "script" | "module";
+  readonly target: string;
+  readonly workingDirectory: string;
+  readonly arguments: string;
+  readonly environmentVariables: string;
+}
+
+function parseArgumentLine(value: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  for (const character of value.trim()) {
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = undefined;
+      else current += character;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (current) result.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  if (quote) throw new Error("Argumentos contêm aspas não fechadas.");
+  if (escaped) current += "\\";
+  if (current) result.push(current);
+  return result;
+}
+
+function parseEnvironmentVariables(value: string): Record<string, string> {
+  const variables: Record<string, string> = {};
+  for (const rawLine of value.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const separator = line.indexOf("=");
+    if (separator < 1) throw new Error(`Variável de ambiente inválida: ${line}`);
+    const name = line.slice(0, separator).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Nome de variável inválido: ${name}`);
+    variables[name] = line.slice(separator + 1);
+  }
+  return variables;
+}
+
+function readRunProfile(): RunProfile {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(RUN_PROFILE_STORAGE_KEY) ?? "{}") as Partial<RunProfile>;
+    return {
+      name: parsed.name ?? "Execução atual",
+      mode: parsed.mode === "script" || parsed.mode === "module" ? parsed.mode : "source",
+      target: parsed.target ?? "",
+      workingDirectory: parsed.workingDirectory ?? "",
+      arguments: parsed.arguments ?? "",
+      environmentVariables: parsed.environmentVariables ?? "",
+    };
+  } catch {
+    return { name: "Execução atual", mode: "source", target: "", workingDirectory: "", arguments: "", environmentVariables: "" };
+  }
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -146,11 +224,12 @@ interface AppState {
   openedEnvironmentIds: Set<string>;
   selectedEnvironmentId: string | undefined;
   environmentBusy: boolean;
-  environmentForm: "create" | "import" | "packages" | undefined;
+  environmentForm: "create" | "import" | "packages" | "run" | undefined;
   environmentBrowser: EnvironmentDirectoryListing | undefined;
   environmentBrowserLoading: boolean;
   environmentBrowserOpen: boolean;
   environmentSelectedPath: string | undefined;
+  runProfile: RunProfile;
   logs: string[];
   notice: string | undefined;
   error: string | undefined;
@@ -198,6 +277,7 @@ const state: AppState = {
   environmentBrowserLoading: false,
   environmentBrowserOpen: false,
   environmentSelectedPath: undefined,
+  runProfile: readRunProfile(),
   logs: ["tinyIde core initialized", `platform version ${PLATFORM_VERSION}`],
   notice: undefined,
   error: undefined,
@@ -951,7 +1031,11 @@ function renderEnvironments(): string {
     ? `<form class="environment-manager__form" data-form="environment-packages"><input name="packages" placeholder="django requests" aria-label="Pacotes" />${renderButton("Instalar", "download", { type: "submit", size: "small", variant: "primary" })}${renderButton("Cancelar", "close", { command: "environment.form.cancel", size: "small" })}</form>`
     : "";
 
-  return `<div class="environment-manager"><div class="environment-manager__toolbar">${renderButton("Atualizar", "refresh", { command: "environment.refresh", size: "small" })}${renderButton("Criar", "environment", { command: "environment.create", size: "small", variant: "primary", title: "Criar novo ambiente" })}${renderButton("Abrir", "folderOpen", { command: "environment.import", size: "small", title: "Abrir ambiente existente" })}</div>${createForm}${importForm}${packagesForm}<div class="environment-list">${cards || '<div class="empty-state"><p>Nenhum ambiente registrado.</p><p>Use “Criar” ou “Abrir”.</p></div>'}</div></div>`;
+  const runForm = state.environmentForm === "run"
+    ? `<form class="environment-manager__form environment-manager__form--stacked run-profile-form" data-form="environment-run-profile"><strong>Perfil de execução</strong><label>Nome<input name="profileName" value="${escapeHtml(state.runProfile.name)}" /></label><label>Tipo<select name="mode"><option value="source" ${state.runProfile.mode === "source" ? "selected" : ""}>Arquivo aberto</option><option value="script" ${state.runProfile.mode === "script" ? "selected" : ""}>Script</option><option value="module" ${state.runProfile.mode === "module" ? "selected" : ""}>Módulo Python</option></select></label><label>Alvo<input name="target" value="${escapeHtml(state.runProfile.target)}" placeholder="src/main.py ou pacote.modulo" /></label><label>Diretório de trabalho<input name="workingDirectory" value="${escapeHtml(state.runProfile.workingDirectory)}" placeholder="Vazio usa a raiz do projeto" /></label><label>Argumentos<input name="arguments" value="${escapeHtml(state.runProfile.arguments)}" placeholder="--port 8000 --debug" /></label><label>Variáveis de ambiente<textarea name="environmentVariables" rows="5" placeholder="DJANGO_SETTINGS_MODULE=config.settings\nDEBUG=1">${escapeHtml(state.runProfile.environmentVariables)}</textarea></label><small>O ambiente virtual selecionado fornece o interpretador. Caminhos relativos são resolvidos a partir do projeto aberto.</small><div class="form-actions">${renderButton("Salvar perfil", "save", { type: "submit", size: "small", variant: "primary" })}${renderButton("Executar", "play", { command: "environment.run", size: "small", variant: "primary", disabled: !state.selectedEnvironmentId })}${renderButton("Cancelar", "close", { command: "environment.form.cancel", size: "small" })}</div></form>`
+    : "";
+
+  return `<div class="environment-manager"><div class="environment-manager__toolbar">${renderButton("Atualizar", "refresh", { command: "environment.refresh", size: "small" })}${renderButton("Criar", "environment", { command: "environment.create", size: "small", variant: "primary", title: "Criar novo ambiente" })}${renderButton("Abrir", "folderOpen", { command: "environment.import", size: "small", title: "Abrir ambiente existente" })}${renderButton("Execução", "play", { command: "environment.runProfile", size: "small", title: "Configurar perfil de execução" })}</div>${createForm}${importForm}${packagesForm}${runForm}<div class="environment-list">${cards || '<div class="empty-state"><p>Nenhum ambiente registrado.</p><p>Use “Criar” ou “Abrir”.</p></div>'}</div></div>`;
 }
 
 function renderEnvironmentBrowserModal(): string {
@@ -1249,10 +1333,33 @@ async function runWithSelectedEnvironment(): Promise<void> {
   render();
 
   try {
-    const result = await provider.run(environmentId, {
-      source: active.content,
-      fileName: active.name,
-    });
+    const profile = state.runProfile;
+    const commonRequest = {
+      args: parseArgumentLine(profile.arguments),
+      environmentVariables: parseEnvironmentVariables(profile.environmentVariables),
+      ...(profile.workingDirectory.trim()
+        ? { workingDirectory: profile.workingDirectory.trim() }
+        : {}),
+    };
+    const request: EnvironmentExecutionRequest = profile.mode === "module"
+      ? {
+          mode: "module" as const,
+          moduleName: profile.target.trim(),
+          ...commonRequest,
+        }
+      : profile.mode === "script"
+        ? {
+            mode: "script" as const,
+            scriptPath: profile.target.trim(),
+            ...commonRequest,
+          }
+        : {
+            mode: "source" as const,
+            source: active.content,
+            fileName: active.path ?? active.name,
+            ...commonRequest,
+          };
+    const result = await provider.run(environmentId, request);
     state.logs = [
       `[${provider.name} · ${environment?.name ?? environmentId}] ${active.name} exited with ${result.exitCode} in ${result.durationMs.toFixed(0)}ms`,
       result.stdout,
@@ -1290,7 +1397,7 @@ function renderEnvironmentToolbar(): string {
   const runTitle = active
     ? `Executar ${active.name} no ambiente ativo`
     : "Abra um arquivo Python para executar";
-  return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">${renderIcon("environment")}<span>${escapeHtml(provider.name)}</span></span>${renderButton("Gerenciar", "environment", { command: "view.environments", size: "small", title: "Gerenciar ambientes" })}<select data-environment-select aria-label="Ambiente aberto" ${state.environmentBusy ? "disabled" : ""}><option value="" ${state.selectedEnvironmentId ? "" : "selected"}>${options ? "Selecione um ambiente aberto" : "Nenhum ambiente aberto"}</option>${options}</select><span class="runtime-toolbar__current">${selected ? `Ativo: ${escapeHtml(selected.name)}${selected.version ? ` · ${escapeHtml(selected.version)}` : ""}` : "Nenhum ambiente ativo"}</span>${renderButton(state.environmentBusy ? "Processando" : "Executar", "play", { command: "environment.run", size: "small", variant: "primary", disabled: !canRun || state.environmentBusy, title: runTitle })}</div>`;
+  return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">${renderIcon("environment")}<span>${escapeHtml(provider.name)}</span></span>${renderButton("Gerenciar", "environment", { command: "view.environments", size: "small", title: "Gerenciar ambientes" })}<select data-environment-select aria-label="Ambiente aberto" ${state.environmentBusy ? "disabled" : ""}><option value="" ${state.selectedEnvironmentId ? "" : "selected"}>${options ? "Selecione um ambiente aberto" : "Nenhum ambiente aberto"}</option>${options}</select><span class="runtime-toolbar__current">${selected ? `Ativo: ${escapeHtml(selected.name)}${selected.version ? ` · ${escapeHtml(selected.version)}` : ""}` : "Nenhum ambiente ativo"}</span><span class="runtime-toolbar__profile">${escapeHtml(state.runProfile.name)} · ${escapeHtml(state.runProfile.mode)}</span>${renderButton("Configurar", "saveAs", { command: "environment.runProfile", size: "small", title: "Configurar perfil de execução" })}${renderButton(state.environmentBusy ? "Processando" : "Executar", "play", { command: "environment.run", size: "small", variant: "primary", disabled: !canRun || state.environmentBusy, title: runTitle })}</div>`;
 }
 
 function renderFileMenu(): string {
@@ -1483,6 +1590,29 @@ function bindInteractions(): void {
     const packages = new FormData(event.currentTarget as HTMLFormElement).get("packages");
     void submitEnvironmentPackages(typeof packages === "string" ? packages : "").catch(showError);
   });
+  appRoot.querySelector<HTMLFormElement>('[data-form="environment-run-profile"]')?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const modeValue = String(formData.get("mode") ?? "source");
+    const profile: RunProfile = {
+      name: String(formData.get("profileName") ?? "Execução atual").trim() || "Execução atual",
+      mode: modeValue === "script" || modeValue === "module" ? modeValue : "source",
+      target: String(formData.get("target") ?? "").trim(),
+      workingDirectory: String(formData.get("workingDirectory") ?? "").trim(),
+      arguments: String(formData.get("arguments") ?? ""),
+      environmentVariables: String(formData.get("environmentVariables") ?? ""),
+    };
+    if (profile.mode !== "source" && !profile.target) {
+      showError(new Error("Informe o script ou módulo do perfil de execução."));
+      return;
+    }
+    parseArgumentLine(profile.arguments);
+    parseEnvironmentVariables(profile.environmentVariables);
+    state.runProfile = profile;
+    localStorage.setItem(RUN_PROFILE_STORAGE_KEY, JSON.stringify(profile));
+    state.environmentForm = undefined;
+    showNotice(`Perfil '${profile.name}' salvo.`);
+  });
 }
 
 commands.register("menu.file.toggle", () => {
@@ -1520,6 +1650,12 @@ commands.register("environment.close", closeEnvironment);
 commands.register("environment.select", selectEnvironment);
 commands.register("environment.packagesFor", packagesForEnvironment);
 commands.register("environment.removeById", removeEnvironmentById);
+commands.register("environment.runProfile", () => {
+  state.sidebarView = "environments";
+  state.sidebarVisible = true;
+  state.environmentForm = "run";
+  render();
+});
 commands.register("environment.form.cancel", () => {
   state.environmentForm = undefined;
   state.environmentBrowser = undefined;
@@ -1609,6 +1745,10 @@ window.addEventListener("keydown", (event) => {
 });
 window.addEventListener("click", () => {
   if (state.fileMenuOpen) { state.fileMenuOpen = false; render(); }
+});
+window.addEventListener("resize", () => {
+  applyResizeValue("sidebar", state.sidebarWidth);
+  applyResizeValue("panel", state.panelHeight);
 });
 
 render();
