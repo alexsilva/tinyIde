@@ -8,8 +8,10 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace @tinyide/web",
+    "dev": "vite --config apps/web/vite.config.mjs apps/web",
+    "start": "npm run dev",
     "build": "npm run build --workspaces --if-present",
+    "preview": "vite preview --config apps/web/vite.config.mjs apps/web",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "check": "npm run typecheck && npm run test && npm run build"

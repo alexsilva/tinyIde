@@ -6,9 +6,32 @@
     <meta name="description" content="tinyIde - IDE web extensível e agnóstica de linguagem" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <title>tinyIde</title>
+    <style>
+      html,
+      body,
+      #app {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: #17191f;
+        color: #d4d4d4;
+        font-family: system-ui, sans-serif;
+      }
+
+      .boot-screen {
+        display: grid;
+        height: 100%;
+        place-items: center;
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div class="boot-screen">Inicializando tinyIde...</div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -30,6 +30,16 @@ npm install
 npm run dev
 ```
 
+O Vite abre o navegador automaticamente. A aplicação fica disponível em:
+
+```text
+http://localhost:5173
+```
+
+Caso o sistema operacional não abra a janela, acesse esse endereço manualmente. Não abra `apps/web/index.html` diretamente por `file://`; a aplicação depende do servidor Vite.
+
+O comando deve ser executado na raiz do repositório, onde está o `package.json` principal.
+
 Validação completa:
 
 ```bash
