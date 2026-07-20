@@ -539,7 +539,7 @@ function renderEditor(): string {
   const dirty = active.content !== active.savedContent;
   const provider = languageProviderFor(active);
   const languageActions = provider
-    ? `<button data-command="language.lint" ${state.languageActionRunning ? "disabled" : ""}>Lint</button><button class="primary-button" data-command="language.run" ${state.languageActionRunning ? "disabled" : ""}>Executar</button>`
+    ? `<button data-command="language.lint" ${state.languageActionRunning ? "disabled" : ""}>Lint</button><button class="primary-button" data-command="language.run" ${state.languageActionRunning ? "disabled" : ""}>${state.languageActionRunning ? "Executando..." : "Executar"}</button>`
     : "";
   const diagnostics = state.diagnostics.length
     ? `<div class="diagnostics">${state.diagnostics
@@ -576,11 +576,33 @@ async function runActiveDocument(): Promise<void> {
   if (!active || !provider) throw new Error("Nenhum provider de linguagem disponível para este arquivo.");
   state.languageActionRunning = true;
   state.panelVisible = true;
+  state.notice = `Executando '${active.name}'...`;
+  state.error = undefined;
+  state.logs = [`[${provider.name}] Executando ${active.name}...`];
   render();
   try {
     const result = await provider.run(active.content, active.name);
     const header = `[${provider.name}] ${active.name} exited with ${result.exitCode} in ${result.durationMs.toFixed(0)}ms`;
-    state.logs = [...state.logs, header, result.stdout || "", result.stderr || ""].filter(Boolean).slice(-100);
+    state.logs = [header, result.stdout || "", result.stderr || ""].filter(Boolean);
+    if (result.exitCode === 0) {
+      state.notice = `'${active.name}' executado com sucesso.`;
+      state.error = undefined;
+    } else {
+      state.error = `'${active.name}' terminou com código ${result.exitCode}. Veja a saída abaixo.`;
+      state.notice = undefined;
+    }
+    render();
+    requestAnimationFrame(() => {
+      const output = appRoot.querySelector<HTMLElement>(".output");
+      if (output) output.scrollTop = output.scrollHeight;
+    });
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    state.notice = undefined;
+    state.logs = [
+      `[${provider.name}] Falha ao executar ${active.name}`,
+      state.error,
+    ];
     render();
   } finally {
     state.languageActionRunning = false;
