@@ -75,7 +75,7 @@ interface PluginCatalogEntry {
   readonly manifestUrl: string;
 }
 
-type SidebarView = "explorer" | "plugins";
+type SidebarView = "explorer" | "plugins" | "environments";
 
 interface AppState {
   sidebarVisible: boolean;
@@ -91,6 +91,7 @@ interface AppState {
   availablePlugins: PluginCatalogEntry[];
   pluginCatalogLoading: boolean;
   environments: ExecutionEnvironment[];
+  openedEnvironmentIds: Set<string>;
   selectedEnvironmentId: string | undefined;
   environmentBusy: boolean;
   environmentForm: "create" | "packages" | undefined;
@@ -131,6 +132,7 @@ const state: AppState = {
   availablePlugins: [],
   pluginCatalogLoading: false,
   environments: [],
+  openedEnvironmentIds: new Set<string>(),
   selectedEnvironmentId: undefined,
   environmentBusy: false,
   environmentForm: undefined,
@@ -155,7 +157,11 @@ function languageProviderFor(document: OpenDocument | undefined): LanguageProvid
     .find((provider) => provider.extensions.some((extension) => lowerName.endsWith(extension)));
 }
 
-function environmentProviderFor(
+function environmentProvider(): ExecutionEnvironmentProvider | undefined {
+  return capabilities.getAll<ExecutionEnvironmentProvider>("execution.environment")[0];
+}
+
+function environmentProviderForExecution(
   document: OpenDocument | undefined,
 ): ExecutionEnvironmentProvider | undefined {
   if (!document) return undefined;
@@ -166,20 +172,26 @@ function environmentProviderFor(
 }
 
 async function refreshEnvironments(): Promise<void> {
-  const provider = environmentProviderFor(state.activeDocument);
+  const provider = environmentProvider();
   if (!provider) {
     state.environments = [];
+    state.openedEnvironmentIds.clear();
     state.selectedEnvironmentId = undefined;
     render();
     return;
   }
 
   state.environments = [...(await provider.list())];
+  const existingIds = new Set(state.environments.map((environment) => environment.id));
+  for (const environmentId of [...state.openedEnvironmentIds]) {
+    if (!existingIds.has(environmentId)) state.openedEnvironmentIds.delete(environmentId);
+  }
   if (
-    !state.selectedEnvironmentId ||
-    !state.environments.some((environment) => environment.id === state.selectedEnvironmentId)
+    state.selectedEnvironmentId &&
+    (!existingIds.has(state.selectedEnvironmentId) ||
+      !state.openedEnvironmentIds.has(state.selectedEnvironmentId))
   ) {
-    state.selectedEnvironmentId = state.environments[0]?.id;
+    state.selectedEnvironmentId = undefined;
   }
   render();
 }
@@ -573,9 +585,33 @@ function renderPlugins(): string {
   return `<form class="plugin-install" data-form="plugin-install"><label for="plugin-url">Manifesto remoto</label><div class="input-row"><input id="plugin-url" name="url" type="url" placeholder="https://registry.example/plugin.json" required /><button class="primary-button" type="submit">Instalar</button></div></form><div class="plugin-section"><h3>Languages</h3><div class="plugin-list">${installedLanguages}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableLanguages}${!installedLanguages && !availableLanguages ? '<p class="muted">Nenhum plugin de linguagem.</p>' : ""}</div></div><div class="plugin-section"><h3>Tools</h3><div class="plugin-list">${installedTools}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableTools}${!installedTools && !availableTools ? '<p class="muted">Nenhum plugin de ferramenta.</p>' : ""}</div></div>`;
 }
 
+function renderEnvironments(): string {
+  const provider = environmentProvider();
+  if (!provider) {
+    return `<div class="empty-state"><p>Nenhum plugin de ambiente instalado.</p><button data-command="view.plugins">Abrir plugins</button></div>`;
+  }
+
+  const cards = state.environments
+    .map((environment) => {
+      const opened = state.openedEnvironmentIds.has(environment.id);
+      const active = state.selectedEnvironmentId === environment.id;
+      return `<article class="environment-card${active ? " is-active" : ""}"><div><strong>${escapeHtml(environment.name)}</strong><span>${environment.version ? escapeHtml(environment.version) : "Versão desconhecida"}</span><small>${escapeHtml(environment.executable ?? environment.id)}</small></div><div class="environment-card__actions"><button data-command="environment.${opened ? "close" : "open"}" data-environment-id="${escapeHtml(environment.id)}">${opened ? "Fechar" : "Abrir"}</button>${opened ? `<button data-command="environment.select" data-environment-id="${escapeHtml(environment.id)}">${active ? "Ativo" : "Usar"}</button>` : ""}<button data-command="environment.packagesFor" data-environment-id="${escapeHtml(environment.id)}">Pacotes</button><button data-command="environment.removeById" data-environment-id="${escapeHtml(environment.id)}">Remover</button></div></article>`;
+    })
+    .join("");
+
+  const createForm = state.environmentForm === "create"
+    ? `<form class="environment-manager__form" data-form="environment-create"><input name="name" value=".venv" aria-label="Nome do ambiente" /><button class="primary-button" type="submit">Criar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></form>`
+    : "";
+  const packagesForm = state.environmentForm === "packages"
+    ? `<form class="environment-manager__form" data-form="environment-packages"><input name="packages" placeholder="django requests" aria-label="Pacotes" /><button class="primary-button" type="submit">Instalar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></form>`
+    : "";
+
+  return `<div class="environment-manager"><div class="environment-manager__toolbar"><button data-command="environment.refresh">Atualizar</button><button class="primary-button" data-command="environment.create">Novo ambiente</button></div>${createForm}${packagesForm}<div class="environment-list">${cards || '<div class="empty-state"><p>Nenhum ambiente criado.</p></div>'}</div></div>`;
+}
+
 function renderSidebar(): string {
-  const title = state.sidebarView === "explorer" ? "EXPLORER" : "PLUGINS";
-  const content = state.sidebarView === "explorer" ? renderWorkspaceEntries() : renderPlugins();
+  const title = state.sidebarView === "explorer" ? "EXPLORER" : state.sidebarView === "plugins" ? "PLUGINS" : "AMBIENTES";
+  const content = state.sidebarView === "explorer" ? renderWorkspaceEntries() : state.sidebarView === "plugins" ? renderPlugins() : renderEnvironments();
   return `<aside class="sidebar ${state.sidebarVisible ? "" : "is-hidden"}"><header class="sidebar__header">${title}</header><div class="sidebar__content">${content}</div></aside>`;
 }
 
@@ -661,15 +697,17 @@ async function runActiveDocument(): Promise<void> {
 }
 
 async function createExecutionEnvironment(): Promise<void> {
-  const provider = environmentProviderFor(state.activeDocument);
-  if (!provider) throw new Error("Nenhum plugin de ambiente disponível para este arquivo.");
+  const provider = environmentProvider();
+  if (!provider) throw new Error("Nenhum plugin de ambiente disponível.");
+  state.sidebarView = "environments";
+  state.sidebarVisible = true;
   state.environmentForm = "create";
   render();
 }
 
 async function submitExecutionEnvironment(name: string): Promise<void> {
-  const provider = environmentProviderFor(state.activeDocument);
-  if (!provider) throw new Error("Nenhum plugin de ambiente disponível para este arquivo.");
+  const provider = environmentProvider();
+  if (!provider) throw new Error("Nenhum plugin de ambiente disponível.");
   const normalizedName = name.trim();
   if (!normalizedName) throw new Error("Informe o nome do ambiente.");
   state.environmentBusy = true;
@@ -679,6 +717,7 @@ async function submitExecutionEnvironment(name: string): Promise<void> {
   try {
     const environment = await provider.create(normalizedName);
     await refreshEnvironments();
+    state.openedEnvironmentIds.add(environment.id);
     state.selectedEnvironmentId = environment.id;
     state.environmentForm = undefined;
     showNotice(`Ambiente '${environment.name}' criado.`);
@@ -695,7 +734,7 @@ async function installEnvironmentPackages(): Promise<void> {
 }
 
 async function submitEnvironmentPackages(value: string): Promise<void> {
-  const provider = environmentProviderFor(state.activeDocument);
+  const provider = environmentProvider();
   const environmentId = state.selectedEnvironmentId;
   if (!provider || !environmentId) throw new Error("Selecione um ambiente virtual.");
   if (!value.trim()) throw new Error("Informe ao menos um pacote.");
@@ -716,7 +755,7 @@ async function submitEnvironmentPackages(value: string): Promise<void> {
 }
 
 async function removeSelectedEnvironment(): Promise<void> {
-  const provider = environmentProviderFor(state.activeDocument);
+  const provider = environmentProvider();
   const environmentId = state.selectedEnvironmentId;
   if (!provider || !environmentId) throw new Error("Selecione um ambiente virtual.");
   const environment = state.environments.find((candidate) => candidate.id === environmentId);
@@ -726,6 +765,7 @@ async function removeSelectedEnvironment(): Promise<void> {
   render();
   try {
     await provider.remove(environmentId);
+    state.openedEnvironmentIds.delete(environmentId);
     state.selectedEnvironmentId = undefined;
     await refreshEnvironments();
     showNotice(`Ambiente '${environment?.name ?? environmentId}' removido.`);
@@ -735,9 +775,52 @@ async function removeSelectedEnvironment(): Promise<void> {
   }
 }
 
+function openEnvironment(rawId: unknown): void {
+  if (typeof rawId !== "string") throw new Error("Ambiente inválido.");
+  if (!state.environments.some((environment) => environment.id === rawId)) {
+    throw new Error("Ambiente não encontrado.");
+  }
+  state.openedEnvironmentIds.add(rawId);
+  state.selectedEnvironmentId = rawId;
+  render();
+}
+
+function closeEnvironment(rawId: unknown): void {
+  if (typeof rawId !== "string") throw new Error("Ambiente inválido.");
+  state.openedEnvironmentIds.delete(rawId);
+  if (state.selectedEnvironmentId === rawId) {
+    state.selectedEnvironmentId = [...state.openedEnvironmentIds][0];
+  }
+  render();
+}
+
+function selectEnvironment(rawId: unknown): void {
+  if (typeof rawId !== "string" || !state.openedEnvironmentIds.has(rawId)) {
+    throw new Error("Abra o ambiente antes de selecioná-lo.");
+  }
+  state.selectedEnvironmentId = rawId;
+  render();
+}
+
+function packagesForEnvironment(rawId: unknown): void {
+  if (typeof rawId !== "string") throw new Error("Ambiente inválido.");
+  state.openedEnvironmentIds.add(rawId);
+  state.selectedEnvironmentId = rawId;
+  state.environmentForm = "packages";
+  state.sidebarView = "environments";
+  state.sidebarVisible = true;
+  render();
+}
+
+async function removeEnvironmentById(rawId: unknown): Promise<void> {
+  if (typeof rawId !== "string") throw new Error("Ambiente inválido.");
+  state.selectedEnvironmentId = rawId;
+  await removeSelectedEnvironment();
+}
+
 async function runWithSelectedEnvironment(): Promise<void> {
   const active = state.activeDocument;
-  const provider = environmentProviderFor(active);
+  const provider = environmentProviderForExecution(active);
   const environmentId = state.selectedEnvironmentId;
   if (!active || !provider) throw new Error("Nenhum plugin de ambiente disponível para este arquivo.");
   if (!environmentId) throw new Error("Crie ou selecione um ambiente virtual antes de executar.");
@@ -780,25 +863,18 @@ async function runWithSelectedEnvironment(): Promise<void> {
 
 function renderEnvironmentToolbar(): string {
   const active = state.activeDocument;
-  const provider = environmentProviderFor(active);
-  if (!active) {
-    return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">Runtime</span><span class="muted">Abra um arquivo para selecionar um ambiente.</span></div>`;
-  }
+  const provider = environmentProvider();
   if (!provider) {
-    return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">Runtime</span><span class="muted">Nenhum plugin de ambiente para ${escapeHtml(active.name)}.</span><button data-command="view.plugins">Plugins</button></div>`;
+    return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">Ambientes</span><span class="muted">Nenhum plugin de ambiente instalado.</span><button data-command="view.plugins">Plugins</button></div>`;
   }
 
-  const options = state.environments
+  const openedEnvironments = state.environments.filter((environment) => state.openedEnvironmentIds.has(environment.id));
+  const options = openedEnvironments
     .map((environment) => `<option value="${escapeHtml(environment.id)}" ${environment.id === state.selectedEnvironmentId ? "selected" : ""}>${escapeHtml(environment.name)}${environment.version ? ` · ${escapeHtml(environment.version)}` : ""}</option>`)
     .join("");
   const selected = state.environments.find((environment) => environment.id === state.selectedEnvironmentId);
-  const createForm = state.environmentForm === "create"
-    ? `<form class="runtime-toolbar__form" data-form="environment-create"><input name="name" value=".venv" aria-label="Nome do ambiente" /><button class="primary-button" type="submit">Criar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></form>`
-    : "";
-  const packagesForm = state.environmentForm === "packages"
-    ? `<form class="runtime-toolbar__form" data-form="environment-packages"><input name="packages" placeholder="django requests" aria-label="Pacotes" /><button class="primary-button" type="submit">Instalar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></form>`
-    : "";
-  return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">${escapeHtml(provider.name)}</span><select data-environment-select aria-label="Ambiente de execução" ${state.environmentBusy ? "disabled" : ""}><option value="" ${state.selectedEnvironmentId ? "" : "selected"}>${options ? "Selecione um ambiente" : "Nenhum ambiente"}</option>${options}</select><span class="runtime-toolbar__current">${selected ? `Ativo: ${escapeHtml(selected.name)}${selected.version ? ` · ${escapeHtml(selected.version)}` : ""}` : "Nenhum ambiente ativo"}</span><button data-command="environment.refresh" ${state.environmentBusy ? "disabled" : ""}>Atualizar</button><button data-command="environment.create" ${state.environmentBusy ? "disabled" : ""}>Novo ambiente</button><button data-command="environment.packages" ${!state.selectedEnvironmentId || state.environmentBusy ? "disabled" : ""}>Pacotes</button><button data-command="environment.remove" ${!state.selectedEnvironmentId || state.environmentBusy ? "disabled" : ""}>Remover</button><button class="primary-button" data-command="environment.run" ${!state.selectedEnvironmentId || state.environmentBusy ? "disabled" : ""}>${state.environmentBusy ? "Processando..." : "Executar"}</button>${createForm}${packagesForm}</div>`;
+  const canRun = Boolean(active && environmentProviderForExecution(active) && state.selectedEnvironmentId);
+  return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">${escapeHtml(provider.name)}</span><button data-command="view.environments">Gerenciar</button><select data-environment-select aria-label="Ambiente aberto" ${state.environmentBusy ? "disabled" : ""}><option value="" ${state.selectedEnvironmentId ? "" : "selected"}>${options ? "Selecione um ambiente aberto" : "Nenhum ambiente aberto"}</option>${options}</select><span class="runtime-toolbar__current">${selected ? `Ativo: ${escapeHtml(selected.name)}${selected.version ? ` · ${escapeHtml(selected.version)}` : ""}` : "Nenhum ambiente ativo"}</span><button class="primary-button" data-command="environment.run" ${!canRun || state.environmentBusy ? "disabled" : ""}>${state.environmentBusy ? "Processando..." : active ? `Executar ${escapeHtml(active.name)}` : "Abra um .py para executar"}</button></div>`;
 }
 
 function renderFileMenu(): string {
@@ -814,7 +890,7 @@ function renderNotice(): string {
 function render(): void {
   const active = state.activeDocument;
   const dirty = active ? active.content !== active.savedContent : false;
-  appRoot.innerHTML = `<div class="ide-shell"><header class="titlebar"><div class="brand">tinyIde</div><nav class="menu" aria-label="Menu principal"><div class="menu-item"><button data-command="menu.file.toggle">Arquivo</button>${renderFileMenu()}</div><button data-command="file.save">Salvar</button><button data-command="panel.toggle">Painel</button></nav><div class="titlebar__center">${escapeHtml(state.workspaceName ?? active?.name ?? "Sem workspace")}</div><div class="version">v${PLATFORM_VERSION}</div></header>${renderEnvironmentToolbar()}<main class="workbench ${state.sidebarVisible ? "" : "workbench--sidebar-hidden"}"><nav class="activitybar" aria-label="Atividades"><button class="activity-button ${state.sidebarView === "explorer" ? "is-active" : ""}" data-command="view.explorer">EX</button><button class="activity-button ${state.sidebarView === "plugins" ? "is-active" : ""}" data-command="view.plugins">PL</button><div class="activitybar__spacer"></div><button class="activity-button" data-command="panel.toggle">PN</button></nav>${renderSidebar()}<section class="editor-area"><div class="editor-tabs"><button class="editor-tab is-active"><span>TXT</span>${escapeHtml(active?.name ?? "Bem-vindo")}${dirty ? " ●" : ""}</button></div>${renderEditor()}<section class="bottom-panel ${state.panelVisible ? "" : "is-hidden"}"><header class="panel-tabs"><button class="is-active">SAÍDA</button><button>PROBLEMAS <span class="counter">0</span></button></header><pre class="output">${state.logs.map(escapeHtml).join("\n")}</pre></section></section></main><footer class="statusbar"><button data-command="file.openPicker">${escapeHtml(state.workspaceName ?? "Abrir arquivo")}</button><span>${plugins.list().length} plugin(s)</span><span class="statusbar__spacer"></span><span>${dirty ? "Alterações não salvas" : "Salvo"}</span><span>UTF-8</span><span>Texto</span></footer>${renderNotice()}</div>`;
+  appRoot.innerHTML = `<div class="ide-shell"><header class="titlebar"><div class="brand">tinyIde</div><nav class="menu" aria-label="Menu principal"><div class="menu-item"><button data-command="menu.file.toggle">Arquivo</button>${renderFileMenu()}</div><button data-command="file.save">Salvar</button><button data-command="panel.toggle">Painel</button></nav><div class="titlebar__center">${escapeHtml(state.workspaceName ?? active?.name ?? "Sem workspace")}</div><div class="version">v${PLATFORM_VERSION}</div></header>${renderEnvironmentToolbar()}<main class="workbench ${state.sidebarVisible ? "" : "workbench--sidebar-hidden"}"><nav class="activitybar" aria-label="Atividades"><button class="activity-button ${state.sidebarView === "explorer" ? "is-active" : ""}" data-command="view.explorer">EX</button><button class="activity-button ${state.sidebarView === "plugins" ? "is-active" : ""}" data-command="view.plugins">PL</button><button class="activity-button ${state.sidebarView === "environments" ? "is-active" : ""}" data-command="view.environments">ENV</button><div class="activitybar__spacer"></div><button class="activity-button" data-command="panel.toggle">PN</button></nav>${renderSidebar()}<section class="editor-area"><div class="editor-tabs"><button class="editor-tab is-active"><span>TXT</span>${escapeHtml(active?.name ?? "Bem-vindo")}${dirty ? " ●" : ""}</button></div>${renderEditor()}<section class="bottom-panel ${state.panelVisible ? "" : "is-hidden"}"><header class="panel-tabs"><button class="is-active">SAÍDA</button><button>PROBLEMAS <span class="counter">0</span></button></header><pre class="output">${state.logs.map(escapeHtml).join("\n")}</pre></section></section></main><footer class="statusbar"><button data-command="file.openPicker">${escapeHtml(state.workspaceName ?? "Abrir arquivo")}</button><span>${plugins.list().length} plugin(s)</span><span class="statusbar__spacer"></span><span>${dirty ? "Alterações não salvas" : "Salvo"}</span><span>UTF-8</span><span>Texto</span></footer>${renderNotice()}</div>`;
   bindInteractions();
 }
 
@@ -824,7 +900,7 @@ function bindInteractions(): void {
       event.stopPropagation();
       const command = element.dataset.command;
       if (!command) return;
-      const argument = element.dataset.pluginUrl ?? element.dataset.pluginId ?? element.dataset.entryPath;
+      const argument = element.dataset.pluginUrl ?? element.dataset.pluginId ?? element.dataset.environmentId ?? element.dataset.entryPath;
       void commands.execute(command, argument).catch(showError);
     });
   });
@@ -898,6 +974,11 @@ commands.register("environment.refresh", refreshEnvironments);
 commands.register("environment.create", createExecutionEnvironment);
 commands.register("environment.packages", installEnvironmentPackages);
 commands.register("environment.remove", removeSelectedEnvironment);
+commands.register("environment.open", openEnvironment);
+commands.register("environment.close", closeEnvironment);
+commands.register("environment.select", selectEnvironment);
+commands.register("environment.packagesFor", packagesForEnvironment);
+commands.register("environment.removeById", removeEnvironmentById);
 commands.register("environment.form.cancel", () => { state.environmentForm = undefined; render(); });
 commands.register("environment.run", runWithSelectedEnvironment);
 commands.register("view.explorer", () => { state.sidebarView = "explorer"; state.sidebarVisible = true; render(); });
@@ -908,6 +989,12 @@ commands.register("view.plugins", () => {
   if (!state.availablePlugins.length && !state.pluginCatalogLoading) {
     void loadPluginCatalog();
   }
+});
+commands.register("view.environments", async () => {
+  state.sidebarView = "environments";
+  state.sidebarVisible = true;
+  await refreshEnvironments();
+  render();
 });
 commands.register("sidebar.toggle", () => { state.sidebarVisible = !state.sidebarVisible; render(); });
 commands.register("panel.toggle", () => { state.panelVisible = !state.panelVisible; render(); });

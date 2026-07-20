@@ -100,6 +100,67 @@ button {
   border-color: #7aa2f7;
 }
 
+.environment-manager {
+  display: grid;
+  gap: 12px;
+}
+
+.environment-manager__toolbar,
+.environment-manager__form,
+.environment-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.environment-manager__form {
+  padding: 10px;
+  border: 1px solid #343944;
+  border-radius: 6px;
+  background: #1d2027;
+}
+
+.environment-manager__form input {
+  min-width: 0;
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #3a3f49;
+  border-radius: 4px;
+  background: #15171c;
+  color: #e1e4ea;
+}
+
+.environment-list {
+  display: grid;
+  gap: 8px;
+}
+
+.environment-card {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #343944;
+  border-radius: 6px;
+  background: #1d2027;
+}
+
+.environment-card.is-active {
+  border-color: #7aa2f7;
+}
+
+.environment-card > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.environment-card span,
+.environment-card small {
+  overflow: hidden;
+  color: #9da5b4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .runtime-toolbar button {
   height: 26px;
   padding: 0 10px;
