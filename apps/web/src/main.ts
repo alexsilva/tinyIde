@@ -1570,11 +1570,28 @@ function renderWelcome(): string {
   return `<div class="welcome-screen"><h1>tinyIde</h1><p>Crie ou abra um arquivo para começar.</p><div class="welcome-actions">${renderButton("Novo arquivo", "fileAdd", { command: "file.new", variant: "primary" })}${renderButton("Abrir arquivo", "file", { command: "file.openPicker" })}${renderButton("Abrir pasta", "folderOpen", { command: "workspace.open" })}</div><small>Atalhos: Ctrl+N, Ctrl+O, Ctrl+S e Ctrl+Shift+S</small></div>`;
 }
 
+function renderEditorRuntimeControls(active: OpenDocument): string {
+  const provider = runtimeProviderForExecution(active);
+  if (!provider) return "";
+
+  const options = state.runtimes
+    .map((runtime) => `<option value="${escapeHtml(runtime.id)}" ${runtime.id === state.selectedRuntimeId ? "selected" : ""}>${escapeHtml(runtime.name)}${runtime.version ? ` · ${escapeHtml(runtime.version)}` : ""}</option>`)
+    .join("");
+  const selected = state.runtimes.find((runtime) => runtime.id === state.selectedRuntimeId);
+  const canRun = Boolean(state.selectedRuntimeId) && !state.runtimeBusy;
+  const runTitle = selected
+    ? `Executar ${active.name} com ${selected.name}`
+    : `Selecione um runtime para executar ${active.name}`;
+
+  return `<div class="editor-runtime-controls"><select data-environment-select aria-label="Runtime selecionado" title="${escapeHtml(selected?.executable ?? selected?.name ?? "Selecionar runtime")}" ${state.runtimeBusy ? "disabled" : ""}><option value="" ${state.selectedRuntimeId ? "" : "selected"}>${options ? "Selecionar runtime" : "Sem runtime"}</option>${options}</select>${renderButton(state.runtimeBusy ? "Executando" : "Executar", "play", { command: "execution.run", size: "small", variant: "primary", disabled: !canRun, title: runTitle, className: "editor-run-button" })}</div>`;
+}
+
 function renderEditor(): string {
   const active = activeDocument();
   if (!active) return renderWelcome();
   const dirty = active.content !== active.savedContent;
   const provider = languageProviderFor(active);
+  const runtimeControls = renderEditorRuntimeControls(active);
   const languageActions = provider
     ? renderButton("Lint", "lint", { command: "language.lint", size: "small", disabled: state.languageActionRunning })
     : "";
@@ -1589,7 +1606,7 @@ function renderEditor(): string {
   const editorSurface = provider
     ? `<div class="highlight-editor"><pre class="syntax-layer" data-syntax-layer>${renderHighlightedSource(active.content, provider)}</pre><textarea class="code-input code-input--highlighted" data-editor spellcheck="false" aria-label="Editor de ${escapeHtml(active.name)}">${escapeHtml(active.content)}</textarea></div>`
     : `<textarea class="code-input" data-editor spellcheck="false" aria-label="Editor de ${escapeHtml(active.name)}">${escapeHtml(active.content)}</textarea>`;
-  return `<div class="code-editor"><div class="editor-toolbar"><span>${dirty ? "● " : ""}${escapeHtml(active.name)}${provider ? ` · ${escapeHtml(provider.name)}` : ""}</span><div>${languageActions}${renderButton("Salvar como", "saveAs", { command: "file.saveAs", iconOnly: true })}${renderButton("Salvar", "save", { command: "file.save", iconOnly: true, variant: "primary" })}</div></div>${diagnostics}${editorSurface}</div>`;
+  return `<div class="code-editor"><div class="editor-toolbar"><span class="editor-toolbar__document">${dirty ? "● " : ""}${escapeHtml(active.name)}${provider ? ` · ${escapeHtml(provider.name)}` : ""}</span><div class="editor-toolbar__actions">${runtimeControls}${languageActions}${renderButton("Salvar como", "saveAs", { command: "file.saveAs", iconOnly: true })}${renderButton("Salvar", "save", { command: "file.save", iconOnly: true, variant: "primary" })}</div></div>${diagnostics}${editorSurface}</div>`;
 }
 
 async function lintActiveDocument(): Promise<void> {
@@ -1836,22 +1853,6 @@ async function runWithSelectedRuntime(): Promise<void> {
   }
 }
 
-function renderEnvironmentToolbar(): string {
-  const active = activeDocument();
-  const provider = runtimeProvider();
-  if (!provider) return "";
-
-  const options = state.runtimes
-    .map((runtime) => `<option value="${escapeHtml(runtime.id)}" ${runtime.id === state.selectedRuntimeId ? "selected" : ""}>${escapeHtml(runtime.name)}${runtime.version ? ` · ${escapeHtml(runtime.version)}` : ""}</option>`)
-    .join("");
-  const selected = state.runtimes.find((runtime) => runtime.id === state.selectedRuntimeId);
-  const canRun = Boolean(active && runtimeProviderForExecution(active) && state.selectedRuntimeId);
-  const runTitle = active
-    ? `Executar ${active.name} no runtime selecionado`
-    : "Abra um arquivo Python para executar";
-  return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">${renderIcon("environment")}<span>${escapeHtml(provider.name)}</span></span>${renderButton("Gerenciar", "environment", { command: "view.runtimes", size: "small", title: "Gerenciar runtimes" })}<select data-environment-select aria-label="Runtime selecionado" ${state.runtimeBusy ? "disabled" : ""}><option value="" ${state.selectedRuntimeId ? "" : "selected"}>${options ? "Selecione um runtime" : "Nenhum runtime disponível"}</option>${options}</select><span class="runtime-toolbar__current">${selected ? `Ativo: ${escapeHtml(selected.name)}${selected.version ? ` · ${escapeHtml(selected.version)}` : ""}` : "Nenhum runtime ativo"}</span><span class="runtime-toolbar__profile">${escapeHtml(state.runProfile.name)} · ${escapeHtml(state.runProfile.mode)}</span>${renderButton("Configurar", "saveAs", { command: "runtime.runProfile", size: "small", title: "Configurar perfil de execução" })}${renderButton(state.runtimeBusy ? "Processando" : "Executar", "play", { command: "execution.run", size: "small", variant: "primary", disabled: !canRun || state.runtimeBusy, title: runTitle })}</div>`;
-}
-
 function renderFileMenu(): string {
   if (!state.fileMenuOpen) return "";
   return `<div class="file-menu" role="menu"><button class="file-menu__item" type="button" role="menuitem" data-command="file.new"><span class="file-menu__label">${renderIcon("fileAdd")}Novo arquivo</span><kbd>Ctrl+N</kbd></button><button class="file-menu__item" type="button" role="menuitem" data-command="file.openPicker"><span class="file-menu__label">${renderIcon("file")}Abrir arquivo</span><kbd>Ctrl+O</kbd></button><button class="file-menu__item" type="button" role="menuitem" data-command="workspace.open"><span class="file-menu__label">${renderIcon("folderOpen")}Abrir pasta</span></button><hr /><button class="file-menu__item" type="button" role="menuitem" data-command="file.save"><span class="file-menu__label">${renderIcon("save")}Salvar</span><kbd>Ctrl+S</kbd></button><button class="file-menu__item" type="button" role="menuitem" data-command="file.saveAs"><span class="file-menu__label">${renderIcon("saveAs")}Salvar como</span><kbd>Ctrl+Shift+S</kbd></button></div>`;
@@ -1865,7 +1866,6 @@ function renderNotice(): string {
 function render(): void {
   const active = activeDocument();
   const dirty = active ? active.content !== active.savedContent : false;
-  const runtimeToolbar = renderEnvironmentToolbar();
   const environmentActivity = runtimeProvider()
     ? renderActivityButton("view.runtimes", "environment", "Runtimes", state.sidebarView === "runtimes")
     : "";
@@ -1876,7 +1876,7 @@ function render(): void {
 
   appRoot.innerHTML = `
     <div
-      class="ide-shell ${runtimeToolbar ? "" : "ide-shell--runtime-hidden"}"
+      class="ide-shell"
       style="--sidebar-width:${renderedSidebarWidth}px;--panel-height:${renderedPanelHeight}px"
     >
       <header class="titlebar">
@@ -1892,7 +1892,6 @@ function render(): void {
         <div class="titlebar__center">${escapeHtml(state.workspaceName ?? active?.name ?? "Sem workspace")}${state.openFiles.length > 1 ? ` · ${state.openFiles.filter((d) => d.content !== d.savedContent).length} não salvo(s)` : ""}</div>
         <div class="version">v${PLATFORM_VERSION}</div>
       </header>
-      ${runtimeToolbar}
       <main class="workbench ${state.sidebarVisible ? "" : "workbench--sidebar-hidden"}">
         <nav class="activitybar" aria-label="Atividades">
           ${renderActivityButton("view.explorer", "folderOpen", "Explorador", state.sidebarView === "explorer")}
