@@ -19,6 +19,55 @@ import "./styles.css";
 const PLATFORM_VERSION = "0.4.0";
 const PLUGIN_STORAGE_KEY = "tinyide.installedPlugins.v2";
 const LEGACY_PLUGIN_STORAGE_KEY = "tinyide.installedPlugins";
+const LAYOUT_STORAGE_KEY = "tinyide.layout.v1";
+const DEFAULT_SIDEBAR_WIDTH = 280;
+const DEFAULT_PANEL_HEIGHT = 190;
+const MIN_SIDEBAR_WIDTH = 180;
+const MAX_SIDEBAR_WIDTH = 720;
+const MIN_PANEL_HEIGHT = 96;
+const MAX_PANEL_HEIGHT = 640;
+
+interface StoredLayout {
+  readonly sidebarWidth?: number;
+  readonly panelHeight?: number;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+function readStoredLayout(): Required<StoredLayout> {
+  try {
+    const rawValue = localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (!rawValue) {
+      return {
+        sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+        panelHeight: DEFAULT_PANEL_HEIGHT,
+      };
+    }
+
+    const parsed = JSON.parse(rawValue) as StoredLayout;
+    return {
+      sidebarWidth: clamp(
+        Number(parsed.sidebarWidth) || DEFAULT_SIDEBAR_WIDTH,
+        MIN_SIDEBAR_WIDTH,
+        MAX_SIDEBAR_WIDTH,
+      ),
+      panelHeight: clamp(
+        Number(parsed.panelHeight) || DEFAULT_PANEL_HEIGHT,
+        MIN_PANEL_HEIGHT,
+        MAX_PANEL_HEIGHT,
+      ),
+    };
+  } catch {
+    return {
+      sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+      panelHeight: DEFAULT_PANEL_HEIGHT,
+    };
+  }
+}
+
+const initialLayout = readStoredLayout();
 
 interface BrowserWritable {
   write(data: string): Promise<void>;
@@ -80,7 +129,9 @@ type SidebarView = "explorer" | "plugins" | "environments";
 
 interface AppState {
   sidebarVisible: boolean;
+  sidebarWidth: number;
   panelVisible: boolean;
+  panelHeight: number;
   fileMenuOpen: boolean;
   sidebarView: SidebarView;
   workspaceName: string | undefined;
@@ -125,7 +176,9 @@ const plugins = new PluginManager({ platformVersion: PLATFORM_VERSION, events, h
 
 const state: AppState = {
   sidebarVisible: true,
+  sidebarWidth: initialLayout.sidebarWidth,
   panelVisible: true,
+  panelHeight: initialLayout.panelHeight,
   fileMenuOpen: false,
   sidebarView: "explorer",
   workspaceName: undefined,
@@ -158,6 +211,131 @@ const escapeHtml = (value: string): string =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 
+type ResizeTarget = "sidebar" | "panel";
+
+function sidebarMaximumWidth(): number {
+  const availableWidth = window.innerWidth - 48 - 320;
+  return Math.max(
+    MIN_SIDEBAR_WIDTH,
+    Math.min(MAX_SIDEBAR_WIDTH, availableWidth),
+  );
+}
+
+function panelMaximumHeight(): number {
+  const editorArea = appRoot.querySelector<HTMLElement>(".editor-area");
+  const availableHeight = (editorArea?.clientHeight ?? window.innerHeight) - 36 - 120;
+  return Math.max(
+    MIN_PANEL_HEIGHT,
+    Math.min(MAX_PANEL_HEIGHT, availableHeight),
+  );
+}
+
+function resizeBounds(target: ResizeTarget): { minimum: number; maximum: number } {
+  return target === "sidebar"
+    ? { minimum: MIN_SIDEBAR_WIDTH, maximum: sidebarMaximumWidth() }
+    : { minimum: MIN_PANEL_HEIGHT, maximum: panelMaximumHeight() };
+}
+
+function resizeValue(target: ResizeTarget): number {
+  return target === "sidebar" ? state.sidebarWidth : state.panelHeight;
+}
+
+function persistLayout(): void {
+  const layout: StoredLayout = {
+    sidebarWidth: state.sidebarWidth,
+    panelHeight: state.panelHeight,
+  };
+  localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
+}
+
+function applyResizeValue(target: ResizeTarget, requestedValue: number): void {
+  const { minimum, maximum } = resizeBounds(target);
+  const value = Math.round(clamp(requestedValue, minimum, maximum));
+
+  if (target === "sidebar") {
+    state.sidebarWidth = value;
+  } else {
+    state.panelHeight = value;
+  }
+
+  const shell = appRoot.querySelector<HTMLElement>(".ide-shell");
+  shell?.style.setProperty(
+    target === "sidebar" ? "--sidebar-width" : "--panel-height",
+    `${value}px`,
+  );
+
+  const separator = appRoot.querySelector<HTMLElement>(`[data-resize="${target}"]`);
+  separator?.setAttribute("aria-valuenow", String(value));
+  separator?.setAttribute("aria-valuemax", String(maximum));
+}
+
+function beginResize(event: PointerEvent, target: ResizeTarget): void {
+  if (event.button !== 0) return;
+  event.preventDefault();
+
+  const separator = event.currentTarget as HTMLElement;
+  const startingPointer = target === "sidebar" ? event.clientX : event.clientY;
+  const startingValue = resizeValue(target);
+  const cursorClass = target === "sidebar" ? "is-resizing-sidebar" : "is-resizing-panel";
+  let finished = false;
+
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    separator.removeEventListener("pointermove", move);
+    separator.classList.remove("is-dragging");
+    document.body.classList.remove(cursorClass);
+    persistLayout();
+  };
+
+  const move = (moveEvent: PointerEvent): void => {
+    const currentPointer = target === "sidebar" ? moveEvent.clientX : moveEvent.clientY;
+    const delta = currentPointer - startingPointer;
+    applyResizeValue(
+      target,
+      target === "sidebar" ? startingValue + delta : startingValue - delta,
+    );
+  };
+
+  separator.classList.add("is-dragging");
+  document.body.classList.add(cursorClass);
+  separator.setPointerCapture(event.pointerId);
+  separator.addEventListener("pointermove", move);
+  separator.addEventListener("pointerup", finish, { once: true });
+  separator.addEventListener("pointercancel", finish, { once: true });
+  separator.addEventListener("lostpointercapture", finish, { once: true });
+}
+
+function resizeWithKeyboard(event: KeyboardEvent, target: ResizeTarget): void {
+  const { minimum, maximum } = resizeBounds(target);
+  const step = event.shiftKey ? 48 : 16;
+  let nextValue: number | undefined;
+
+  if (event.key === "Home") nextValue = minimum;
+  if (event.key === "End") nextValue = maximum;
+
+  if (target === "sidebar") {
+    if (event.key === "ArrowLeft") nextValue = state.sidebarWidth - step;
+    if (event.key === "ArrowRight") nextValue = state.sidebarWidth + step;
+  } else {
+    if (event.key === "ArrowUp") nextValue = state.panelHeight + step;
+    if (event.key === "ArrowDown") nextValue = state.panelHeight - step;
+  }
+
+  if (nextValue === undefined) return;
+  event.preventDefault();
+  applyResizeValue(target, nextValue);
+  persistLayout();
+}
+
+function resetResize(target: ResizeTarget): void {
+  applyResizeValue(
+    target,
+    target === "sidebar" ? DEFAULT_SIDEBAR_WIDTH : DEFAULT_PANEL_HEIGHT,
+  );
+  persistLayout();
+}
+
 function languageProviderFor(document: OpenDocument | undefined): LanguageProvider | undefined {
   if (!document) return undefined;
   const lowerName = document.name.toLowerCase();
@@ -186,6 +364,13 @@ async function refreshEnvironments(): Promise<void> {
     state.environments = [];
     state.openedEnvironmentIds.clear();
     state.selectedEnvironmentId = undefined;
+    state.environmentForm = undefined;
+    state.environmentBrowser = undefined;
+    state.environmentBrowserOpen = false;
+    state.environmentSelectedPath = undefined;
+    if (state.sidebarView === "environments") {
+      state.sidebarView = "explorer";
+    }
     render();
     return;
   }
@@ -638,7 +823,7 @@ function renderEnvironmentBrowserModal(): string {
 function renderSidebar(): string {
   const title = state.sidebarView === "explorer" ? "EXPLORER" : state.sidebarView === "plugins" ? "PLUGINS" : "AMBIENTES";
   const content = state.sidebarView === "explorer" ? renderWorkspaceEntries() : state.sidebarView === "plugins" ? renderPlugins() : renderEnvironments();
-  return `<aside class="sidebar ${state.sidebarVisible ? "" : "is-hidden"}"><header class="sidebar__header">${title}</header><div class="sidebar__content">${content}</div></aside>`;
+  return `<aside id="sidebar-panel" class="sidebar ${state.sidebarVisible ? "" : "is-hidden"}"><header class="sidebar__header">${title}</header><div class="sidebar__content">${content}</div></aside>`;
 }
 
 function renderWelcome(): string {
@@ -946,9 +1131,7 @@ async function runWithSelectedEnvironment(): Promise<void> {
 function renderEnvironmentToolbar(): string {
   const active = state.activeDocument;
   const provider = environmentProvider();
-  if (!provider) {
-    return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">Ambientes</span><span class="muted">Nenhum plugin de ambiente instalado.</span><button data-command="view.plugins">Plugins</button></div>`;
-  }
+  if (!provider) return "";
 
   const openedEnvironments = state.environments.filter((environment) => state.openedEnvironmentIds.has(environment.id));
   const options = openedEnvironments
@@ -972,7 +1155,93 @@ function renderNotice(): string {
 function render(): void {
   const active = state.activeDocument;
   const dirty = active ? active.content !== active.savedContent : false;
-  appRoot.innerHTML = `<div class="ide-shell"><header class="titlebar"><div class="brand">tinyIde</div><nav class="menu" aria-label="Menu principal"><div class="menu-item"><button data-command="menu.file.toggle">Arquivo</button>${renderFileMenu()}</div><button data-command="file.save">Salvar</button><button data-command="panel.toggle">Painel</button></nav><div class="titlebar__center">${escapeHtml(state.workspaceName ?? active?.name ?? "Sem workspace")}</div><div class="version">v${PLATFORM_VERSION}</div></header>${renderEnvironmentToolbar()}<main class="workbench ${state.sidebarVisible ? "" : "workbench--sidebar-hidden"}"><nav class="activitybar" aria-label="Atividades"><button class="activity-button ${state.sidebarView === "explorer" ? "is-active" : ""}" data-command="view.explorer">EX</button><button class="activity-button ${state.sidebarView === "plugins" ? "is-active" : ""}" data-command="view.plugins">PL</button><button class="activity-button ${state.sidebarView === "environments" ? "is-active" : ""}" data-command="view.environments">ENV</button><div class="activitybar__spacer"></div><button class="activity-button" data-command="panel.toggle">PN</button></nav>${renderSidebar()}<section class="editor-area"><div class="editor-tabs"><button class="editor-tab is-active"><span>TXT</span>${escapeHtml(active?.name ?? "Bem-vindo")}${dirty ? " ●" : ""}</button></div>${renderEditor()}<section class="bottom-panel ${state.panelVisible ? "" : "is-hidden"}"><header class="panel-tabs"><button class="is-active">SAÍDA</button><button>PROBLEMAS <span class="counter">0</span></button></header><pre class="output">${state.logs.map(escapeHtml).join("\n")}</pre></section></section></main><footer class="statusbar"><button data-command="file.openPicker">${escapeHtml(state.workspaceName ?? "Abrir arquivo")}</button><span>${plugins.list().length} plugin(s)</span><span class="statusbar__spacer"></span><span>${dirty ? "Alterações não salvas" : "Salvo"}</span><span>UTF-8</span><span>Texto</span></footer>${renderNotice()}${renderEnvironmentBrowserModal()}</div>`;
+  const runtimeToolbar = renderEnvironmentToolbar();
+  const environmentActivity = environmentProvider()
+    ? `<button class="activity-button ${state.sidebarView === "environments" ? "is-active" : ""}" data-command="view.environments">ENV</button>`
+    : "";
+  const sidebarMaximum = sidebarMaximumWidth();
+  const panelMaximum = panelMaximumHeight();
+
+  appRoot.innerHTML = `
+    <div
+      class="ide-shell ${runtimeToolbar ? "" : "ide-shell--runtime-hidden"}"
+      style="--sidebar-width:${state.sidebarWidth}px;--panel-height:${state.panelHeight}px"
+    >
+      <header class="titlebar">
+        <div class="brand">tinyIde</div>
+        <nav class="menu" aria-label="Menu principal">
+          <div class="menu-item">
+            <button data-command="menu.file.toggle">Arquivo</button>
+            ${renderFileMenu()}
+          </div>
+          <button data-command="file.save">Salvar</button>
+          <button data-command="panel.toggle">Painel</button>
+        </nav>
+        <div class="titlebar__center">${escapeHtml(state.workspaceName ?? active?.name ?? "Sem workspace")}</div>
+        <div class="version">v${PLATFORM_VERSION}</div>
+      </header>
+      ${runtimeToolbar}
+      <main class="workbench ${state.sidebarVisible ? "" : "workbench--sidebar-hidden"}">
+        <nav class="activitybar" aria-label="Atividades">
+          <button class="activity-button ${state.sidebarView === "explorer" ? "is-active" : ""}" data-command="view.explorer">EX</button>
+          <button class="activity-button ${state.sidebarView === "plugins" ? "is-active" : ""}" data-command="view.plugins">PL</button>
+          ${environmentActivity}
+          <div class="activitybar__spacer"></div>
+          <button class="activity-button" data-command="panel.toggle">PN</button>
+        </nav>
+        ${renderSidebar()}
+        <div
+          class="panel-resizer panel-resizer--vertical ${state.sidebarVisible ? "" : "is-hidden"}"
+          data-resize="sidebar"
+          role="separator"
+          aria-label="Redimensionar painel lateral"
+          aria-orientation="vertical"
+          aria-controls="sidebar-panel"
+          aria-valuemin="${MIN_SIDEBAR_WIDTH}"
+          aria-valuemax="${sidebarMaximum}"
+          aria-valuenow="${state.sidebarWidth}"
+          tabindex="0"
+          title="Arraste para redimensionar. Duplo clique restaura a largura."
+        ></div>
+        <section class="editor-area ${state.panelVisible ? "" : "editor-area--panel-hidden"}">
+          <div class="editor-tabs">
+            <button class="editor-tab is-active"><span>TXT</span>${escapeHtml(active?.name ?? "Bem-vindo")}${dirty ? " ●" : ""}</button>
+          </div>
+          ${renderEditor()}
+          <div
+            class="panel-resizer panel-resizer--horizontal ${state.panelVisible ? "" : "is-hidden"}"
+            data-resize="panel"
+            role="separator"
+            aria-label="Redimensionar painel inferior"
+            aria-orientation="horizontal"
+            aria-controls="bottom-panel"
+            aria-valuemin="${MIN_PANEL_HEIGHT}"
+            aria-valuemax="${panelMaximum}"
+            aria-valuenow="${state.panelHeight}"
+            tabindex="0"
+            title="Arraste para redimensionar. Duplo clique restaura a altura."
+          ></div>
+          <section id="bottom-panel" class="bottom-panel ${state.panelVisible ? "" : "is-hidden"}">
+            <header class="panel-tabs">
+              <button class="is-active">SAÍDA</button>
+              <button>PROBLEMAS <span class="counter">0</span></button>
+            </header>
+            <pre class="output">${state.logs.map(escapeHtml).join("\n")}</pre>
+          </section>
+        </section>
+      </main>
+      <footer class="statusbar">
+        <button data-command="file.openPicker">${escapeHtml(state.workspaceName ?? "Abrir arquivo")}</button>
+        <span>${plugins.list().length} plugin(s)</span>
+        <span class="statusbar__spacer"></span>
+        <span>${dirty ? "Alterações não salvas" : "Salvo"}</span>
+        <span>UTF-8</span>
+        <span>Texto</span>
+      </footer>
+      ${renderNotice()}
+      ${renderEnvironmentBrowserModal()}
+    </div>
+  `;
   bindInteractions();
 }
 
@@ -986,6 +1255,22 @@ function bindInteractions(): void {
       void commands.execute(command, argument).catch(showError);
     });
   });
+  appRoot.querySelectorAll<HTMLElement>("[data-resize]").forEach((separator) => {
+    const target = separator.dataset.resize;
+    if (target !== "sidebar" && target !== "panel") return;
+
+    separator.addEventListener("pointerdown", (event) => {
+      beginResize(event, target);
+    });
+    separator.addEventListener("keydown", (event) => {
+      resizeWithKeyboard(event, target);
+    });
+    separator.addEventListener("dblclick", () => {
+      resetResize(target);
+    });
+  });
+  applyResizeValue("sidebar", state.sidebarWidth);
+  applyResizeValue("panel", state.panelHeight);
   appRoot.querySelector<HTMLTextAreaElement>("[data-editor]")?.addEventListener("input", (event) => {
     if (!state.activeDocument) return;
     state.activeDocument.content = (event.currentTarget as HTMLTextAreaElement).value;
@@ -1102,6 +1387,7 @@ commands.register("view.plugins", () => {
   }
 });
 commands.register("view.environments", async () => {
+  if (!environmentProvider()) throw new Error("Nenhum plugin de ambiente está ativo.");
   state.sidebarView = "environments";
   state.sidebarVisible = true;
   await refreshEnvironments();
