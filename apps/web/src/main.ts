@@ -2,7 +2,7 @@ import { CapabilityRegistry, CommandRegistry, EventBus, PluginManager } from "@t
 import type { PluginManifest, PluginRecord } from "@tinyide/plugin-api";
 import "./styles.css";
 
-const PLATFORM_VERSION = "0.3.0";
+const PLATFORM_VERSION = "0.4.0";
 const PLUGIN_STORAGE_KEY = "tinyide.installedPlugins";
 
 interface BrowserWritable {
@@ -38,11 +38,14 @@ interface WorkspaceEntry {
   readonly name: string;
   readonly kind: "file" | "directory";
   readonly handle: BrowserEntryHandle;
+  readonly path: string;
+  children?: WorkspaceEntry[];
 }
 
 interface OpenDocument {
   name: string;
   handle?: BrowserFileHandle;
+  path?: string;
   content: string;
   savedContent: string;
 }
@@ -56,6 +59,7 @@ interface AppState {
   sidebarView: SidebarView;
   workspaceName: string | undefined;
   workspaceEntries: WorkspaceEntry[];
+  expandedDirectories: Set<string>;
   activeDocument: OpenDocument | undefined;
   logs: string[];
   notice: string | undefined;
@@ -78,6 +82,7 @@ const state: AppState = {
   sidebarView: "explorer",
   workspaceName: undefined,
   workspaceEntries: [],
+  expandedDirectories: new Set<string>(),
   activeDocument: undefined,
   logs: ["tinyIde core initialized", `platform version ${PLATFORM_VERSION}`],
   notice: undefined,
@@ -134,10 +139,14 @@ async function restorePlugins(): Promise<void> {
   }
 }
 
-async function readDirectory(handle: BrowserDirectoryHandle): Promise<WorkspaceEntry[]> {
+async function readDirectory(
+  handle: BrowserDirectoryHandle,
+  parentPath = "",
+): Promise<WorkspaceEntry[]> {
   const entries: WorkspaceEntry[] = [];
   for await (const entry of handle.values()) {
-    entries.push({ name: entry.name, kind: entry.kind, handle: entry });
+    const path = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+    entries.push({ name: entry.name, kind: entry.kind, handle: entry, path });
   }
   return entries.sort((left, right) => {
     if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
@@ -154,6 +163,7 @@ async function openWorkspace(): Promise<void> {
   const handle = await pickerWindow.showDirectoryPicker();
   state.workspaceName = handle.name;
   state.workspaceEntries = await readDirectory(handle);
+  state.expandedDirectories.clear();
   state.activeDocument = undefined;
   state.sidebarVisible = true;
   state.sidebarView = "explorer";
@@ -173,10 +183,12 @@ function newFile(): void {
   requestAnimationFrame(() => appRoot.querySelector<HTMLTextAreaElement>("[data-editor]")?.focus());
 }
 
-async function openFileHandle(handle: BrowserFileHandle): Promise<void> {
+async function openFileHandle(handle: BrowserFileHandle, path?: string): Promise<void> {
   const file = await handle.getFile();
   const content = await file.text();
-  state.activeDocument = { name: file.name, handle, content, savedContent: content };
+  state.activeDocument = path
+    ? { name: file.name, handle, path, content, savedContent: content }
+    : { name: file.name, handle, content, savedContent: content };
   state.workspaceName = state.workspaceName ?? "Arquivo avulso";
   await events.emit("file.opened", { name: file.name });
   log(`file.opened: ${file.name}`);
@@ -205,11 +217,45 @@ async function openFileFromPicker(): Promise<void> {
   input.click();
 }
 
-async function openWorkspaceFile(rawName: unknown): Promise<void> {
-  if (typeof rawName !== "string") throw new Error("Nome de arquivo inválido.");
-  const entry = state.workspaceEntries.find((candidate) => candidate.name === rawName);
-  if (!entry || entry.kind !== "file") throw new Error(`Arquivo não encontrado: ${rawName}`);
-  await openFileHandle(entry.handle as BrowserFileHandle);
+function findWorkspaceEntry(
+  entries: WorkspaceEntry[],
+  path: string,
+): WorkspaceEntry | undefined {
+  for (const entry of entries) {
+    if (entry.path === path) return entry;
+    if (entry.children) {
+      const nested = findWorkspaceEntry(entry.children, path);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
+async function toggleWorkspaceDirectory(rawPath: unknown): Promise<void> {
+  if (typeof rawPath !== "string") throw new Error("Caminho de pasta inválido.");
+  const entry = findWorkspaceEntry(state.workspaceEntries, rawPath);
+  if (!entry || entry.kind !== "directory") {
+    throw new Error(`Pasta não encontrada: ${rawPath}`);
+  }
+
+  if (state.expandedDirectories.has(rawPath)) {
+    state.expandedDirectories.delete(rawPath);
+    render();
+    return;
+  }
+
+  if (!entry.children) {
+    entry.children = await readDirectory(entry.handle as BrowserDirectoryHandle, entry.path);
+  }
+  state.expandedDirectories.add(rawPath);
+  render();
+}
+
+async function openWorkspaceFile(rawPath: unknown): Promise<void> {
+  if (typeof rawPath !== "string") throw new Error("Caminho de arquivo inválido.");
+  const entry = findWorkspaceEntry(state.workspaceEntries, rawPath);
+  if (!entry || entry.kind !== "file") throw new Error(`Arquivo não encontrado: ${rawPath}`);
+  await openFileHandle(entry.handle as BrowserFileHandle, entry.path);
 }
 
 async function saveToHandle(document: OpenDocument, handle: BrowserFileHandle): Promise<void> {
@@ -274,18 +320,31 @@ async function installPluginFromUrl(url: string): Promise<void> {
   showNotice(`Plugin '${installed.manifest.name}' instalado.`);
 }
 
+function renderTreeEntries(entries: WorkspaceEntry[], depth = 0): string {
+  return entries
+    .map((entry) => {
+      const active = state.activeDocument?.path === entry.path ? " is-active" : "";
+      const padding = 8 + depth * 16;
+
+      if (entry.kind === "directory") {
+        const expanded = state.expandedDirectories.has(entry.path);
+        const children = expanded
+          ? `<div class="tree-children">${entry.children?.length ? renderTreeEntries(entry.children, depth + 1) : '<div class="tree-empty">Pasta vazia</div>'}</div>`
+          : "";
+        return `<div class="tree-node"><button class="tree-entry tree-entry--directory" type="button" data-command="workspace.toggleDirectory" data-entry-path="${escapeHtml(entry.path)}" style="padding-left:${padding}px"><span class="tree-chevron">${expanded ? "▾" : "▸"}</span><span class="tree-entry__icon">D</span><span>${escapeHtml(entry.name)}</span></button>${children}</div>`;
+      }
+
+      return `<button class="tree-entry${active}" type="button" data-command="file.openWorkspace" data-entry-path="${escapeHtml(entry.path)}" style="padding-left:${padding + 16}px"><span class="tree-entry__icon">F</span><span>${escapeHtml(entry.name)}</span></button>`;
+    })
+    .join("");
+}
+
 function renderWorkspaceEntries(): string {
   const actions = `<div class="explorer-actions"><button data-command="file.new">Novo arquivo</button><button data-command="file.openPicker">Abrir arquivo</button><button data-command="workspace.open">Abrir pasta</button></div>`;
   if (!state.workspaceName) {
     return `${actions}<div class="empty-state"><p>Nenhum arquivo ou pasta aberto.</p></div>`;
   }
-  const entries = state.workspaceEntries
-    .map((entry) => {
-      const active = state.activeDocument?.name === entry.name ? " is-active" : "";
-      const command = entry.kind === "file" ? 'data-command="file.openWorkspace"' : "disabled";
-      return `<button class="tree-entry${active}" type="button" ${command} data-file-name="${escapeHtml(entry.name)}"><span class="tree-entry__icon">${entry.kind === "directory" ? "D" : "F"}</span><span>${escapeHtml(entry.name)}</span></button>`;
-    })
-    .join("");
+  const entries = renderTreeEntries(state.workspaceEntries);
   return `${actions}<div class="workspace-title">${escapeHtml(state.workspaceName)}</div><div class="tree">${entries || '<p class="muted">Nenhum item listado.</p>'}</div>`;
 }
 
@@ -340,7 +399,7 @@ function bindInteractions(): void {
       event.stopPropagation();
       const command = element.dataset.command;
       if (!command) return;
-      const argument = element.dataset.pluginId ?? element.dataset.fileName;
+      const argument = element.dataset.pluginId ?? element.dataset.entryPath;
       void commands.execute(command, argument).catch(showError);
     });
   });
@@ -370,6 +429,7 @@ commands.register("menu.file.toggle", () => {
 commands.register("file.new", newFile);
 commands.register("file.openPicker", openFileFromPicker);
 commands.register("workspace.open", openWorkspace);
+commands.register("workspace.toggleDirectory", toggleWorkspaceDirectory);
 commands.register("file.openWorkspace", openWorkspaceFile);
 commands.register("file.save", () => saveFile(false));
 commands.register("file.saveAs", () => saveFile(true));

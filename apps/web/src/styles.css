@@ -273,11 +273,18 @@ button {
   flex-direction: column;
 }
 
+.tree-node,
+.tree-children {
+  display: flex;
+  flex-direction: column;
+}
+
 .tree-entry {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
+  min-height: 26px;
   padding: 5px 8px;
   border: 0;
   border-radius: 3px;
@@ -285,11 +292,34 @@ button {
   color: #c6cad2;
   font-size: 12px;
   text-align: left;
-  cursor: default;
+  cursor: pointer;
 }
 
 .tree-entry:hover {
   background: #292d36;
+}
+
+.tree-entry.is-active {
+  background: #303846;
+  color: #f1f4f8;
+}
+
+.tree-entry--directory {
+  font-weight: 500;
+}
+
+.tree-chevron {
+  width: 12px;
+  color: #939bab;
+  font-size: 10px;
+  text-align: center;
+}
+
+.tree-empty {
+  padding: 4px 8px 6px 40px;
+  color: #666f7e;
+  font-size: 10px;
+  font-style: italic;
 }
 
 .tree-entry.is-active {
