@@ -32,9 +32,58 @@ button {
 
 .ide-shell {
   display: grid;
-  grid-template-rows: 36px minmax(0, 1fr) 24px;
+  grid-template-rows: 36px 36px minmax(0, 1fr) 24px;
   height: 100%;
   background: #17191f;
+}
+
+.runtime-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 12px;
+  border-bottom: 1px solid #2b2f38;
+  background: #1a1d24;
+  color: #b8bec9;
+  font-size: 12px;
+}
+
+.runtime-toolbar__label {
+  min-width: max-content;
+  color: #f0f1f3;
+  font-weight: 600;
+}
+
+.runtime-toolbar select {
+  min-width: 220px;
+  max-width: 420px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #3a404b;
+  border-radius: 4px;
+  background: #232730;
+  color: #d8dce4;
+}
+
+.runtime-toolbar button {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid #3a404b;
+  border-radius: 4px;
+  background: #252a34;
+  color: #d8dce4;
+  font-size: 12px;
+}
+
+.runtime-toolbar button:hover:not(:disabled) {
+  background: #303643;
+}
+
+.runtime-toolbar button:disabled,
+.runtime-toolbar select:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .titlebar {

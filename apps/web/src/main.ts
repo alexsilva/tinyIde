@@ -6,6 +6,8 @@ import {
   PluginManager,
 } from "@tinyide/core";
 import type {
+  ExecutionEnvironment,
+  ExecutionEnvironmentProvider,
   LanguageProvider,
   PluginManifest,
   PluginRecord,
@@ -88,6 +90,9 @@ interface AppState {
   languageActionRunning: boolean;
   availablePlugins: PluginCatalogEntry[];
   pluginCatalogLoading: boolean;
+  environments: ExecutionEnvironment[];
+  selectedEnvironmentId: string | undefined;
+  environmentBusy: boolean;
   logs: string[];
   notice: string | undefined;
   error: string | undefined;
@@ -124,6 +129,9 @@ const state: AppState = {
   languageActionRunning: false,
   availablePlugins: [],
   pluginCatalogLoading: false,
+  environments: [],
+  selectedEnvironmentId: undefined,
+  environmentBusy: false,
   logs: ["tinyIde core initialized", `platform version ${PLATFORM_VERSION}`],
   notice: undefined,
   error: undefined,
@@ -143,6 +151,35 @@ function languageProviderFor(document: OpenDocument | undefined): LanguageProvid
   return capabilities
     .getAll<LanguageProvider>("language.provider")
     .find((provider) => provider.extensions.some((extension) => lowerName.endsWith(extension)));
+}
+
+function environmentProviderFor(
+  document: OpenDocument | undefined,
+): ExecutionEnvironmentProvider | undefined {
+  if (!document) return undefined;
+  const lowerName = document.name.toLowerCase();
+  return capabilities
+    .getAll<ExecutionEnvironmentProvider>("execution.environment")
+    .find((provider) => provider.extensions.some((extension) => lowerName.endsWith(extension)));
+}
+
+async function refreshEnvironments(): Promise<void> {
+  const provider = environmentProviderFor(state.activeDocument);
+  if (!provider) {
+    state.environments = [];
+    state.selectedEnvironmentId = undefined;
+    render();
+    return;
+  }
+
+  state.environments = [...(await provider.list())];
+  if (
+    !state.selectedEnvironmentId ||
+    !state.environments.some((environment) => environment.id === state.selectedEnvironmentId)
+  ) {
+    state.selectedEnvironmentId = state.environments[0]?.id;
+  }
+  render();
 }
 
 function renderHighlightedSource(source: string, provider: LanguageProvider): string {
@@ -214,7 +251,13 @@ async function restorePlugins(): Promise<void> {
       if (!stored || typeof stored.sourceUrl !== "string" || typeof stored.enabled !== "boolean") {
         throw new Error("Stored plugin entry is invalid.");
       }
-      const installed = await plugins.install(stored.manifest);
+      const migratedManifest: PluginManifest = stored.manifest.category
+        ? stored.manifest
+        : {
+            ...stored.manifest,
+            category: Array.isArray(stored.manifest.contributes?.languages) ? "language" : "tool",
+          };
+      const installed = await plugins.install(migratedManifest);
       pluginSourceUrls.set(installed.manifest.id, stored.sourceUrl);
       if (stored.enabled) {
         await plugins.enable(installed.manifest.id);
@@ -325,6 +368,7 @@ async function openFileHandle(handle: BrowserFileHandle, path?: string): Promise
   state.workspaceName = state.workspaceName ?? "Arquivo avulso";
   await events.emit("file.opened", { name: file.name });
   log(`file.opened: ${file.name}`);
+  await refreshEnvironments();
 }
 
 async function openFileFromPicker(): Promise<void> {
@@ -475,6 +519,7 @@ async function installPluginFromUrl(url: string): Promise<void> {
   }
 
   persistPlugins();
+  await refreshEnvironments();
   showNotice(`Plugin '${installed.manifest.name}' instalado e ativado.`);
 }
 
@@ -514,13 +559,16 @@ function pluginActions(plugin: PluginRecord): string {
 }
 
 function renderPlugins(): string {
-  const installedCards = plugins.list().map((plugin) => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(plugin.manifest.name)}</strong><span class="state-badge">${escapeHtml(plugin.state)}</span></div><p>${escapeHtml(plugin.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(plugin.manifest.id)} · ${escapeHtml(plugin.manifest.version)}</small>${pluginActions(plugin)}</article>`).join("");
-  const availableCards = state.availablePlugins
-    .filter((entry) => !plugins.get(entry.manifest.id))
-    .map((entry) => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(entry.manifest.name)}</strong><span class="state-badge">disponível</span></div><p>${escapeHtml(entry.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(entry.manifest.id)} · ${escapeHtml(entry.manifest.version)}</small><div class="plugin-actions"><button class="primary-button" data-command="plugin.installFromUrl" data-plugin-url="${escapeHtml(entry.manifestUrl)}">Instalar</button></div></article>`)
-    .join("");
+  const renderCard = (plugin: PluginRecord): string => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(plugin.manifest.name)}</strong><span class="state-badge">${escapeHtml(plugin.state)}</span></div><p>${escapeHtml(plugin.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(plugin.manifest.id)} · ${escapeHtml(plugin.manifest.version)}</small>${pluginActions(plugin)}</article>`;
+  const renderAvailableCard = (entry: PluginCatalogEntry): string => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(entry.manifest.name)}</strong><span class="state-badge">disponível</span></div><p>${escapeHtml(entry.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(entry.manifest.id)} · ${escapeHtml(entry.manifest.version)}</small><div class="plugin-actions"><button class="primary-button" data-command="plugin.installFromUrl" data-plugin-url="${escapeHtml(entry.manifestUrl)}">Instalar</button></div></article>`;
+  const installed = plugins.list();
+  const available = state.availablePlugins.filter((entry) => !plugins.get(entry.manifest.id));
+  const installedLanguages = installed.filter((plugin) => plugin.manifest.category === "language").map(renderCard).join("");
+  const installedTools = installed.filter((plugin) => plugin.manifest.category === "tool").map(renderCard).join("");
+  const availableLanguages = available.filter((entry) => entry.manifest.category === "language").map(renderAvailableCard).join("");
+  const availableTools = available.filter((entry) => entry.manifest.category === "tool").map(renderAvailableCard).join("");
 
-  return `<form class="plugin-install" data-form="plugin-install"><label for="plugin-url">Manifesto remoto</label><div class="input-row"><input id="plugin-url" name="url" type="url" placeholder="https://registry.example/plugin.json" required /><button class="primary-button" type="submit">Instalar</button></div></form><div class="plugin-section"><h3>Instalados</h3><div class="plugin-list">${installedCards || '<div class="empty-state"><p>Nenhum plugin instalado.</p></div>'}</div></div><div class="plugin-section"><h3>Disponíveis</h3><div class="plugin-list">${state.pluginCatalogLoading ? '<p class="muted">Carregando catálogo...</p>' : availableCards || '<p class="muted">Nenhum plugin disponível.</p>'}</div></div>`;
+  return `<form class="plugin-install" data-form="plugin-install"><label for="plugin-url">Manifesto remoto</label><div class="input-row"><input id="plugin-url" name="url" type="url" placeholder="https://registry.example/plugin.json" required /><button class="primary-button" type="submit">Instalar</button></div></form><div class="plugin-section"><h3>Languages</h3><div class="plugin-list">${installedLanguages}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableLanguages}${!installedLanguages && !availableLanguages ? '<p class="muted">Nenhum plugin de linguagem.</p>' : ""}</div></div><div class="plugin-section"><h3>Tools</h3><div class="plugin-list">${installedTools}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableTools}${!installedTools && !availableTools ? '<p class="muted">Nenhum plugin de ferramenta.</p>' : ""}</div></div>`;
 }
 
 function renderSidebar(): string {
@@ -539,7 +587,7 @@ function renderEditor(): string {
   const dirty = active.content !== active.savedContent;
   const provider = languageProviderFor(active);
   const languageActions = provider
-    ? `<button data-command="language.lint" ${state.languageActionRunning ? "disabled" : ""}>Lint</button><button class="primary-button" data-command="language.run" ${state.languageActionRunning ? "disabled" : ""}>${state.languageActionRunning ? "Executando..." : "Executar"}</button>`
+    ? `<button data-command="language.lint" ${state.languageActionRunning ? "disabled" : ""}>Lint</button>${provider.run ? `<button data-command="language.run" ${state.languageActionRunning ? "disabled" : ""}>${state.languageActionRunning ? "Executando..." : "Executar interno"}</button>` : ""}`
     : "";
   const diagnostics = state.diagnostics.length
     ? `<div class="diagnostics">${state.diagnostics
@@ -573,7 +621,7 @@ async function lintActiveDocument(): Promise<void> {
 async function runActiveDocument(): Promise<void> {
   const active = state.activeDocument;
   const provider = languageProviderFor(active);
-  if (!active || !provider) throw new Error("Nenhum provider de linguagem disponível para este arquivo.");
+  if (!active || !provider?.run) throw new Error("Nenhum executor de linguagem disponível para este arquivo.");
   state.languageActionRunning = true;
   state.panelVisible = true;
   state.notice = `Executando '${active.name}'...`;
@@ -610,6 +658,106 @@ async function runActiveDocument(): Promise<void> {
   }
 }
 
+async function createExecutionEnvironment(): Promise<void> {
+  const provider = environmentProviderFor(state.activeDocument);
+  if (!provider) throw new Error("Nenhum plugin de ambiente disponível para este arquivo.");
+  const name = window.prompt("Nome do ambiente virtual:", ".venv");
+  if (!name) return;
+  state.environmentBusy = true;
+  state.notice = `Criando ambiente '${name}'...`;
+  state.error = undefined;
+  render();
+  try {
+    const environment = await provider.create(name);
+    await refreshEnvironments();
+    state.selectedEnvironmentId = environment.id;
+    showNotice(`Ambiente '${environment.name}' criado.`);
+  } finally {
+    state.environmentBusy = false;
+    render();
+  }
+}
+
+async function installEnvironmentPackages(): Promise<void> {
+  const provider = environmentProviderFor(state.activeDocument);
+  const environmentId = state.selectedEnvironmentId;
+  if (!provider || !environmentId) throw new Error("Selecione um ambiente virtual.");
+  const value = window.prompt("Pacotes para instalar, separados por espaço:", "");
+  if (!value?.trim()) return;
+  const packages = value.trim().split(/\s+/);
+  state.environmentBusy = true;
+  state.notice = `Instalando ${packages.join(", ")}...`;
+  state.error = undefined;
+  render();
+  try {
+    await provider.installPackages(environmentId, packages);
+    await refreshEnvironments();
+    showNotice("Pacotes instalados no ambiente selecionado.");
+  } finally {
+    state.environmentBusy = false;
+    render();
+  }
+}
+
+async function runWithSelectedEnvironment(): Promise<void> {
+  const active = state.activeDocument;
+  const provider = environmentProviderFor(active);
+  const environmentId = state.selectedEnvironmentId;
+  if (!active || !provider) throw new Error("Nenhum plugin de ambiente disponível para este arquivo.");
+  if (!environmentId) throw new Error("Crie ou selecione um ambiente virtual antes de executar.");
+
+  const environment = state.environments.find((candidate) => candidate.id === environmentId);
+  state.environmentBusy = true;
+  state.panelVisible = true;
+  state.notice = `Executando '${active.name}' em ${environment?.name ?? environmentId}...`;
+  state.error = undefined;
+  state.logs = [`[${provider.name}] Executando ${active.name} em ${environment?.name ?? environmentId}...`];
+  render();
+
+  try {
+    const result = await provider.run(environmentId, {
+      source: active.content,
+      fileName: active.name,
+    });
+    state.logs = [
+      `[${provider.name} · ${environment?.name ?? environmentId}] ${active.name} exited with ${result.exitCode} in ${result.durationMs.toFixed(0)}ms`,
+      result.stdout,
+      result.stderr,
+    ].filter(Boolean);
+    if (result.exitCode === 0) {
+      state.notice = `'${active.name}' executado no ambiente '${environment?.name ?? environmentId}'.`;
+      state.error = undefined;
+    } else {
+      state.error = `'${active.name}' terminou com código ${result.exitCode}.`;
+      state.notice = undefined;
+    }
+    render();
+    requestAnimationFrame(() => {
+      const output = appRoot.querySelector<HTMLElement>(".output");
+      if (output) output.scrollTop = output.scrollHeight;
+    });
+  } finally {
+    state.environmentBusy = false;
+    render();
+  }
+}
+
+function renderEnvironmentToolbar(): string {
+  const active = state.activeDocument;
+  const provider = environmentProviderFor(active);
+  if (!active) {
+    return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">Runtime</span><span class="muted">Abra um arquivo para selecionar um ambiente.</span></div>`;
+  }
+  if (!provider) {
+    return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">Runtime</span><span class="muted">Nenhum plugin de ambiente para ${escapeHtml(active.name)}.</span><button data-command="view.plugins">Plugins</button></div>`;
+  }
+
+  const options = state.environments
+    .map((environment) => `<option value="${escapeHtml(environment.id)}" ${environment.id === state.selectedEnvironmentId ? "selected" : ""}>${escapeHtml(environment.name)}${environment.version ? ` · ${escapeHtml(environment.version)}` : ""}</option>`)
+    .join("");
+  return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">${escapeHtml(provider.name)}</span><select data-environment-select aria-label="Ambiente de execução" ${state.environmentBusy ? "disabled" : ""}><option value="">${options ? "Selecione um ambiente" : "Nenhum ambiente"}</option>${options}</select><button data-command="environment.refresh" ${state.environmentBusy ? "disabled" : ""}>Atualizar</button><button data-command="environment.create" ${state.environmentBusy ? "disabled" : ""}>Novo ambiente</button><button data-command="environment.packages" ${!state.selectedEnvironmentId || state.environmentBusy ? "disabled" : ""}>Pacotes</button><button class="primary-button" data-command="environment.run" ${!state.selectedEnvironmentId || state.environmentBusy ? "disabled" : ""}>${state.environmentBusy ? "Executando..." : "Executar"}</button></div>`;
+}
+
 function renderFileMenu(): string {
   if (!state.fileMenuOpen) return "";
   return `<div class="file-menu" role="menu"><button data-command="file.new">Novo arquivo <span>Ctrl+N</span></button><button data-command="file.openPicker">Abrir arquivo <span>Ctrl+O</span></button><button data-command="workspace.open">Abrir pasta</button><hr /><button data-command="file.save">Salvar <span>Ctrl+S</span></button><button data-command="file.saveAs">Salvar como <span>Ctrl+Shift+S</span></button></div>`;
@@ -623,7 +771,7 @@ function renderNotice(): string {
 function render(): void {
   const active = state.activeDocument;
   const dirty = active ? active.content !== active.savedContent : false;
-  appRoot.innerHTML = `<div class="ide-shell"><header class="titlebar"><div class="brand">tinyIde</div><nav class="menu" aria-label="Menu principal"><div class="menu-item"><button data-command="menu.file.toggle">Arquivo</button>${renderFileMenu()}</div><button data-command="file.save">Salvar</button><button data-command="panel.toggle">Painel</button></nav><div class="titlebar__center">${escapeHtml(state.workspaceName ?? active?.name ?? "Sem workspace")}</div><div class="version">v${PLATFORM_VERSION}</div></header><main class="workbench ${state.sidebarVisible ? "" : "workbench--sidebar-hidden"}"><nav class="activitybar" aria-label="Atividades"><button class="activity-button ${state.sidebarView === "explorer" ? "is-active" : ""}" data-command="view.explorer">EX</button><button class="activity-button ${state.sidebarView === "plugins" ? "is-active" : ""}" data-command="view.plugins">PL</button><div class="activitybar__spacer"></div><button class="activity-button" data-command="panel.toggle">PN</button></nav>${renderSidebar()}<section class="editor-area"><div class="editor-tabs"><button class="editor-tab is-active"><span>TXT</span>${escapeHtml(active?.name ?? "Bem-vindo")}${dirty ? " ●" : ""}</button></div>${renderEditor()}<section class="bottom-panel ${state.panelVisible ? "" : "is-hidden"}"><header class="panel-tabs"><button class="is-active">SAÍDA</button><button>PROBLEMAS <span class="counter">0</span></button></header><pre class="output">${state.logs.map(escapeHtml).join("\n")}</pre></section></section></main><footer class="statusbar"><button data-command="file.openPicker">${escapeHtml(state.workspaceName ?? "Abrir arquivo")}</button><span>${plugins.list().length} plugin(s)</span><span class="statusbar__spacer"></span><span>${dirty ? "Alterações não salvas" : "Salvo"}</span><span>UTF-8</span><span>Texto</span></footer>${renderNotice()}</div>`;
+  appRoot.innerHTML = `<div class="ide-shell"><header class="titlebar"><div class="brand">tinyIde</div><nav class="menu" aria-label="Menu principal"><div class="menu-item"><button data-command="menu.file.toggle">Arquivo</button>${renderFileMenu()}</div><button data-command="file.save">Salvar</button><button data-command="panel.toggle">Painel</button></nav><div class="titlebar__center">${escapeHtml(state.workspaceName ?? active?.name ?? "Sem workspace")}</div><div class="version">v${PLATFORM_VERSION}</div></header>${renderEnvironmentToolbar()}<main class="workbench ${state.sidebarVisible ? "" : "workbench--sidebar-hidden"}"><nav class="activitybar" aria-label="Atividades"><button class="activity-button ${state.sidebarView === "explorer" ? "is-active" : ""}" data-command="view.explorer">EX</button><button class="activity-button ${state.sidebarView === "plugins" ? "is-active" : ""}" data-command="view.plugins">PL</button><div class="activitybar__spacer"></div><button class="activity-button" data-command="panel.toggle">PN</button></nav>${renderSidebar()}<section class="editor-area"><div class="editor-tabs"><button class="editor-tab is-active"><span>TXT</span>${escapeHtml(active?.name ?? "Bem-vindo")}${dirty ? " ●" : ""}</button></div>${renderEditor()}<section class="bottom-panel ${state.panelVisible ? "" : "is-hidden"}"><header class="panel-tabs"><button class="is-active">SAÍDA</button><button>PROBLEMAS <span class="counter">0</span></button></header><pre class="output">${state.logs.map(escapeHtml).join("\n")}</pre></section></section></main><footer class="statusbar"><button data-command="file.openPicker">${escapeHtml(state.workspaceName ?? "Abrir arquivo")}</button><span>${plugins.list().length} plugin(s)</span><span class="statusbar__spacer"></span><span>${dirty ? "Alterações não salvas" : "Salvo"}</span><span>UTF-8</span><span>Texto</span></footer>${renderNotice()}</div>`;
   bindInteractions();
 }
 
@@ -672,6 +820,11 @@ function bindInteractions(): void {
     const url = new FormData(event.currentTarget as HTMLFormElement).get("url");
     void commands.execute("plugin.installFromUrl", url).catch(showError);
   });
+  appRoot.querySelector<HTMLSelectElement>("[data-environment-select]")?.addEventListener("change", (event) => {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    state.selectedEnvironmentId = value || undefined;
+    render();
+  });
 }
 
 commands.register("menu.file.toggle", () => {
@@ -687,6 +840,10 @@ commands.register("file.save", () => saveFile(false));
 commands.register("file.saveAs", () => saveFile(true));
 commands.register("language.lint", lintActiveDocument);
 commands.register("language.run", runActiveDocument);
+commands.register("environment.refresh", refreshEnvironments);
+commands.register("environment.create", createExecutionEnvironment);
+commands.register("environment.packages", installEnvironmentPackages);
+commands.register("environment.run", runWithSelectedEnvironment);
 commands.register("view.explorer", () => { state.sidebarView = "explorer"; state.sidebarVisible = true; render(); });
 commands.register("view.plugins", () => {
   state.sidebarView = "plugins";
@@ -707,11 +864,15 @@ commands.register("plugin.enable", async (rawId: unknown) => {
   const plugin = await plugins.enable(rawId);
   await plugins.activate(rawId, { commands, events, capabilities, subscriptions: [] });
   persistPlugins();
+  await refreshEnvironments();
   showNotice(`Plugin '${plugin.manifest.name}' habilitado.`);
 });
 commands.register("plugin.disable", async (rawId: unknown) => {
   if (typeof rawId !== "string") throw new Error("Plugin id must be a string.");
-  const plugin = await plugins.disable(rawId); persistPlugins(); showNotice(`Plugin '${plugin.manifest.name}' desabilitado.`);
+  const plugin = await plugins.disable(rawId);
+  persistPlugins();
+  await refreshEnvironments();
+  showNotice(`Plugin '${plugin.manifest.name}' desabilitado.`);
 });
 commands.register("plugin.uninstall", async (rawId: unknown) => {
   if (typeof rawId !== "string") throw new Error("Plugin id must be a string.");
@@ -719,6 +880,7 @@ commands.register("plugin.uninstall", async (rawId: unknown) => {
   await plugins.uninstall(rawId);
   pluginSourceUrls.delete(rawId);
   persistPlugins();
+  await refreshEnvironments();
   showNotice(`Plugin '${pluginName}' removido.`);
 });
 

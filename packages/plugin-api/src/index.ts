@@ -41,12 +41,15 @@ export interface PluginEntrypoints {
   readonly backend?: string;
 }
 
+export type PluginCategory = "language" | "tool";
+
 export interface PluginManifest {
   readonly id: string;
   readonly name: string;
   readonly description?: string;
   readonly version: string;
   readonly publisher: string;
+  readonly category: PluginCategory;
   readonly engines: PluginEngineRequirement;
   readonly entrypoints?: PluginEntrypoints;
   readonly activationEvents?: readonly string[];
@@ -125,10 +128,42 @@ export interface LanguageProvider {
   readonly extensions: readonly string[];
   highlight(source: string): readonly SyntaxToken[];
   lint(source: string, fileName: string): Promise<readonly TextDiagnostic[]>;
-  run(source: string, fileName: string): Promise<ScriptExecutionResult>;
+  run?(source: string, fileName: string): Promise<ScriptExecutionResult>;
 }
 
 export const LANGUAGE_PROVIDER_CAPABILITY = "language.provider";
+
+export interface ExecutionEnvironment {
+  readonly id: string;
+  readonly name: string;
+  readonly status: "ready" | "creating" | "error";
+  readonly executable?: string;
+  readonly version?: string;
+  readonly packages?: readonly string[];
+  readonly error?: string;
+}
+
+export interface EnvironmentExecutionRequest {
+  readonly source: string;
+  readonly fileName: string;
+  readonly args?: readonly string[];
+}
+
+export interface ExecutionEnvironmentProvider {
+  readonly id: string;
+  readonly name: string;
+  readonly extensions: readonly string[];
+  list(): Promise<readonly ExecutionEnvironment[]>;
+  create(name: string): Promise<ExecutionEnvironment>;
+  remove(environmentId: string): Promise<void>;
+  installPackages(environmentId: string, packages: readonly string[]): Promise<ExecutionEnvironment>;
+  run(
+    environmentId: string,
+    request: EnvironmentExecutionRequest,
+  ): Promise<ScriptExecutionResult>;
+}
+
+export const EXECUTION_ENVIRONMENT_CAPABILITY = "execution.environment";
 
 export interface PluginHost {
   activate(plugin: PluginRecord, context: PluginContext): Promise<void>;

@@ -1,6 +1,6 @@
-import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { defineConfig } from "vite";
 
 const configDirectory = dirname(fileURLToPath(import.meta.url));
@@ -14,8 +14,53 @@ const contentTypes = {
 };
 
 function developmentPluginServer() {
+  const backendHandlers = new Map();
+
+  async function resolveBackend(pluginId) {
+    if (backendHandlers.has(pluginId)) return backendHandlers.get(pluginId);
+
+    for (const directoryName of readdirSync(pluginsRoot)) {
+      const manifestPath = join(pluginsRoot, directoryName, "plugin.json");
+      if (!existsSync(manifestPath)) continue;
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      if (manifest.id !== pluginId || !manifest.entrypoints?.backend) continue;
+
+      const backendPath = resolve(dirname(manifestPath), manifest.entrypoints.backend);
+      const imported = await import(`${pathToFileURL(backendPath).href}?v=${statSync(backendPath).mtimeMs}`);
+      if (typeof imported.createBackend !== "function") {
+        throw new Error(`Plugin backend must export createBackend(): ${pluginId}`);
+      }
+      const handler = imported.createBackend({ workspaceRoot: resolve(configDirectory, "../..") });
+      backendHandlers.set(pluginId, handler);
+      return handler;
+    }
+
+    return undefined;
+  }
+
   const middleware = (request, response, next) => {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
+
+    if (requestUrl.pathname.startsWith("/plugin-api/")) {
+      const segments = requestUrl.pathname.slice("/plugin-api/".length).split("/");
+      const pluginId = decodeURIComponent(segments.shift() ?? "");
+      const relativePath = `/${segments.join("/")}`;
+      void resolveBackend(pluginId)
+        .then((handler) => {
+          if (!handler) {
+            response.statusCode = 404;
+            response.end("Plugin backend not found.");
+            return;
+          }
+          return handler(request, response, relativePath);
+        })
+        .catch((error) => {
+          response.statusCode = 500;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        });
+      return;
+    }
 
     if (requestUrl.pathname === "/dev-plugins/index.json") {
       const plugins = existsSync(pluginsRoot)

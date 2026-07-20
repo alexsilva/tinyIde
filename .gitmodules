@@ -1,3 +1,6 @@
 [submodule "plugins/python"]
 	path = plugins/python
 	url = ./.repos/tinyide-python
+[submodule "plugins/python-venv"]
+	path = plugins/python-venv
+	url = ./.repos/tinyide-python-venv

@@ -2,6 +2,7 @@ import type { PluginManifest } from "@tinyide/plugin-api";
 import { parseVersion } from "./version";
 
 const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+const PLUGIN_CATEGORIES = new Set(["language", "tool"]);
 
 export class InvalidPluginManifestError extends Error {
   override readonly name = "InvalidPluginManifestError";
@@ -28,10 +29,17 @@ export function validatePluginManifest(value: unknown): PluginManifest {
 
   const id = requireString(value, "id");
   const version = requireString(value, "version");
+  const category = requireString(value, "category");
 
   if (!PLUGIN_ID_PATTERN.test(id)) {
     throw new InvalidPluginManifestError(
       "Plugin id must use lowercase letters, digits, dots, underscores or hyphens.",
+    );
+  }
+
+  if (!PLUGIN_CATEGORIES.has(category)) {
+    throw new InvalidPluginManifestError(
+      "Manifest field 'category' must be either 'language' or 'tool'.",
     );
   }
 

@@ -8,6 +8,7 @@ const manifest = {
   name: "Example Theme",
   version: "1.2.0",
   publisher: "example",
+  category: "tool",
   engines: { tinyide: ">=0.1.0 <1.0.0" },
   permissions: ["ui.contribute"],
 } as const;
