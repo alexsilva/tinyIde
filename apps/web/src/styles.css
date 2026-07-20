@@ -453,6 +453,10 @@ button {
   background: #17191f;
 }
 
+.code-editor:has(.diagnostics) {
+  grid-template-rows: 42px auto minmax(0, 1fr);
+}
+
 .editor-toolbar {
   display: flex;
   align-items: center;
@@ -493,6 +497,85 @@ button {
   line-height: 1.65;
   tab-size: 4;
   white-space: pre;
+}
+
+.highlight-editor {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #17191f;
+}
+
+.highlight-editor .code-input,
+.syntax-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: auto;
+  padding: 22px 28px 60px;
+  border: 0;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 4;
+  white-space: pre;
+}
+
+.syntax-layer {
+  pointer-events: none;
+  color: #d2d6df;
+  background:
+    radial-gradient(circle at 74% 20%, rgba(122, 162, 247, 0.05), transparent 28%),
+    #17191f;
+}
+
+.code-input--highlighted {
+  z-index: 1;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.code-input--highlighted::selection {
+  background: rgba(122, 162, 247, 0.35);
+}
+
+.syntax-keyword { color: #bb9af7; font-weight: 600; }
+.syntax-string { color: #9ece6a; }
+.syntax-number { color: #ff9e64; }
+.syntax-comment { color: #6f7786; font-style: italic; }
+.syntax-function { color: #7aa2f7; }
+.syntax-class { color: #e0af68; }
+.syntax-decorator { color: #f7768e; }
+.syntax-builtin { color: #2ac3de; }
+.syntax-operator { color: #89ddff; }
+
+.diagnostics {
+  display: grid;
+  max-height: 120px;
+  overflow: auto;
+  border-bottom: 1px solid #3b2d32;
+  background: #211a1d;
+}
+
+.diagnostics button {
+  padding: 6px 12px;
+  border: 0;
+  border-bottom: 1px solid #32262b;
+  background: transparent;
+  color: #d6b8c0;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.diagnostics strong {
+  color: #f7768e;
+  text-transform: uppercase;
 }
 
 .token-heading {

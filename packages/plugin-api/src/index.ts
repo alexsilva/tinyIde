@@ -85,6 +85,51 @@ export interface PluginModule {
   deactivate?(): void | Promise<void>;
 }
 
+export type DiagnosticSeverity = "error" | "warning" | "information";
+
+export interface TextDiagnostic {
+  readonly severity: DiagnosticSeverity;
+  readonly message: string;
+  readonly line: number;
+  readonly column: number;
+  readonly endLine?: number;
+  readonly endColumn?: number;
+  readonly code?: string;
+}
+
+export interface SyntaxToken {
+  readonly start: number;
+  readonly end: number;
+  readonly scope:
+    | "keyword"
+    | "string"
+    | "number"
+    | "comment"
+    | "function"
+    | "class"
+    | "decorator"
+    | "builtin"
+    | "operator";
+}
+
+export interface ScriptExecutionResult {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number;
+  readonly durationMs: number;
+}
+
+export interface LanguageProvider {
+  readonly id: string;
+  readonly name: string;
+  readonly extensions: readonly string[];
+  highlight(source: string): readonly SyntaxToken[];
+  lint(source: string, fileName: string): Promise<readonly TextDiagnostic[]>;
+  run(source: string, fileName: string): Promise<ScriptExecutionResult>;
+}
+
+export const LANGUAGE_PROVIDER_CAPABILITY = "language.provider";
+
 export interface PluginHost {
   activate(plugin: PluginRecord, context: PluginContext): Promise<void>;
   deactivate(plugin: PluginRecord): Promise<void>;

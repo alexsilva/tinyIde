@@ -1,5 +1,16 @@
-import { CapabilityRegistry, CommandRegistry, EventBus, PluginManager } from "@tinyide/core";
-import type { PluginManifest, PluginRecord } from "@tinyide/plugin-api";
+import {
+  CapabilityRegistry,
+  CommandRegistry,
+  EventBus,
+  ModulePluginHost,
+  PluginManager,
+} from "@tinyide/core";
+import type {
+  LanguageProvider,
+  PluginManifest,
+  PluginRecord,
+  TextDiagnostic,
+} from "@tinyide/plugin-api";
 import "./styles.css";
 
 const PLATFORM_VERSION = "0.4.0";
@@ -61,6 +72,8 @@ interface AppState {
   workspaceEntries: WorkspaceEntry[];
   expandedDirectories: Set<string>;
   activeDocument: OpenDocument | undefined;
+  diagnostics: TextDiagnostic[];
+  languageActionRunning: boolean;
   logs: string[];
   notice: string | undefined;
   error: string | undefined;
@@ -73,7 +86,27 @@ const appRoot = root;
 const events = new EventBus();
 const commands = new CommandRegistry();
 const capabilities = new CapabilityRegistry();
-const plugins = new PluginManager({ platformVersion: PLATFORM_VERSION, events });
+const developmentManifests = import.meta.glob("../../../plugins/*/plugin.json", {
+  eager: true,
+  import: "default",
+}) as Record<string, PluginManifest>;
+const developmentModules = import.meta.glob("../../../plugins/*/src/index.js");
+const moduleLoaders = new Map<string, () => Promise<unknown>>();
+
+for (const [manifestPath, manifest] of Object.entries(developmentManifests)) {
+  const modulePath = manifestPath.replace(/plugin\.json$/, "src/index.js");
+  const loader = developmentModules[modulePath];
+  if (loader) moduleLoaders.set(manifest.id, loader);
+}
+
+const pluginHost = new ModulePluginHost({
+  loadModule(plugin) {
+    const loader = moduleLoaders.get(plugin.manifest.id);
+    if (!loader) throw new Error(`Plugin module not found: ${plugin.manifest.id}`);
+    return loader();
+  },
+});
+const plugins = new PluginManager({ platformVersion: PLATFORM_VERSION, events, host: pluginHost });
 
 const state: AppState = {
   sidebarVisible: true,
@@ -84,6 +117,8 @@ const state: AppState = {
   workspaceEntries: [],
   expandedDirectories: new Set<string>(),
   activeDocument: undefined,
+  diagnostics: [],
+  languageActionRunning: false,
   logs: ["tinyIde core initialized", `platform version ${PLATFORM_VERSION}`],
   notice: undefined,
   error: undefined,
@@ -96,6 +131,29 @@ const escapeHtml = (value: string): string =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+
+function languageProviderFor(document: OpenDocument | undefined): LanguageProvider | undefined {
+  if (!document) return undefined;
+  const lowerName = document.name.toLowerCase();
+  return capabilities
+    .getAll<LanguageProvider>("language.provider")
+    .find((provider) => provider.extensions.some((extension) => lowerName.endsWith(extension)));
+}
+
+function renderHighlightedSource(source: string, provider: LanguageProvider): string {
+  const tokens = [...provider.highlight(source)].sort((left, right) => left.start - right.start);
+  let cursor = 0;
+  let output = "";
+
+  for (const token of tokens) {
+    if (token.start < cursor || token.start < 0 || token.end > source.length) continue;
+    output += escapeHtml(source.slice(cursor, token.start));
+    output += `<span class="syntax-${token.scope}">${escapeHtml(source.slice(token.start, token.end))}</span>`;
+    cursor = token.end;
+  }
+
+  return `${output}${escapeHtml(source.slice(cursor))}\n`;
+}
 
 function log(message: string): void {
   const timestamp = new Intl.DateTimeFormat("pt-BR", {
@@ -132,7 +190,10 @@ async function restorePlugins(): Promise<void> {
   try {
     const manifests = JSON.parse(rawValue) as unknown;
     if (!Array.isArray(manifests)) throw new Error("Stored plugin metadata is invalid.");
-    for (const manifest of manifests) await plugins.install(manifest);
+    for (const manifest of manifests) {
+      const pluginManifest = manifest as PluginManifest;
+      if (!plugins.get(pluginManifest.id)) await plugins.install(pluginManifest);
+    }
   } catch (error) {
     localStorage.removeItem(PLUGIN_STORAGE_KEY);
     showError(error);
@@ -179,6 +240,7 @@ function newFile(): void {
     content: "",
     savedContent: "",
   };
+  state.diagnostics = [];
   render();
   requestAnimationFrame(() => appRoot.querySelector<HTMLTextAreaElement>("[data-editor]")?.focus());
 }
@@ -189,6 +251,7 @@ async function openFileHandle(handle: BrowserFileHandle, path?: string): Promise
   state.activeDocument = path
     ? { name: file.name, handle, path, content, savedContent: content }
     : { name: file.name, handle, content, savedContent: content };
+  state.diagnostics = [];
   state.workspaceName = state.workspaceName ?? "Arquivo avulso";
   await events.emit("file.opened", { name: file.name });
   log(`file.opened: ${file.name}`);
@@ -373,7 +436,55 @@ function renderEditor(): string {
   const active = state.activeDocument;
   if (!active) return renderWelcome();
   const dirty = active.content !== active.savedContent;
-  return `<div class="code-editor"><div class="editor-toolbar"><span>${dirty ? "● " : ""}${escapeHtml(active.name)}</span><div><button data-command="file.saveAs">Salvar como</button><button class="primary-button" data-command="file.save">Salvar</button></div></div><textarea class="code-input" data-editor spellcheck="false" aria-label="Editor de ${escapeHtml(active.name)}">${escapeHtml(active.content)}</textarea></div>`;
+  const provider = languageProviderFor(active);
+  const languageActions = provider
+    ? `<button data-command="language.lint" ${state.languageActionRunning ? "disabled" : ""}>Lint</button><button class="primary-button" data-command="language.run" ${state.languageActionRunning ? "disabled" : ""}>Executar</button>`
+    : "";
+  const diagnostics = state.diagnostics.length
+    ? `<div class="diagnostics">${state.diagnostics
+        .map(
+          (diagnostic) =>
+            `<button data-diagnostic-line="${diagnostic.line}"><strong>${diagnostic.severity}</strong> ${diagnostic.line}:${diagnostic.column} ${escapeHtml(diagnostic.message)}</button>`,
+        )
+        .join("")}</div>`
+    : "";
+  const editorSurface = provider
+    ? `<div class="highlight-editor"><pre class="syntax-layer" data-syntax-layer>${renderHighlightedSource(active.content, provider)}</pre><textarea class="code-input code-input--highlighted" data-editor spellcheck="false" aria-label="Editor de ${escapeHtml(active.name)}">${escapeHtml(active.content)}</textarea></div>`
+    : `<textarea class="code-input" data-editor spellcheck="false" aria-label="Editor de ${escapeHtml(active.name)}">${escapeHtml(active.content)}</textarea>`;
+  return `<div class="code-editor"><div class="editor-toolbar"><span>${dirty ? "● " : ""}${escapeHtml(active.name)}${provider ? ` · ${escapeHtml(provider.name)}` : ""}</span><div>${languageActions}<button data-command="file.saveAs">Salvar como</button><button class="primary-button" data-command="file.save">Salvar</button></div></div>${diagnostics}${editorSurface}</div>`;
+}
+
+async function lintActiveDocument(): Promise<void> {
+  const active = state.activeDocument;
+  const provider = languageProviderFor(active);
+  if (!active || !provider) throw new Error("Nenhum provider de linguagem disponível para este arquivo.");
+  state.languageActionRunning = true;
+  render();
+  try {
+    state.diagnostics = [...(await provider.lint(active.content, active.name))];
+    log(`${provider.id}.lint: ${state.diagnostics.length} diagnóstico(s)`);
+  } finally {
+    state.languageActionRunning = false;
+    render();
+  }
+}
+
+async function runActiveDocument(): Promise<void> {
+  const active = state.activeDocument;
+  const provider = languageProviderFor(active);
+  if (!active || !provider) throw new Error("Nenhum provider de linguagem disponível para este arquivo.");
+  state.languageActionRunning = true;
+  state.panelVisible = true;
+  render();
+  try {
+    const result = await provider.run(active.content, active.name);
+    const header = `[${provider.name}] ${active.name} exited with ${result.exitCode} in ${result.durationMs.toFixed(0)}ms`;
+    state.logs = [...state.logs, header, result.stdout || "", result.stderr || ""].filter(Boolean).slice(-100);
+    render();
+  } finally {
+    state.languageActionRunning = false;
+    render();
+  }
 }
 
 function renderFileMenu(): string {
@@ -415,6 +526,24 @@ function bindInteractions(): void {
       }
     });
   });
+  const editor = appRoot.querySelector<HTMLTextAreaElement>("[data-editor]");
+  const syntaxLayer = appRoot.querySelector<HTMLElement>("[data-syntax-layer]");
+  editor?.addEventListener("scroll", () => {
+    if (!syntaxLayer) return;
+    syntaxLayer.scrollTop = editor.scrollTop;
+    syntaxLayer.scrollLeft = editor.scrollLeft;
+  });
+  appRoot.querySelectorAll<HTMLElement>("[data-diagnostic-line]").forEach((element) => {
+    element.addEventListener("click", () => {
+      const line = Number(element.dataset.diagnosticLine ?? "1");
+      const textarea = appRoot.querySelector<HTMLTextAreaElement>("[data-editor]");
+      if (!textarea || !state.activeDocument) return;
+      const lines = state.activeDocument.content.split("\n");
+      const offset = lines.slice(0, Math.max(0, line - 1)).reduce((total, value) => total + value.length + 1, 0);
+      textarea.focus();
+      textarea.setSelectionRange(offset, offset);
+    });
+  });
   appRoot.querySelector<HTMLFormElement>('[data-form="plugin-install"]')?.addEventListener("submit", (event) => {
     event.preventDefault();
     const url = new FormData(event.currentTarget as HTMLFormElement).get("url");
@@ -433,6 +562,8 @@ commands.register("workspace.toggleDirectory", toggleWorkspaceDirectory);
 commands.register("file.openWorkspace", openWorkspaceFile);
 commands.register("file.save", () => saveFile(false));
 commands.register("file.saveAs", () => saveFile(true));
+commands.register("language.lint", lintActiveDocument);
+commands.register("language.run", runActiveDocument);
 commands.register("view.explorer", () => { state.sidebarView = "explorer"; state.sidebarVisible = true; render(); });
 commands.register("view.plugins", () => { state.sidebarView = "plugins"; state.sidebarVisible = true; render(); });
 commands.register("sidebar.toggle", () => { state.sidebarVisible = !state.sidebarVisible; render(); });
@@ -485,7 +616,6 @@ window.addEventListener("click", () => {
 });
 
 render();
-void restorePlugins().then(render).catch(showError);
 
 declare global {
   interface Window {
@@ -511,3 +641,19 @@ window.tinyIde = {
     return installed;
   },
 };
+
+async function activateDevelopmentPlugins(): Promise<void> {
+  for (const manifest of Object.values(developmentManifests)) {
+    if (!plugins.get(manifest.id)) await plugins.install(manifest);
+    const current = plugins.get(manifest.id);
+    if (current?.state === "installed" || current?.state === "disabled") await plugins.enable(manifest.id);
+    if (plugins.get(manifest.id)?.state === "enabled") {
+      await plugins.activate(manifest.id, { commands, events, capabilities, subscriptions: [] });
+    }
+  }
+}
+
+void activateDevelopmentPlugins()
+  .then(restorePlugins)
+  .then(render)
+  .catch(showError);
