@@ -211,6 +211,128 @@ const escapeHtml = (value: string): string =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 
+type IconName =
+  | "alert"
+  | "check"
+  | "chevronDown"
+  | "chevronRight"
+  | "close"
+  | "code"
+  | "download"
+  | "environment"
+  | "file"
+  | "fileAdd"
+  | "folder"
+  | "folderOpen"
+  | "lint"
+  | "menu"
+  | "package"
+  | "panel"
+  | "play"
+  | "plugin"
+  | "power"
+  | "refresh"
+  | "save"
+  | "saveAs"
+  | "terminal"
+  | "trash"
+  | "upload";
+
+const ICON_MARKUP: Record<IconName, string> = {
+  alert: '<path d="M12 3 2.8 19a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3L12 3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  check: '<path d="m5 12 4 4L19 6"/>',
+  chevronDown: '<path d="m6 9 6 6 6-6"/>',
+  chevronRight: '<path d="m9 18 6-6-6-6"/>',
+  close: '<path d="m6 6 12 12"/><path d="M18 6 6 18"/>',
+  code: '<path d="m8 9-4 3 4 3"/><path d="m16 9 4 3-4 3"/><path d="m14 5-4 14"/>',
+  download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
+  environment: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="m4.93 4.93 2.12 2.12"/><path d="m16.95 16.95 2.12 2.12"/><path d="M2 12h3"/><path d="M19 12h3"/><path d="m4.93 19.07 2.12-2.12"/><path d="m16.95 7.05 2.12-2.12"/>',
+  file: '<path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5"/>',
+  fileAdd: '<path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5"/><path d="M12 11v6"/><path d="M9 14h6"/>',
+  folder: '<path d="M3 6h7l2 2h9v11H3z"/>',
+  folderOpen: '<path d="M3 7h7l2 2h9l-2 10H5z"/><path d="M3 7v12"/>',
+  lint: '<path d="M4 5h10"/><path d="M4 10h7"/><path d="M4 15h5"/><path d="m14 15 2 2 4-5"/>',
+  menu: '<path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/>',
+  package: '<path d="m12 2 9 5-9 5-9-5z"/><path d="m3 7 9 5 9-5"/><path d="M3 7v10l9 5 9-5V7"/><path d="M12 12v10"/>',
+  panel: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 14h18"/>',
+  play: '<path d="m8 5 11 7-11 7z"/>',
+  plugin: '<path d="M8 3v4"/><path d="M16 3v4"/><path d="M5 7h14v4a7 7 0 0 1-14 0z"/><path d="M12 18v3"/>',
+  power: '<path d="M12 2v10"/><path d="M6.3 5.7a8 8 0 1 0 11.4 0"/>',
+  refresh: '<path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8a7 7 0 0 1 11.5-2.3L20 8"/><path d="M17.9 16a7 7 0 0 1-11.5 2.3L4 16"/>',
+  save: '<path d="M4 3h14l2 2v16H4z"/><path d="M8 3v6h8V3"/><path d="M8 21v-7h8v7"/>',
+  saveAs: '<path d="M4 3h12l4 4v5"/><path d="M8 3v6h7V3"/><path d="M8 21v-7h5"/><path d="m15 18 4-4 2 2-4 4-3 1z"/>',
+  terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3"/><path d="M13 15h4"/>',
+  trash: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="m6 7 1 14h10l1-14"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+  upload: '<path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/>',
+};
+
+function renderIcon(name: IconName): string {
+  return `<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICON_MARKUP[name]}</svg>`;
+}
+
+function renderButtonLabel(name: IconName, label: string): string {
+  return `${renderIcon(name)}<span class="button-label">${escapeHtml(label)}</span>`;
+}
+
+type ButtonVariant = "default" | "primary" | "danger" | "ghost";
+type ButtonSize = "small" | "medium" | "icon";
+
+interface ButtonOptions {
+  readonly command?: string;
+  readonly type?: "button" | "submit";
+  readonly variant?: ButtonVariant;
+  readonly size?: ButtonSize;
+  readonly iconOnly?: boolean;
+  readonly disabled?: boolean;
+  readonly title?: string;
+  readonly className?: string;
+  readonly data?: Readonly<Record<string, string | undefined>>;
+}
+
+function renderButton(
+  label: string,
+  iconName: IconName,
+  options: ButtonOptions = {},
+): string {
+  const variant = options.variant ?? "default";
+  const size = options.iconOnly ? "icon" : (options.size ?? "medium");
+  const classes = [
+    "ui-button",
+    `ui-button--${variant}`,
+    `ui-button--${size}`,
+    options.className,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const dataAttributes = Object.entries(options.data ?? {})
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    .map(([key, value]) => `data-${key}="${escapeHtml(value)}"`)
+    .join(" ");
+  const commandAttribute = options.command
+    ? `data-command="${escapeHtml(options.command)}"`
+    : "";
+  const title = options.title ?? label;
+  const accessibilityAttributes = options.iconOnly
+    ? `aria-label="${escapeHtml(label)}" title="${escapeHtml(title)}"`
+    : options.title
+      ? `title="${escapeHtml(title)}"`
+      : "";
+  const content = options.iconOnly
+    ? `${renderIcon(iconName)}<span class="sr-only">${escapeHtml(label)}</span>`
+    : renderButtonLabel(iconName, label);
+
+  return `<button class="${classes}" type="${options.type ?? "button"}" ${commandAttribute} ${dataAttributes} ${accessibilityAttributes} ${options.disabled ? "disabled" : ""}>${content}</button>`;
+}
+
+function renderActivityButton(
+  command: string,
+  iconName: IconName,
+  label: string,
+  active: boolean,
+): string {
+  return `<button class="activity-button${active ? " is-active" : ""}" type="button" data-command="${escapeHtml(command)}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${renderIcon(iconName)}<span class="sr-only">${escapeHtml(label)}</span></button>`;
+}
+
 type ResizeTarget = "sidebar" | "panel";
 
 function sidebarMaximumWidth(): number {
@@ -742,16 +864,16 @@ function renderTreeEntries(entries: WorkspaceEntry[], depth = 0): string {
         const children = expanded
           ? `<div class="tree-children">${entry.children?.length ? renderTreeEntries(entry.children, depth + 1) : '<div class="tree-empty">Pasta vazia</div>'}</div>`
           : "";
-        return `<div class="tree-node"><button class="tree-entry tree-entry--directory" type="button" data-command="workspace.toggleDirectory" data-entry-path="${escapeHtml(entry.path)}" style="padding-left:${padding}px"><span class="tree-chevron">${expanded ? "▾" : "▸"}</span><span class="tree-entry__icon">D</span><span>${escapeHtml(entry.name)}</span></button>${children}</div>`;
+        return `<div class="tree-node"><button class="tree-entry tree-entry--directory" type="button" data-command="workspace.toggleDirectory" data-entry-path="${escapeHtml(entry.path)}" style="padding-left:${padding}px"><span class="tree-chevron">${renderIcon(expanded ? "chevronDown" : "chevronRight")}</span><span class="tree-entry__icon">${renderIcon(expanded ? "folderOpen" : "folder")}</span><span>${escapeHtml(entry.name)}</span></button>${children}</div>`;
       }
 
-      return `<button class="tree-entry${active}" type="button" data-command="file.openWorkspace" data-entry-path="${escapeHtml(entry.path)}" style="padding-left:${padding + 16}px"><span class="tree-entry__icon">F</span><span>${escapeHtml(entry.name)}</span></button>`;
+      return `<button class="tree-entry${active}" type="button" data-command="file.openWorkspace" data-entry-path="${escapeHtml(entry.path)}" style="padding-left:${padding + 16}px"><span class="tree-entry__icon">${renderIcon("file")}</span><span>${escapeHtml(entry.name)}</span></button>`;
     })
     .join("");
 }
 
 function renderWorkspaceEntries(): string {
-  const actions = `<div class="explorer-actions"><button data-command="file.new">Novo arquivo</button><button data-command="file.openPicker">Abrir arquivo</button><button data-command="workspace.open">Abrir pasta</button></div>`;
+  const actions = `<div class="explorer-actions">${renderButton("Novo", "fileAdd", { command: "file.new", size: "small", title: "Novo arquivo" })}${renderButton("Arquivo", "file", { command: "file.openPicker", size: "small", title: "Abrir arquivo" })}${renderButton("Pasta", "folderOpen", { command: "workspace.open", size: "small", title: "Abrir pasta" })}</div>`;
   if (!state.workspaceName) {
     return `${actions}<div class="empty-state"><p>Nenhum arquivo ou pasta aberto.</p></div>`;
   }
@@ -762,13 +884,13 @@ function renderWorkspaceEntries(): string {
 function pluginActions(plugin: PluginRecord): string {
   const active = plugin.state === "active" || plugin.state === "enabled";
   const action = active ? "plugin.disable" : "plugin.enable";
-  const label = active ? "Desabilitar" : "Habilitar";
-  return `<div class="plugin-actions"><button data-command="${action}" data-plugin-id="${escapeHtml(plugin.manifest.id)}">${label}</button><button data-command="plugin.uninstall" data-plugin-id="${escapeHtml(plugin.manifest.id)}">Remover</button></div>`;
+  const label = active ? "Desativar" : "Ativar";
+  return `<div class="plugin-actions">${renderButton(label, "power", { command: action, size: "small", data: { "plugin-id": plugin.manifest.id } })}${renderButton("Remover", "trash", { command: "plugin.uninstall", size: "small", variant: "danger", data: { "plugin-id": plugin.manifest.id } })}</div>`;
 }
 
 function renderPlugins(): string {
   const renderCard = (plugin: PluginRecord): string => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(plugin.manifest.name)}</strong><span class="state-badge">${escapeHtml(plugin.state)}</span></div><p>${escapeHtml(plugin.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(plugin.manifest.id)} · ${escapeHtml(plugin.manifest.version)}</small>${pluginActions(plugin)}</article>`;
-  const renderAvailableCard = (entry: PluginCatalogEntry): string => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(entry.manifest.name)}</strong><span class="state-badge">disponível</span></div><p>${escapeHtml(entry.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(entry.manifest.id)} · ${escapeHtml(entry.manifest.version)}</small><div class="plugin-actions"><button class="primary-button" data-command="plugin.installFromUrl" data-plugin-url="${escapeHtml(entry.manifestUrl)}">Instalar</button></div></article>`;
+  const renderAvailableCard = (entry: PluginCatalogEntry): string => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(entry.manifest.name)}</strong><span class="state-badge">disponível</span></div><p>${escapeHtml(entry.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(entry.manifest.id)} · ${escapeHtml(entry.manifest.version)}</small><div class="plugin-actions">${renderButton("Instalar", "download", { command: "plugin.installFromUrl", size: "small", variant: "primary", data: { "plugin-url": entry.manifestUrl } })}</div></article>`;
   const installed = plugins.list();
   const available = state.availablePlugins.filter((entry) => !plugins.get(entry.manifest.id));
   const installedLanguages = installed.filter((plugin) => plugin.manifest.category === "language").map(renderCard).join("");
@@ -776,48 +898,74 @@ function renderPlugins(): string {
   const availableLanguages = available.filter((entry) => entry.manifest.category === "language").map(renderAvailableCard).join("");
   const availableTools = available.filter((entry) => entry.manifest.category === "tool").map(renderAvailableCard).join("");
 
-  return `<form class="plugin-install" data-form="plugin-install"><label for="plugin-url">Manifesto remoto</label><div class="input-row"><input id="plugin-url" name="url" type="url" placeholder="https://registry.example/plugin.json" required /><button class="primary-button" type="submit">Instalar</button></div></form><div class="plugin-section"><h3>Languages</h3><div class="plugin-list">${installedLanguages}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableLanguages}${!installedLanguages && !availableLanguages ? '<p class="muted">Nenhum plugin de linguagem.</p>' : ""}</div></div><div class="plugin-section"><h3>Tools</h3><div class="plugin-list">${installedTools}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableTools}${!installedTools && !availableTools ? '<p class="muted">Nenhum plugin de ferramenta.</p>' : ""}</div></div>`;
+  return `<form class="plugin-install" data-form="plugin-install"><label for="plugin-url">Manifesto remoto</label><div class="input-row"><input id="plugin-url" name="url" type="url" placeholder="https://registry.example/plugin.json" required />${renderButton("Instalar", "download", { type: "submit", size: "small", variant: "primary" })}</div></form><div class="plugin-section"><h3>Linguagens</h3><div class="plugin-list">${installedLanguages}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableLanguages}${!installedLanguages && !availableLanguages ? '<p class="muted">Nenhum plugin de linguagem.</p>' : ""}</div></div><div class="plugin-section"><h3>Ferramentas</h3><div class="plugin-list">${installedTools}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableTools}${!installedTools && !availableTools ? '<p class="muted">Nenhum plugin de ferramenta.</p>' : ""}</div></div>`;
 }
 
 function renderEnvironments(): string {
   const provider = environmentProvider();
   if (!provider) {
-    return `<div class="empty-state"><p>Nenhum plugin de ambiente instalado.</p><button data-command="view.plugins">Abrir plugins</button></div>`;
+    return `<div class="empty-state"><p>Nenhum plugin de ambiente instalado.</p>${renderButton("Abrir plugins", "plugin", { command: "view.plugins", size: "small" })}</div>`;
   }
 
   const cards = state.environments
     .map((environment) => {
       const opened = state.openedEnvironmentIds.has(environment.id);
       const active = state.selectedEnvironmentId === environment.id;
-      return `<article class="environment-card${active ? " is-active" : ""}"><div><strong>${escapeHtml(environment.name)}</strong><span>${environment.version ? escapeHtml(environment.version) : "Versão desconhecida"}</span><small>${escapeHtml(environment.executable ?? environment.id)}</small></div><div class="environment-card__actions"><button data-command="environment.${opened ? "close" : "open"}" data-environment-id="${escapeHtml(environment.id)}">${opened ? "Fechar" : "Abrir"}</button>${opened ? `<button data-command="environment.select" data-environment-id="${escapeHtml(environment.id)}">${active ? "Ativo" : "Usar"}</button>` : ""}<button data-command="environment.packagesFor" data-environment-id="${escapeHtml(environment.id)}">Pacotes</button><button data-command="environment.removeById" data-environment-id="${escapeHtml(environment.id)}">Remover</button></div></article>`;
+      const environmentData = { "environment-id": environment.id };
+      const openAction = renderButton(opened ? "Fechar" : "Abrir", opened ? "close" : "folderOpen", {
+        command: `environment.${opened ? "close" : "open"}`,
+        size: "small",
+        data: environmentData,
+      });
+      const selectAction = opened
+        ? renderButton(active ? "Ativo" : "Usar", active ? "check" : "environment", {
+            command: "environment.select",
+            size: "small",
+            variant: active ? "primary" : "default",
+            disabled: active,
+            data: environmentData,
+          })
+        : "";
+      const packageAction = renderButton("Pacotes", "package", {
+        command: "environment.packagesFor",
+        size: "small",
+        data: environmentData,
+      });
+      const removeAction = renderButton("Remover", "trash", {
+        command: "environment.removeById",
+        size: "small",
+        variant: "danger",
+        data: environmentData,
+      });
+      return `<article class="environment-card${active ? " is-active" : ""}"><div><strong>${escapeHtml(environment.name)}</strong><span>${environment.version ? escapeHtml(environment.version) : "Versão desconhecida"}</span><small>${escapeHtml(environment.executable ?? environment.id)}</small></div><div class="environment-card__actions">${openAction}${selectAction}${packageAction}${removeAction}</div></article>`;
     })
     .join("");
 
   const createForm = state.environmentForm === "create"
-    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-create"><strong>Criar novo ambiente</strong><label>Nome<input name="name" value=".venv" aria-label="Nome do ambiente" /></label><label>Local opcional<input name="path" placeholder="Vazio usa .tinyide/environments/python/.venv" aria-label="Local do novo ambiente" /></label><small>O diretório informado não pode existir. O Python será criado com python -m venv.</small><div><button class="primary-button" type="submit">Criar ambiente</button><button type="button" data-command="environment.form.cancel">Cancelar</button></div></form>`
+    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-create"><strong>Criar novo ambiente</strong><label>Nome<input name="name" value=".venv" aria-label="Nome do ambiente" /></label><label>Local opcional<input name="path" placeholder="Vazio usa .tinyide/environments/python/.venv" aria-label="Local do novo ambiente" /></label><small>O diretório informado não pode existir. O Python será criado com python -m venv.</small><div class="form-actions">${renderButton("Criar", "environment", { type: "submit", size: "small", variant: "primary", title: "Criar ambiente" })}${renderButton("Cancelar", "close", { command: "environment.form.cancel", size: "small" })}</div></form>`
     : "";
   const importForm = state.environmentForm === "import"
-    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-import"><strong>Abrir ambiente existente</strong><label>Diretório do ambiente<div class="environment-path-picker"><input name="path" readonly value="${escapeHtml(state.environmentSelectedPath ?? "")}" placeholder="Nenhum diretório selecionado" aria-label="Caminho do ambiente existente" /><button type="button" data-command="environment.browser.open">Selecionar diretório...</button></div></label><label>Nome opcional<input name="name" placeholder="Usa o nome da pasta" aria-label="Nome do ambiente existente" /></label><small>Escolha a pasta raiz do ambiente virtual, onde ficam pyvenv.cfg e bin/python ou Scripts/python.exe.</small><div><button class="primary-button" type="submit" ${state.environmentSelectedPath ? "" : "disabled"}>Adicionar ambiente</button><button type="button" data-command="environment.form.cancel">Cancelar</button></div></form>`
+    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-import"><strong>Abrir ambiente existente</strong><label>Diretório do ambiente<div class="environment-path-picker"><input name="path" readonly value="${escapeHtml(state.environmentSelectedPath ?? "")}" placeholder="Nenhum diretório selecionado" aria-label="Caminho do ambiente existente" />${renderButton("Selecionar", "folderOpen", { command: "environment.browser.open", size: "small", title: "Selecionar diretório" })}</div></label><label>Nome opcional<input name="name" placeholder="Usa o nome da pasta" aria-label="Nome do ambiente existente" /></label><small>Escolha a pasta raiz do ambiente virtual, onde ficam pyvenv.cfg e bin/python ou Scripts/python.exe.</small><div class="form-actions">${renderButton("Adicionar", "download", { type: "submit", size: "small", variant: "primary", title: "Adicionar ambiente", disabled: !state.environmentSelectedPath })}${renderButton("Cancelar", "close", { command: "environment.form.cancel", size: "small" })}</div></form>`
     : "";
   const packagesForm = state.environmentForm === "packages"
-    ? `<form class="environment-manager__form" data-form="environment-packages"><input name="packages" placeholder="django requests" aria-label="Pacotes" /><button class="primary-button" type="submit">Instalar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></form>`
+    ? `<form class="environment-manager__form" data-form="environment-packages"><input name="packages" placeholder="django requests" aria-label="Pacotes" />${renderButton("Instalar", "download", { type: "submit", size: "small", variant: "primary" })}${renderButton("Cancelar", "close", { command: "environment.form.cancel", size: "small" })}</form>`
     : "";
 
-  return `<div class="environment-manager"><div class="environment-manager__toolbar"><button data-command="environment.refresh">Atualizar</button><button class="primary-button" data-command="environment.create">Criar novo</button><button data-command="environment.import">Abrir existente</button></div>${createForm}${importForm}${packagesForm}<div class="environment-list">${cards || '<div class="empty-state"><p>Nenhum ambiente registrado.</p><p>Use “Criar novo” ou “Abrir existente”.</p></div>'}</div></div>`;
+  return `<div class="environment-manager"><div class="environment-manager__toolbar">${renderButton("Atualizar", "refresh", { command: "environment.refresh", size: "small" })}${renderButton("Criar", "environment", { command: "environment.create", size: "small", variant: "primary", title: "Criar novo ambiente" })}${renderButton("Abrir", "folderOpen", { command: "environment.import", size: "small", title: "Abrir ambiente existente" })}</div>${createForm}${importForm}${packagesForm}<div class="environment-list">${cards || '<div class="empty-state"><p>Nenhum ambiente registrado.</p><p>Use “Criar” ou “Abrir”.</p></div>'}</div></div>`;
 }
 
 function renderEnvironmentBrowserModal(): string {
   if (!state.environmentBrowserOpen) return "";
   const browser = state.environmentBrowser;
   const entries = browser?.entries
-    .map((entry) => `<button type="button" class="environment-browser__entry${entry.isEnvironment ? " is-environment" : ""}" data-command="environment.browse" data-browser-path="${escapeHtml(entry.path)}"><span>${entry.isEnvironment ? "PY" : "D"}</span><strong>${escapeHtml(entry.name)}</strong>${entry.isEnvironment ? "<small>Ambiente Python</small>" : ""}</button>`)
+    .map((entry) => `<button type="button" class="environment-browser__entry${entry.isEnvironment ? " is-environment" : ""}" data-command="environment.browse" data-browser-path="${escapeHtml(entry.path)}"><span class="environment-browser__icon">${renderIcon(entry.isEnvironment ? "environment" : "folder")}</span><strong>${escapeHtml(entry.name)}</strong>${entry.isEnvironment ? "<small>Ambiente Python</small>" : ""}</button>`)
     .join("") ?? "";
   const content = state.environmentBrowserLoading
     ? `<div class="environment-browser-modal__loading">Carregando diretórios...</div>`
     : browser
-      ? `<div class="environment-browser__path"><button type="button" data-command="environment.browse" data-browser-path="${escapeHtml(browser.parentPath ?? browser.path)}" aria-label="Abrir pasta pai" title="Abrir pasta pai" ${browser.parentPath ? "" : "disabled"}>Pasta pai</button><code>${escapeHtml(browser.path)}</code></div>${browser.isEnvironment ? `<div class="environment-browser__selected"><div><strong>Ambiente Python válido</strong><small>${escapeHtml(browser.path)}</small></div><button type="button" class="primary-button" data-command="environment.choosePath" data-browser-path="${escapeHtml(browser.path)}">Selecionar este diretório</button></div>` : `<p class="muted">Navegue até a pasta raiz de um ambiente virtual Python.</p>`}<div class="environment-browser__entries">${entries || '<p class="muted">Nenhuma subpasta.</p>'}</div>`
+      ? `<div class="environment-browser__path">${renderButton("Pasta pai", "folderOpen", { command: "environment.browse", size: "small", disabled: !browser.parentPath, data: { "browser-path": browser.parentPath ?? browser.path } })}<code>${escapeHtml(browser.path)}</code></div>${browser.isEnvironment ? `<div class="environment-browser__selected"><div><strong>Ambiente Python válido</strong><small>${escapeHtml(browser.path)}</small></div>${renderButton("Selecionar", "check", { command: "environment.choosePath", size: "small", variant: "primary", title: "Selecionar este diretório", data: { "browser-path": browser.path } })}</div>` : `<p class="muted">Navegue até a pasta raiz de um ambiente virtual Python.</p>`}<div class="environment-browser__entries">${entries || '<p class="muted">Nenhuma subpasta.</p>'}</div>`
       : `<div class="environment-browser-modal__loading">Nenhum diretório carregado.</div>`;
-  return `<div class="modal-backdrop" role="presentation"><section class="environment-browser-modal" role="dialog" aria-modal="true" aria-labelledby="environment-browser-title"><header><div><h2 id="environment-browser-title">Selecionar diretório do ambiente</h2><p>Escolha a pasta que contém o ambiente virtual Python.</p></div><button type="button" data-command="environment.browser.close" aria-label="Fechar seletor de diretórios">Fechar</button></header><div class="environment-browser-modal__content">${content}</div><footer><button type="button" data-command="environment.browser.close">Cancelar</button></footer></section></div>`;
+  return `<div class="modal-backdrop" role="presentation"><section class="environment-browser-modal" role="dialog" aria-modal="true" aria-labelledby="environment-browser-title"><header><div><h2 id="environment-browser-title">Selecionar diretório do ambiente</h2><p>Escolha a pasta que contém o ambiente virtual Python.</p></div>${renderButton("Fechar", "close", { command: "environment.browser.close", iconOnly: true })}</header><div class="environment-browser-modal__content">${content}</div><footer>${renderButton("Cancelar", "close", { command: "environment.browser.close", size: "small" })}</footer></section></div>`;
 }
 
 function renderSidebar(): string {
@@ -827,7 +975,7 @@ function renderSidebar(): string {
 }
 
 function renderWelcome(): string {
-  return `<div class="welcome-screen"><h1>tinyIde</h1><p>Crie ou abra um arquivo para começar.</p><div class="welcome-actions"><button class="primary-button" data-command="file.new">Novo arquivo</button><button class="primary-button" data-command="file.openPicker">Abrir arquivo</button><button data-command="workspace.open">Abrir pasta</button></div><small>Atalhos: Ctrl+N, Ctrl+O, Ctrl+S e Ctrl+Shift+S</small></div>`;
+  return `<div class="welcome-screen"><h1>tinyIde</h1><p>Crie ou abra um arquivo para começar.</p><div class="welcome-actions">${renderButton("Novo arquivo", "fileAdd", { command: "file.new", variant: "primary" })}${renderButton("Abrir arquivo", "file", { command: "file.openPicker" })}${renderButton("Abrir pasta", "folderOpen", { command: "workspace.open" })}</div><small>Atalhos: Ctrl+N, Ctrl+O, Ctrl+S e Ctrl+Shift+S</small></div>`;
 }
 
 function renderEditor(): string {
@@ -836,7 +984,7 @@ function renderEditor(): string {
   const dirty = active.content !== active.savedContent;
   const provider = languageProviderFor(active);
   const languageActions = provider
-    ? `<button data-command="language.lint" ${state.languageActionRunning ? "disabled" : ""}>Lint</button>${provider.run ? `<button data-command="language.run" ${state.languageActionRunning ? "disabled" : ""}>${state.languageActionRunning ? "Executando..." : "Executar interno"}</button>` : ""}`
+    ? `${renderButton("Lint", "lint", { command: "language.lint", size: "small", disabled: state.languageActionRunning })}${provider.run ? renderButton(state.languageActionRunning ? "Executando" : "Executar", "play", { command: "language.run", size: "small", variant: "primary", disabled: state.languageActionRunning, title: "Executar no runtime interno" }) : ""}`
     : "";
   const diagnostics = state.diagnostics.length
     ? `<div class="diagnostics">${state.diagnostics
@@ -849,7 +997,7 @@ function renderEditor(): string {
   const editorSurface = provider
     ? `<div class="highlight-editor"><pre class="syntax-layer" data-syntax-layer>${renderHighlightedSource(active.content, provider)}</pre><textarea class="code-input code-input--highlighted" data-editor spellcheck="false" aria-label="Editor de ${escapeHtml(active.name)}">${escapeHtml(active.content)}</textarea></div>`
     : `<textarea class="code-input" data-editor spellcheck="false" aria-label="Editor de ${escapeHtml(active.name)}">${escapeHtml(active.content)}</textarea>`;
-  return `<div class="code-editor"><div class="editor-toolbar"><span>${dirty ? "● " : ""}${escapeHtml(active.name)}${provider ? ` · ${escapeHtml(provider.name)}` : ""}</span><div>${languageActions}<button data-command="file.saveAs">Salvar como</button><button class="primary-button" data-command="file.save">Salvar</button></div></div>${diagnostics}${editorSurface}</div>`;
+  return `<div class="code-editor"><div class="editor-toolbar"><span>${dirty ? "● " : ""}${escapeHtml(active.name)}${provider ? ` · ${escapeHtml(provider.name)}` : ""}</span><div>${languageActions}${renderButton("Salvar como", "saveAs", { command: "file.saveAs", iconOnly: true })}${renderButton("Salvar", "save", { command: "file.save", iconOnly: true, variant: "primary" })}</div></div>${diagnostics}${editorSurface}</div>`;
 }
 
 async function lintActiveDocument(): Promise<void> {
@@ -1139,12 +1287,15 @@ function renderEnvironmentToolbar(): string {
     .join("");
   const selected = state.environments.find((environment) => environment.id === state.selectedEnvironmentId);
   const canRun = Boolean(active && environmentProviderForExecution(active) && state.selectedEnvironmentId);
-  return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">${escapeHtml(provider.name)}</span><button data-command="view.environments">Gerenciar</button><select data-environment-select aria-label="Ambiente aberto" ${state.environmentBusy ? "disabled" : ""}><option value="" ${state.selectedEnvironmentId ? "" : "selected"}>${options ? "Selecione um ambiente aberto" : "Nenhum ambiente aberto"}</option>${options}</select><span class="runtime-toolbar__current">${selected ? `Ativo: ${escapeHtml(selected.name)}${selected.version ? ` · ${escapeHtml(selected.version)}` : ""}` : "Nenhum ambiente ativo"}</span><button class="primary-button" data-command="environment.run" ${!canRun || state.environmentBusy ? "disabled" : ""}>${state.environmentBusy ? "Processando..." : active ? `Executar ${escapeHtml(active.name)}` : "Abra um .py para executar"}</button></div>`;
+  const runTitle = active
+    ? `Executar ${active.name} no ambiente ativo`
+    : "Abra um arquivo Python para executar";
+  return `<div class="runtime-toolbar"><span class="runtime-toolbar__label">${renderIcon("environment")}<span>${escapeHtml(provider.name)}</span></span>${renderButton("Gerenciar", "environment", { command: "view.environments", size: "small", title: "Gerenciar ambientes" })}<select data-environment-select aria-label="Ambiente aberto" ${state.environmentBusy ? "disabled" : ""}><option value="" ${state.selectedEnvironmentId ? "" : "selected"}>${options ? "Selecione um ambiente aberto" : "Nenhum ambiente aberto"}</option>${options}</select><span class="runtime-toolbar__current">${selected ? `Ativo: ${escapeHtml(selected.name)}${selected.version ? ` · ${escapeHtml(selected.version)}` : ""}` : "Nenhum ambiente ativo"}</span>${renderButton(state.environmentBusy ? "Processando" : "Executar", "play", { command: "environment.run", size: "small", variant: "primary", disabled: !canRun || state.environmentBusy, title: runTitle })}</div>`;
 }
 
 function renderFileMenu(): string {
   if (!state.fileMenuOpen) return "";
-  return `<div class="file-menu" role="menu"><button data-command="file.new">Novo arquivo <span>Ctrl+N</span></button><button data-command="file.openPicker">Abrir arquivo <span>Ctrl+O</span></button><button data-command="workspace.open">Abrir pasta</button><hr /><button data-command="file.save">Salvar <span>Ctrl+S</span></button><button data-command="file.saveAs">Salvar como <span>Ctrl+Shift+S</span></button></div>`;
+  return `<div class="file-menu" role="menu"><button class="file-menu__item" type="button" role="menuitem" data-command="file.new"><span class="file-menu__label">${renderIcon("fileAdd")}Novo arquivo</span><kbd>Ctrl+N</kbd></button><button class="file-menu__item" type="button" role="menuitem" data-command="file.openPicker"><span class="file-menu__label">${renderIcon("file")}Abrir arquivo</span><kbd>Ctrl+O</kbd></button><button class="file-menu__item" type="button" role="menuitem" data-command="workspace.open"><span class="file-menu__label">${renderIcon("folderOpen")}Abrir pasta</span></button><hr /><button class="file-menu__item" type="button" role="menuitem" data-command="file.save"><span class="file-menu__label">${renderIcon("save")}Salvar</span><kbd>Ctrl+S</kbd></button><button class="file-menu__item" type="button" role="menuitem" data-command="file.saveAs"><span class="file-menu__label">${renderIcon("saveAs")}Salvar como</span><kbd>Ctrl+Shift+S</kbd></button></div>`;
 }
 
 function renderNotice(): string {
@@ -1157,7 +1308,7 @@ function render(): void {
   const dirty = active ? active.content !== active.savedContent : false;
   const runtimeToolbar = renderEnvironmentToolbar();
   const environmentActivity = environmentProvider()
-    ? `<button class="activity-button ${state.sidebarView === "environments" ? "is-active" : ""}" data-command="view.environments">ENV</button>`
+    ? renderActivityButton("view.environments", "environment", "Ambientes", state.sidebarView === "environments")
     : "";
   const sidebarMaximum = sidebarMaximumWidth();
   const panelMaximum = panelMaximumHeight();
@@ -1171,11 +1322,11 @@ function render(): void {
         <div class="brand">tinyIde</div>
         <nav class="menu" aria-label="Menu principal">
           <div class="menu-item">
-            <button data-command="menu.file.toggle">Arquivo</button>
+            ${renderButton("Arquivo", "menu", { command: "menu.file.toggle", size: "small", variant: "ghost", className: "titlebar-action" })}
             ${renderFileMenu()}
           </div>
-          <button data-command="file.save">Salvar</button>
-          <button data-command="panel.toggle">Painel</button>
+          ${renderButton("Salvar", "save", { command: "file.save", size: "small", variant: "ghost", className: "titlebar-action" })}
+          ${renderButton("Painel", "panel", { command: "panel.toggle", size: "small", variant: "ghost", className: "titlebar-action" })}
         </nav>
         <div class="titlebar__center">${escapeHtml(state.workspaceName ?? active?.name ?? "Sem workspace")}</div>
         <div class="version">v${PLATFORM_VERSION}</div>
@@ -1183,11 +1334,11 @@ function render(): void {
       ${runtimeToolbar}
       <main class="workbench ${state.sidebarVisible ? "" : "workbench--sidebar-hidden"}">
         <nav class="activitybar" aria-label="Atividades">
-          <button class="activity-button ${state.sidebarView === "explorer" ? "is-active" : ""}" data-command="view.explorer">EX</button>
-          <button class="activity-button ${state.sidebarView === "plugins" ? "is-active" : ""}" data-command="view.plugins">PL</button>
+          ${renderActivityButton("view.explorer", "folderOpen", "Explorador", state.sidebarView === "explorer")}
+          ${renderActivityButton("view.plugins", "plugin", "Plugins", state.sidebarView === "plugins")}
           ${environmentActivity}
           <div class="activitybar__spacer"></div>
-          <button class="activity-button" data-command="panel.toggle">PN</button>
+          ${renderActivityButton("panel.toggle", "panel", "Painel inferior", false)}
         </nav>
         ${renderSidebar()}
         <div
@@ -1205,7 +1356,7 @@ function render(): void {
         ></div>
         <section class="editor-area ${state.panelVisible ? "" : "editor-area--panel-hidden"}">
           <div class="editor-tabs">
-            <button class="editor-tab is-active"><span>TXT</span>${escapeHtml(active?.name ?? "Bem-vindo")}${dirty ? " ●" : ""}</button>
+            <button class="editor-tab is-active">${renderIcon(active ? "file" : "code")}<span>${escapeHtml(active?.name ?? "Bem-vindo")}${dirty ? " ●" : ""}</span></button>
           </div>
           ${renderEditor()}
           <div
@@ -1223,15 +1374,15 @@ function render(): void {
           ></div>
           <section id="bottom-panel" class="bottom-panel ${state.panelVisible ? "" : "is-hidden"}">
             <header class="panel-tabs">
-              <button class="is-active">SAÍDA</button>
-              <button>PROBLEMAS <span class="counter">0</span></button>
+              <button class="is-active">${renderIcon("terminal")}<span>SAÍDA</span></button>
+              <button>${renderIcon("alert")}<span>PROBLEMAS</span><span class="counter">0</span></button>
             </header>
             <pre class="output">${state.logs.map(escapeHtml).join("\n")}</pre>
           </section>
         </section>
       </main>
       <footer class="statusbar">
-        <button data-command="file.openPicker">${escapeHtml(state.workspaceName ?? "Abrir arquivo")}</button>
+        <button data-command="file.openPicker">${renderIcon("folderOpen")}<span>${escapeHtml(state.workspaceName ?? "Abrir arquivo")}</span></button>
         <span>${plugins.list().length} plugin(s)</span>
         <span class="statusbar__spacer"></span>
         <span>${dirty ? "Alterações não salvas" : "Salvo"}</span>
