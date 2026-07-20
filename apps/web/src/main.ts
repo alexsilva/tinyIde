@@ -22,6 +22,7 @@ const PLUGIN_STORAGE_KEY = "tinyide.installedPlugins.v2";
 const LEGACY_PLUGIN_STORAGE_KEY = "tinyide.installedPlugins";
 const LAYOUT_STORAGE_KEY = "tinyide.layout.v1";
 const RUN_PROFILE_STORAGE_KEY = "tinyide.pythonRunProfile.v1";
+const SESSION_STORAGE_KEY = "tinyide.session.v1";
 const DEFAULT_SIDEBAR_WIDTH = 280;
 const DEFAULT_PANEL_HEIGHT = 190;
 const MIN_SIDEBAR_WIDTH = 180;
@@ -32,6 +33,16 @@ const MAX_PANEL_HEIGHT = 640;
 interface StoredLayout {
   readonly sidebarWidth?: number;
   readonly panelHeight?: number;
+}
+
+interface StoredSession {
+  readonly openFilePaths: string[];
+  readonly activeFilePath?: string;
+  readonly sidebarView: SidebarView;
+  readonly sidebarVisible: boolean;
+  readonly panelVisible: boolean;
+  readonly workspaceName?: string;
+  readonly expandedDirectories: string[];
 }
 
 interface RunProfile {
@@ -215,7 +226,8 @@ interface AppState {
   workspaceName: string | undefined;
   workspaceEntries: WorkspaceEntry[];
   expandedDirectories: Set<string>;
-  activeDocument: OpenDocument | undefined;
+  openFiles: OpenDocument[];
+  activeFilePath: string | undefined;
   diagnostics: TextDiagnostic[];
   languageActionRunning: boolean;
   availablePlugins: PluginCatalogEntry[];
@@ -263,7 +275,8 @@ const state: AppState = {
   workspaceName: undefined,
   workspaceEntries: [],
   expandedDirectories: new Set<string>(),
-  activeDocument: undefined,
+  openFiles: [],
+  activeFilePath: undefined,
   diagnostics: [],
   languageActionRunning: false,
   availablePlugins: [],
@@ -282,6 +295,75 @@ const state: AppState = {
   notice: undefined,
   error: undefined,
 };
+
+function activeDocument(): OpenDocument | undefined {
+  if (!state.activeFilePath || !state.openFiles.length) return undefined;
+  return state.openFiles.find((doc) => (doc.path ?? doc.name) === state.activeFilePath);
+}
+
+function persistSession(): void {
+  const session: StoredSession = {
+    openFilePaths: state.openFiles.filter((doc) => doc.path).map((doc) => doc.path!),
+    ...(state.activeFilePath ? { activeFilePath: state.activeFilePath } : {}),
+    sidebarView: state.sidebarView,
+    sidebarVisible: state.sidebarVisible,
+    panelVisible: state.panelVisible,
+    ...(state.workspaceName ? { workspaceName: state.workspaceName } : {}),
+    expandedDirectories: [...state.expandedDirectories],
+  };
+  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+}
+
+function restoreSession(): void {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return;
+    const stored = JSON.parse(raw) as Partial<StoredSession>;
+    if (stored.sidebarView === "explorer" || stored.sidebarView === "plugins" || stored.sidebarView === "environments") {
+      state.sidebarView = stored.sidebarView;
+    }
+    if (typeof stored.sidebarVisible === "boolean") state.sidebarVisible = stored.sidebarVisible;
+    if (typeof stored.panelVisible === "boolean") state.panelVisible = stored.panelVisible;
+    if (typeof stored.workspaceName === "string") state.workspaceName = stored.workspaceName;
+    if (Array.isArray(stored.expandedDirectories)) {
+      stored.expandedDirectories.forEach((d) => state.expandedDirectories.add(d));
+    }
+    if (typeof stored.activeFilePath === "string") state.activeFilePath = stored.activeFilePath;
+  } catch {
+    // ignore corrupt session
+  }
+}
+
+function closeFile(rawPath: unknown): void {
+  const filePath = typeof rawPath === "string" ? rawPath : state.activeFilePath;
+  if (!filePath) return;
+  const index = state.openFiles.findIndex((doc) => (doc.path ?? doc.name) === filePath);
+  if (index === -1) return;
+  state.openFiles.splice(index, 1);
+  if (state.activeFilePath === filePath) {
+    if (state.openFiles.length > 0) {
+      const nextIndex = Math.min(index, state.openFiles.length - 1);
+      const nextDoc = state.openFiles[nextIndex];
+      if (!nextDoc) {
+        state.activeFilePath = undefined;
+      } else {
+        state.activeFilePath = nextDoc.path ?? nextDoc.name;
+      }
+    } else {
+      state.activeFilePath = undefined;
+    }
+  }
+  state.diagnostics = [];
+  render();
+  persistSession();
+}
+
+function activateFile(rawPath: unknown): void {
+  if (typeof rawPath !== "string") return;
+  state.activeFilePath = rawPath;
+  state.diagnostics = [];
+  render();
+}
 
 const escapeHtml = (value: string): string =>
   value
@@ -492,6 +574,7 @@ function persistLayout(): void {
     panelHeight: state.panelHeight,
   };
   localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
+  persistSession();
 }
 
 function applyResizeValue(target: ResizeTarget, requestedValue: number): void {
@@ -661,16 +744,33 @@ function log(message: string): void {
   render();
 }
 
+let noticeTimeout: ReturnType<typeof setTimeout> | undefined;
+
 function showNotice(message: string): void {
   state.notice = message;
   state.error = undefined;
   render();
+  if (noticeTimeout) clearTimeout(noticeTimeout);
+  noticeTimeout = setTimeout(() => {
+    if (state.notice === message) {
+      state.notice = undefined;
+      render();
+    }
+  }, 5000);
 }
 
 function showError(error: unknown): void {
-  state.error = error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  state.error = message;
   state.notice = undefined;
   render();
+  if (noticeTimeout) clearTimeout(noticeTimeout);
+  noticeTimeout = setTimeout(() => {
+    if (state.error === message) {
+      state.error = undefined;
+      render();
+    }
+  }, 8000);
 }
 
 function persistPlugins(): void {
@@ -792,21 +892,31 @@ async function openWorkspace(): Promise<void> {
   state.workspaceName = handle.name;
   state.workspaceEntries = await readDirectory(handle);
   state.expandedDirectories.clear();
-  state.activeDocument = undefined;
+  state.openFiles = [];
+  state.activeFilePath = undefined;
   state.sidebarVisible = true;
   state.sidebarView = "explorer";
   await events.emit("workspace.opened", { name: handle.name });
   showNotice(`Pasta '${handle.name}' aberta.`);
+  persistSession();
 }
 
 function newFile(): void {
   state.fileMenuOpen = false;
   state.workspaceName = state.workspaceName ?? "Arquivos locais";
-  state.activeDocument = {
+  const doc: OpenDocument = {
     name: "sem-titulo.txt",
     content: "",
     savedContent: "",
   };
+  const docKey = doc.path ?? doc.name;
+  const existing = state.openFiles.findIndex((d) => (d.path ?? d.name) === docKey);
+  if (existing !== -1) {
+    state.openFiles[existing] = doc;
+  } else {
+    state.openFiles = [...state.openFiles, doc];
+  }
+  state.activeFilePath = docKey;
   state.diagnostics = [];
   render();
   requestAnimationFrame(() => appRoot.querySelector<HTMLTextAreaElement>("[data-editor]")?.focus());
@@ -815,14 +925,23 @@ function newFile(): void {
 async function openFileHandle(handle: BrowserFileHandle, path?: string): Promise<void> {
   const file = await handle.getFile();
   const content = await file.text();
-  state.activeDocument = path
+  const doc: OpenDocument = path
     ? { name: file.name, handle, path, content, savedContent: content }
     : { name: file.name, handle, content, savedContent: content };
+  const docKey = doc.path ?? doc.name;
+  const existing = state.openFiles.findIndex((d) => (d.path ?? d.name) === docKey);
+  if (existing !== -1) {
+    state.openFiles[existing] = doc;
+  } else {
+    state.openFiles = [...state.openFiles, doc];
+  }
+  state.activeFilePath = docKey;
   state.diagnostics = [];
   state.workspaceName = state.workspaceName ?? "Arquivo avulso";
   await events.emit("file.opened", { name: file.name });
   log(`file.opened: ${file.name}`);
   await refreshEnvironments();
+  persistSession();
 }
 
 async function openFileFromPicker(): Promise<void> {
@@ -840,7 +959,15 @@ async function openFileFromPicker(): Promise<void> {
     const file = input.files?.[0];
     if (!file) return;
     const content = await file.text();
-    state.activeDocument = { name: file.name, content, savedContent: content };
+    const doc: OpenDocument = { name: file.name, content, savedContent: content };
+    const docKey = doc.path ?? doc.name;
+    const existing = state.openFiles.findIndex((d) => (d.path ?? d.name) === docKey);
+    if (existing !== -1) {
+      state.openFiles[existing] = doc;
+    } else {
+      state.openFiles = [...state.openFiles, doc];
+    }
+    state.activeFilePath = docKey;
     state.workspaceName = "Arquivo avulso";
     await events.emit("file.opened", { name: file.name });
     log(`file.opened: ${file.name}`);
@@ -872,6 +999,7 @@ async function toggleWorkspaceDirectory(rawPath: unknown): Promise<void> {
   if (state.expandedDirectories.has(rawPath)) {
     state.expandedDirectories.delete(rawPath);
     render();
+    persistSession();
     return;
   }
 
@@ -880,6 +1008,7 @@ async function toggleWorkspaceDirectory(rawPath: unknown): Promise<void> {
   }
   state.expandedDirectories.add(rawPath);
   render();
+  persistSession();
 }
 
 async function openWorkspaceFile(rawPath: unknown): Promise<void> {
@@ -920,7 +1049,7 @@ const documentObject = document;
 
 async function saveFile(forceSaveAs = false): Promise<void> {
   state.fileMenuOpen = false;
-  const active = state.activeDocument;
+  const active = activeDocument();
   if (!active) throw new Error("Nenhum arquivo aberto.");
   const pickerWindow = window as FilePickerWindow;
 
@@ -980,7 +1109,8 @@ async function installPluginFromUrl(url: string): Promise<void> {
 function renderTreeEntries(entries: WorkspaceEntry[], depth = 0): string {
   return entries
     .map((entry) => {
-      const active = state.activeDocument?.path === entry.path ? " is-active" : "";
+      const activeDoc = activeDocument();
+      const active = activeDoc?.path === entry.path ? " is-active" : "";
       const padding = 8 + depth * 16;
 
       if (entry.kind === "directory") {
@@ -1007,14 +1137,20 @@ function renderWorkspaceEntries(): string {
 
 function pluginActions(plugin: PluginRecord): string {
   const active = plugin.state === "active" || plugin.state === "enabled";
-  const action = active ? "plugin.disable" : "plugin.enable";
-  const label = active ? "Desativar" : "Ativar";
-  return `<div class="plugin-actions">${renderButton(label, "power", { command: action, size: "small", data: { "plugin-id": plugin.manifest.id } })}${renderButton("Remover", "trash", { command: "plugin.uninstall", size: "small", variant: "danger", data: { "plugin-id": plugin.manifest.id } })}</div>`;
+  const toggleClass = active ? "toggle-switch is-active" : "toggle-switch";
+  const toggleLabel = active ? "Ativo" : "Inativo";
+  const toggleCommand = active ? "plugin.disable" : "plugin.enable";
+  return `<div class="plugin-card__toggle"><div class="plugin-toggle"><span style="font-size:12px;color:#9ca3b0">${toggleLabel}</span><button class="${toggleClass}" type="button" data-command="${toggleCommand}" data-plugin-id="${escapeHtml(plugin.manifest.id)}" aria-label="${active ? "Desativar" : "Ativar"} plugin"><span class="toggle-switch__handle"></span></button></div>${renderButton("Remover", "trash", { command: "plugin.uninstall", size: "small", variant: "danger", data: { "plugin-id": plugin.manifest.id } })}</div>`;
 }
 
 function renderPlugins(): string {
-  const renderCard = (plugin: PluginRecord): string => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(plugin.manifest.name)}</strong><span class="state-badge">${escapeHtml(plugin.state)}</span></div><p>${escapeHtml(plugin.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(plugin.manifest.id)} · ${escapeHtml(plugin.manifest.version)}</small>${pluginActions(plugin)}</article>`;
-  const renderAvailableCard = (entry: PluginCatalogEntry): string => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(entry.manifest.name)}</strong><span class="state-badge">disponível</span></div><p>${escapeHtml(entry.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(entry.manifest.id)} · ${escapeHtml(entry.manifest.version)}</small><div class="plugin-actions">${renderButton("Instalar", "download", { command: "plugin.installFromUrl", size: "small", variant: "primary", data: { "plugin-url": entry.manifestUrl } })}</div></article>`;
+  const renderCard = (plugin: PluginRecord): string => {
+    const active = plugin.state === "active" || plugin.state === "enabled";
+    const badgeClass = active ? "state-badge state-badge--active" : "state-badge state-badge--disabled";
+    const badgeText = active ? "Ativo" : "Inativo";
+    return `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(plugin.manifest.name)}</strong><span class="${badgeClass}">${badgeText}</span></div><p>${escapeHtml(plugin.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(plugin.manifest.id)} · v${escapeHtml(plugin.manifest.version)}</small>${pluginActions(plugin)}</article>`;
+  };
+  const renderAvailableCard = (entry: PluginCatalogEntry): string => `<article class="plugin-card"><div class="plugin-card__heading"><strong>${escapeHtml(entry.manifest.name)}</strong><span class="state-badge state-badge--available">Disponível</span></div><p>${escapeHtml(entry.manifest.description ?? "Sem descrição.")}</p><small>${escapeHtml(entry.manifest.id)} · v${escapeHtml(entry.manifest.version)}</small><div class="plugin-card__toggle">${renderButton("Instalar", "download", { command: "plugin.installFromUrl", size: "small", variant: "primary", data: { "plugin-url": entry.manifestUrl } })}</div></article>`;
   const installed = plugins.list();
   const available = state.availablePlugins.filter((entry) => !plugins.get(entry.manifest.id));
   const installedLanguages = installed.filter((plugin) => plugin.manifest.category === "language").map(renderCard).join("");
@@ -1022,7 +1158,9 @@ function renderPlugins(): string {
   const availableLanguages = available.filter((entry) => entry.manifest.category === "language").map(renderAvailableCard).join("");
   const availableTools = available.filter((entry) => entry.manifest.category === "tool").map(renderAvailableCard).join("");
 
-  return `<form class="plugin-install" data-form="plugin-install"><label for="plugin-url">Manifesto remoto</label><div class="input-row"><input id="plugin-url" name="url" type="url" placeholder="https://registry.example/plugin.json" required />${renderButton("Instalar", "download", { type: "submit", size: "small", variant: "primary" })}</div></form><div class="plugin-section"><h3>Linguagens</h3><div class="plugin-list">${installedLanguages}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableLanguages}${!installedLanguages && !availableLanguages ? '<p class="muted">Nenhum plugin de linguagem.</p>' : ""}</div></div><div class="plugin-section"><h3>Ferramentas</h3><div class="plugin-list">${installedTools}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableTools}${!installedTools && !availableTools ? '<p class="muted">Nenhum plugin de ferramenta.</p>' : ""}</div></div>`;
+  const header = `<div class="plugin-manager__header"><h2 style="margin:0;font-size:16px;color:#e8eaed">Gerenciador de Plugins</h2><p style="margin:4px 0 0;font-size:12px;color:#9ca3b0">${installed.length} instalado(s) · ${available.length} disponível(is)</p></div>`;
+  const installForm = `<form class="plugin-install" data-form="plugin-install"><label for="plugin-url" style="font-size:12px;color:#9ca3b0;margin-bottom:4px">Instalar de URL</label><div class="input-row"><input id="plugin-url" name="url" type="url" placeholder="https://registry.example/plugin.json" required />${renderButton("Instalar", "download", { type: "submit", size: "small", variant: "primary" })}</div></form>`;
+  return `${header}${installForm}<div class="plugin-section"><h3 style="font-size:13px;color:#e8eaed;margin:16px 0 8px">Linguagens</h3><div class="plugin-list">${installedLanguages}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableLanguages}${!installedLanguages && !availableLanguages ? '<p class="muted">Nenhum plugin de linguagem.</p>' : ""}</div></div><div class="plugin-section"><h3 style="font-size:13px;color:#e8eaed;margin:16px 0 8px">Ferramentas</h3><div class="plugin-list">${installedTools}${state.pluginCatalogLoading ? '<p class="muted">Carregando...</p>' : availableTools}${!installedTools && !availableTools ? '<p class="muted">Nenhum plugin de ferramenta.</p>' : ""}</div></div>`;
 }
 
 function renderEnvironments(): string {
@@ -1107,7 +1245,7 @@ function renderWelcome(): string {
 }
 
 function renderEditor(): string {
-  const active = state.activeDocument;
+  const active = activeDocument();
   if (!active) return renderWelcome();
   const dirty = active.content !== active.savedContent;
   const provider = languageProviderFor(active);
@@ -1129,7 +1267,7 @@ function renderEditor(): string {
 }
 
 async function lintActiveDocument(): Promise<void> {
-  const active = state.activeDocument;
+  const active = activeDocument();
   const provider = languageProviderFor(active);
   if (!active || !provider) throw new Error("Nenhum provider de linguagem disponível para este arquivo.");
   state.languageActionRunning = true;
@@ -1144,7 +1282,7 @@ async function lintActiveDocument(): Promise<void> {
 }
 
 async function runActiveDocument(): Promise<void> {
-  const active = state.activeDocument;
+  const active = activeDocument();
   const provider = languageProviderFor(active);
   if (!active || !provider?.run) throw new Error("Nenhum executor de linguagem disponível para este arquivo.");
   state.languageActionRunning = true;
@@ -1362,7 +1500,7 @@ async function removeEnvironmentById(rawId: unknown): Promise<void> {
 }
 
 async function runWithSelectedEnvironment(): Promise<void> {
-  const active = state.activeDocument;
+  const active = activeDocument();
   const provider = environmentProviderForExecution(active);
   const environmentId = state.selectedEnvironmentId;
   if (!active || !provider) throw new Error("Nenhum plugin de ambiente disponível para este arquivo.");
@@ -1428,7 +1566,7 @@ async function runWithSelectedEnvironment(): Promise<void> {
 }
 
 function renderEnvironmentToolbar(): string {
-  const active = state.activeDocument;
+  const active = activeDocument();
   const provider = environmentProvider();
   if (!provider) return "";
 
@@ -1455,7 +1593,7 @@ function renderNotice(): string {
 }
 
 function render(): void {
-  const active = state.activeDocument;
+  const active = activeDocument();
   const dirty = active ? active.content !== active.savedContent : false;
   const runtimeToolbar = renderEnvironmentToolbar();
   const environmentActivity = environmentProvider()
@@ -1481,7 +1619,7 @@ function render(): void {
           ${renderButton("Salvar", "save", { command: "file.save", size: "small", variant: "ghost", className: "titlebar-action" })}
           ${renderButton("Painel", "panel", { command: "panel.toggle", size: "small", variant: "ghost", className: "titlebar-action" })}
         </nav>
-        <div class="titlebar__center">${escapeHtml(state.workspaceName ?? active?.name ?? "Sem workspace")}</div>
+        <div class="titlebar__center">${escapeHtml(state.workspaceName ?? active?.name ?? "Sem workspace")}${state.openFiles.length > 1 ? ` · ${state.openFiles.filter((d) => d.content !== d.savedContent).length} não salvo(s)` : ""}</div>
         <div class="version">v${PLATFORM_VERSION}</div>
       </header>
       ${runtimeToolbar}
@@ -1508,8 +1646,14 @@ function render(): void {
           title="Arraste para redimensionar. Duplo clique restaura a largura."
         ></div>
         <section class="editor-area ${state.panelVisible ? "" : "editor-area--panel-hidden"}">
-          <div class="editor-tabs">
-            <button class="editor-tab is-active">${renderIcon(active ? "file" : "code")}<span>${escapeHtml(active?.name ?? "Bem-vindo")}${dirty ? " ●" : ""}</span></button>
+          <div class="editor-tabs">${state.openFiles.length === 0
+            ? `<button class="editor-tab is-active">${renderIcon("code")}<span>Bem-vindo</span></button>`
+            : state.openFiles.map((doc) => {
+                const isActive = (doc.path ?? doc.name) === state.activeFilePath;
+                const isDirty = doc.content !== doc.savedContent;
+                const docKey = doc.path ?? doc.name;
+                return `<button class="editor-tab${isActive ? " is-active" : ""}" data-command="file.activate" data-file-path="${escapeHtml(docKey)}">${renderIcon("file")}<span>${escapeHtml(doc.name)}${isDirty ? " ●" : ""}</span><span class="tab-close" data-command="file.close" data-file-path="${escapeHtml(docKey)}">${renderIcon("close")}</span></button>`;
+              }).join("")}
           </div>
           ${renderEditor()}
           <div
@@ -1528,7 +1672,7 @@ function render(): void {
           <section id="bottom-panel" class="bottom-panel ${state.panelVisible ? "" : "is-hidden"}">
             <header class="panel-tabs">
               <button class="is-active">${renderIcon("terminal")}<span>SAÍDA</span></button>
-              <button>${renderIcon("alert")}<span>PROBLEMAS</span><span class="counter">0</span></button>
+              <button>${renderIcon("alert")}<span>PROBLEMAS</span><span class="counter">${state.diagnostics.length}</span></button>
             </header>
             <pre class="output">${state.logs.map(escapeHtml).join("\n")}</pre>
           </section>
@@ -1556,7 +1700,7 @@ function bindInteractions(): void {
       event.stopPropagation();
       const command = element.dataset.command;
       if (!command) return;
-      const argument = element.dataset.pluginUrl ?? element.dataset.pluginId ?? element.dataset.environmentId ?? element.dataset.browserPath ?? element.dataset.entryPath;
+      const argument = element.dataset.pluginUrl ?? element.dataset.pluginId ?? element.dataset.environmentId ?? element.dataset.browserPath ?? element.dataset.entryPath ?? element.dataset.filePath;
       void commands.execute(command, argument).catch(showError);
     });
   });
@@ -1577,8 +1721,9 @@ function bindInteractions(): void {
   applyResizeValue("sidebar", state.sidebarWidth);
   applyResizeValue("panel", state.panelHeight);
   appRoot.querySelector<HTMLTextAreaElement>("[data-editor]")?.addEventListener("input", (event) => {
-    if (!state.activeDocument) return;
-    state.activeDocument.content = (event.currentTarget as HTMLTextAreaElement).value;
+    const doc = activeDocument();
+    if (!doc) return;
+    doc.content = (event.currentTarget as HTMLTextAreaElement).value;
     render();
     requestAnimationFrame(() => {
       const editor = appRoot.querySelector<HTMLTextAreaElement>("[data-editor]");
@@ -1599,8 +1744,9 @@ function bindInteractions(): void {
     element.addEventListener("click", () => {
       const line = Number(element.dataset.diagnosticLine ?? "1");
       const textarea = appRoot.querySelector<HTMLTextAreaElement>("[data-editor]");
-      if (!textarea || !state.activeDocument) return;
-      const lines = state.activeDocument.content.split("\n");
+      const doc = activeDocument();
+      if (!textarea || !doc) return;
+      const lines = doc.content.split("\n");
       const offset = lines.slice(0, Math.max(0, line - 1)).reduce((total, value) => total + value.length + 1, 0);
       textarea.focus();
       textarea.setSelectionRange(offset, offset);
@@ -1711,7 +1857,9 @@ commands.register("environment.form.cancel", () => {
   render();
 });
 commands.register("environment.run", runWithSelectedEnvironment);
-commands.register("view.explorer", () => { state.sidebarView = "explorer"; state.sidebarVisible = true; render(); });
+commands.register("file.close", closeFile);
+commands.register("file.activate", activateFile);
+commands.register("view.explorer", () => { state.sidebarView = "explorer"; state.sidebarVisible = true; render(); persistSession(); });
 commands.register("view.plugins", () => {
   state.sidebarView = "plugins";
   state.sidebarVisible = true;
@@ -1719,6 +1867,7 @@ commands.register("view.plugins", () => {
   if (!state.availablePlugins.length && !state.pluginCatalogLoading) {
     void loadPluginCatalog();
   }
+  persistSession();
 });
 commands.register("view.environments", async () => {
   if (!environmentProvider()) throw new Error("Nenhum plugin de ambiente está ativo.");
@@ -1726,9 +1875,10 @@ commands.register("view.environments", async () => {
   state.sidebarVisible = true;
   await refreshEnvironments();
   render();
+  persistSession();
 });
-commands.register("sidebar.toggle", () => { state.sidebarVisible = !state.sidebarVisible; render(); });
-commands.register("panel.toggle", () => { state.panelVisible = !state.panelVisible; render(); });
+commands.register("sidebar.toggle", () => { state.sidebarVisible = !state.sidebarVisible; render(); persistSession(); });
+commands.register("panel.toggle", () => { state.panelVisible = !state.panelVisible; render(); persistSession(); });
 commands.register("plugin.installFromUrl", async (rawUrl: unknown) => {
   if (typeof rawUrl !== "string") throw new Error("Plugin URL must be a string.");
   await installPluginFromUrl(rawUrl);
@@ -1786,6 +1936,9 @@ window.addEventListener("keydown", (event) => {
   if (event.ctrlKey && event.key.toLowerCase() === "n") {
     event.preventDefault(); void commands.execute("file.new").catch(showError); return;
   }
+  if (event.ctrlKey && event.key.toLowerCase() === "w") {
+    event.preventDefault(); void commands.execute("file.close").catch(showError); return;
+  }
   if (event.ctrlKey && event.key.toLowerCase() === "b") {
     event.preventDefault(); void commands.execute("sidebar.toggle");
   }
@@ -1827,6 +1980,7 @@ window.tinyIde = {
   installPlugin: installPluginFromUrl,
 };
 
+restoreSession();
 void restorePlugins()
   .then(render)
   .catch(showError);
