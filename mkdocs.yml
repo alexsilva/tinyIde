@@ -1,0 +1,33 @@
+site_name: tinyIde
+site_description: IDE web extensível e agnóstica de linguagem
+site_author: tinyIde
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: mkdocs
+  language: pt-BR
+
+nav:
+  - Início: index.md
+  - Visão do produto: visao-do-produto.md
+  - Arquitetura:
+      - Visão geral: arquitetura/index.md
+      - Núcleo da plataforma: arquitetura/core.md
+      - Sistema de plugins: arquitetura/plugins.md
+      - Segurança e isolamento: arquitetura/seguranca.md
+  - Ecossistema:
+      - Python e Django: ecossistema/python-django.md
+  - Roadmap: roadmap.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - fenced_code
+  - tables
+  - toc:
+      permalink: true
+
+strict: true
+
