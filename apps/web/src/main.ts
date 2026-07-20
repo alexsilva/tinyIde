@@ -98,6 +98,8 @@ interface AppState {
   environmentForm: "create" | "import" | "packages" | undefined;
   environmentBrowser: EnvironmentDirectoryListing | undefined;
   environmentBrowserLoading: boolean;
+  environmentBrowserOpen: boolean;
+  environmentSelectedPath: string | undefined;
   logs: string[];
   notice: string | undefined;
   error: string | undefined;
@@ -141,6 +143,8 @@ const state: AppState = {
   environmentForm: undefined,
   environmentBrowser: undefined,
   environmentBrowserLoading: false,
+  environmentBrowserOpen: false,
+  environmentSelectedPath: undefined,
   logs: ["tinyIde core initialized", `platform version ${PLATFORM_VERSION}`],
   notice: undefined,
   error: undefined,
@@ -607,21 +611,28 @@ function renderEnvironments(): string {
   const createForm = state.environmentForm === "create"
     ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-create"><strong>Criar novo ambiente</strong><label>Nome<input name="name" value=".venv" aria-label="Nome do ambiente" /></label><label>Local opcional<input name="path" placeholder="Vazio usa .tinyide/environments/python/.venv" aria-label="Local do novo ambiente" /></label><small>O diretório informado não pode existir. O Python será criado com python -m venv.</small><div><button class="primary-button" type="submit">Criar ambiente</button><button type="button" data-command="environment.form.cancel">Cancelar</button></div></form>`
     : "";
-  const browser = state.environmentBrowser;
-  const browserEntries = browser?.entries
-    .map((entry) => `<button type="button" class="environment-browser__entry${entry.isEnvironment ? " is-environment" : ""}" data-command="environment.browse" data-browser-path="${escapeHtml(entry.path)}"><span>${entry.isEnvironment ? "PY" : "D"}</span><strong>${escapeHtml(entry.name)}</strong>${entry.isEnvironment ? "<small>Ambiente Python</small>" : ""}</button>`)
-    .join("") ?? "";
-  const browserPanel = browser
-    ? `<div class="environment-browser"><div class="environment-browser__path"><button type="button" data-command="environment.browse" data-browser-path="${escapeHtml(browser.parentPath ?? browser.path)}" aria-label="Abrir pasta pai" title="Abrir pasta pai" ${browser.parentPath ? "" : "disabled"}>Pasta pai</button><code>${escapeHtml(browser.path)}</code></div>${browser.isEnvironment ? `<div class="environment-browser__selected"><strong>Ambiente Python válido</strong><button type="button" class="primary-button" data-command="environment.choosePath" data-browser-path="${escapeHtml(browser.path)}">Usar este ambiente</button></div>` : ""}<div class="environment-browser__entries">${browserEntries || '<p class="muted">Nenhuma subpasta.</p>'}</div></div>`
-    : `<div class="environment-browser__empty"><button type="button" data-command="environment.browse">Procurar pastas</button></div>`;
   const importForm = state.environmentForm === "import"
-    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-import"><strong>Abrir ambiente existente</strong><label>Ambiente selecionado<input name="path" readonly placeholder="Use o navegador abaixo" aria-label="Caminho do ambiente existente" /></label>${browserPanel}<label>Nome opcional<input name="name" placeholder="Usa o nome da pasta" aria-label="Nome do ambiente existente" /></label><small>Selecione uma pasta marcada como “Ambiente Python”. Ela precisa conter pyvenv.cfg e o executável Python.</small><div><button class="primary-button" type="submit">Adicionar ambiente</button><button type="button" data-command="environment.form.cancel">Cancelar</button></div></form>`
+    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-import"><strong>Abrir ambiente existente</strong><label>Diretório do ambiente<div class="environment-path-picker"><input name="path" readonly value="${escapeHtml(state.environmentSelectedPath ?? "")}" placeholder="Nenhum diretório selecionado" aria-label="Caminho do ambiente existente" /><button type="button" data-command="environment.browser.open">Selecionar diretório...</button></div></label><label>Nome opcional<input name="name" placeholder="Usa o nome da pasta" aria-label="Nome do ambiente existente" /></label><small>Escolha a pasta raiz do ambiente virtual, onde ficam pyvenv.cfg e bin/python ou Scripts/python.exe.</small><div><button class="primary-button" type="submit" ${state.environmentSelectedPath ? "" : "disabled"}>Adicionar ambiente</button><button type="button" data-command="environment.form.cancel">Cancelar</button></div></form>`
     : "";
   const packagesForm = state.environmentForm === "packages"
     ? `<form class="environment-manager__form" data-form="environment-packages"><input name="packages" placeholder="django requests" aria-label="Pacotes" /><button class="primary-button" type="submit">Instalar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></form>`
     : "";
 
   return `<div class="environment-manager"><div class="environment-manager__toolbar"><button data-command="environment.refresh">Atualizar</button><button class="primary-button" data-command="environment.create">Criar novo</button><button data-command="environment.import">Abrir existente</button></div>${createForm}${importForm}${packagesForm}<div class="environment-list">${cards || '<div class="empty-state"><p>Nenhum ambiente registrado.</p><p>Use “Criar novo” ou “Abrir existente”.</p></div>'}</div></div>`;
+}
+
+function renderEnvironmentBrowserModal(): string {
+  if (!state.environmentBrowserOpen) return "";
+  const browser = state.environmentBrowser;
+  const entries = browser?.entries
+    .map((entry) => `<button type="button" class="environment-browser__entry${entry.isEnvironment ? " is-environment" : ""}" data-command="environment.browse" data-browser-path="${escapeHtml(entry.path)}"><span>${entry.isEnvironment ? "PY" : "D"}</span><strong>${escapeHtml(entry.name)}</strong>${entry.isEnvironment ? "<small>Ambiente Python</small>" : ""}</button>`)
+    .join("") ?? "";
+  const content = state.environmentBrowserLoading
+    ? `<div class="environment-browser-modal__loading">Carregando diretórios...</div>`
+    : browser
+      ? `<div class="environment-browser__path"><button type="button" data-command="environment.browse" data-browser-path="${escapeHtml(browser.parentPath ?? browser.path)}" aria-label="Abrir pasta pai" title="Abrir pasta pai" ${browser.parentPath ? "" : "disabled"}>Pasta pai</button><code>${escapeHtml(browser.path)}</code></div>${browser.isEnvironment ? `<div class="environment-browser__selected"><div><strong>Ambiente Python válido</strong><small>${escapeHtml(browser.path)}</small></div><button type="button" class="primary-button" data-command="environment.choosePath" data-browser-path="${escapeHtml(browser.path)}">Selecionar este diretório</button></div>` : `<p class="muted">Navegue até a pasta raiz de um ambiente virtual Python.</p>`}<div class="environment-browser__entries">${entries || '<p class="muted">Nenhuma subpasta.</p>'}</div>`
+      : `<div class="environment-browser-modal__loading">Nenhum diretório carregado.</div>`;
+  return `<div class="modal-backdrop" role="presentation"><section class="environment-browser-modal" role="dialog" aria-modal="true" aria-labelledby="environment-browser-title"><header><div><h2 id="environment-browser-title">Selecionar diretório do ambiente</h2><p>Escolha a pasta que contém o ambiente virtual Python.</p></div><button type="button" data-command="environment.browser.close" aria-label="Fechar seletor de diretórios">Fechar</button></header><div class="environment-browser-modal__content">${content}</div><footer><button type="button" data-command="environment.browser.close">Cancelar</button></footer></section></div>`;
 }
 
 function renderSidebar(): string {
@@ -767,6 +778,9 @@ async function importExecutionEnvironment(path: string, name: string): Promise<v
     state.openedEnvironmentIds.add(environment.id);
     state.selectedEnvironmentId = environment.id;
     state.environmentForm = undefined;
+    state.environmentBrowser = undefined;
+    state.environmentBrowserOpen = false;
+    state.environmentSelectedPath = undefined;
     showNotice(`Ambiente existente '${environment.name}' adicionado e aberto.`);
   } finally {
     state.environmentBusy = false;
@@ -777,6 +791,7 @@ async function importExecutionEnvironment(path: string, name: string): Promise<v
 async function browseEnvironmentDirectory(rawPath?: unknown): Promise<void> {
   const provider = environmentProvider();
   if (!provider?.browseDirectories) throw new Error("O plugin não oferece navegação de diretórios.");
+  state.environmentBrowserOpen = true;
   state.environmentBrowserLoading = true;
   render();
   try {
@@ -789,9 +804,9 @@ async function browseEnvironmentDirectory(rawPath?: unknown): Promise<void> {
 
 function chooseEnvironmentPath(rawPath: unknown): void {
   if (typeof rawPath !== "string") throw new Error("Caminho inválido.");
-  const input = appRoot.querySelector<HTMLInputElement>('[data-form="environment-import"] input[name="path"]');
-  if (!input) throw new Error("Formulário de ambiente não está aberto.");
-  input.value = rawPath;
+  state.environmentSelectedPath = rawPath;
+  state.environmentBrowserOpen = false;
+  render();
 }
 
 async function installEnvironmentPackages(): Promise<void> {
@@ -957,7 +972,7 @@ function renderNotice(): string {
 function render(): void {
   const active = state.activeDocument;
   const dirty = active ? active.content !== active.savedContent : false;
-  appRoot.innerHTML = `<div class="ide-shell"><header class="titlebar"><div class="brand">tinyIde</div><nav class="menu" aria-label="Menu principal"><div class="menu-item"><button data-command="menu.file.toggle">Arquivo</button>${renderFileMenu()}</div><button data-command="file.save">Salvar</button><button data-command="panel.toggle">Painel</button></nav><div class="titlebar__center">${escapeHtml(state.workspaceName ?? active?.name ?? "Sem workspace")}</div><div class="version">v${PLATFORM_VERSION}</div></header>${renderEnvironmentToolbar()}<main class="workbench ${state.sidebarVisible ? "" : "workbench--sidebar-hidden"}"><nav class="activitybar" aria-label="Atividades"><button class="activity-button ${state.sidebarView === "explorer" ? "is-active" : ""}" data-command="view.explorer">EX</button><button class="activity-button ${state.sidebarView === "plugins" ? "is-active" : ""}" data-command="view.plugins">PL</button><button class="activity-button ${state.sidebarView === "environments" ? "is-active" : ""}" data-command="view.environments">ENV</button><div class="activitybar__spacer"></div><button class="activity-button" data-command="panel.toggle">PN</button></nav>${renderSidebar()}<section class="editor-area"><div class="editor-tabs"><button class="editor-tab is-active"><span>TXT</span>${escapeHtml(active?.name ?? "Bem-vindo")}${dirty ? " ●" : ""}</button></div>${renderEditor()}<section class="bottom-panel ${state.panelVisible ? "" : "is-hidden"}"><header class="panel-tabs"><button class="is-active">SAÍDA</button><button>PROBLEMAS <span class="counter">0</span></button></header><pre class="output">${state.logs.map(escapeHtml).join("\n")}</pre></section></section></main><footer class="statusbar"><button data-command="file.openPicker">${escapeHtml(state.workspaceName ?? "Abrir arquivo")}</button><span>${plugins.list().length} plugin(s)</span><span class="statusbar__spacer"></span><span>${dirty ? "Alterações não salvas" : "Salvo"}</span><span>UTF-8</span><span>Texto</span></footer>${renderNotice()}</div>`;
+  appRoot.innerHTML = `<div class="ide-shell"><header class="titlebar"><div class="brand">tinyIde</div><nav class="menu" aria-label="Menu principal"><div class="menu-item"><button data-command="menu.file.toggle">Arquivo</button>${renderFileMenu()}</div><button data-command="file.save">Salvar</button><button data-command="panel.toggle">Painel</button></nav><div class="titlebar__center">${escapeHtml(state.workspaceName ?? active?.name ?? "Sem workspace")}</div><div class="version">v${PLATFORM_VERSION}</div></header>${renderEnvironmentToolbar()}<main class="workbench ${state.sidebarVisible ? "" : "workbench--sidebar-hidden"}"><nav class="activitybar" aria-label="Atividades"><button class="activity-button ${state.sidebarView === "explorer" ? "is-active" : ""}" data-command="view.explorer">EX</button><button class="activity-button ${state.sidebarView === "plugins" ? "is-active" : ""}" data-command="view.plugins">PL</button><button class="activity-button ${state.sidebarView === "environments" ? "is-active" : ""}" data-command="view.environments">ENV</button><div class="activitybar__spacer"></div><button class="activity-button" data-command="panel.toggle">PN</button></nav>${renderSidebar()}<section class="editor-area"><div class="editor-tabs"><button class="editor-tab is-active"><span>TXT</span>${escapeHtml(active?.name ?? "Bem-vindo")}${dirty ? " ●" : ""}</button></div>${renderEditor()}<section class="bottom-panel ${state.panelVisible ? "" : "is-hidden"}"><header class="panel-tabs"><button class="is-active">SAÍDA</button><button>PROBLEMAS <span class="counter">0</span></button></header><pre class="output">${state.logs.map(escapeHtml).join("\n")}</pre></section></section></main><footer class="statusbar"><button data-command="file.openPicker">${escapeHtml(state.workspaceName ?? "Abrir arquivo")}</button><span>${plugins.list().length} plugin(s)</span><span class="statusbar__spacer"></span><span>${dirty ? "Alterações não salvas" : "Salvo"}</span><span>UTF-8</span><span>Texto</span></footer>${renderNotice()}${renderEnvironmentBrowserModal()}</div>`;
   bindInteractions();
 }
 
@@ -1054,9 +1069,12 @@ commands.register("environment.import", async () => {
   state.sidebarVisible = true;
   state.environmentForm = "import";
   state.environmentBrowser = undefined;
+  state.environmentBrowserOpen = false;
+  state.environmentSelectedPath = undefined;
   render();
-  await browseEnvironmentDirectory();
 });
+commands.register("environment.browser.open", () => browseEnvironmentDirectory());
+commands.register("environment.browser.close", () => { state.environmentBrowserOpen = false; render(); });
 commands.register("environment.browse", browseEnvironmentDirectory);
 commands.register("environment.choosePath", chooseEnvironmentPath);
 commands.register("environment.packages", installEnvironmentPackages);
@@ -1066,7 +1084,13 @@ commands.register("environment.close", closeEnvironment);
 commands.register("environment.select", selectEnvironment);
 commands.register("environment.packagesFor", packagesForEnvironment);
 commands.register("environment.removeById", removeEnvironmentById);
-commands.register("environment.form.cancel", () => { state.environmentForm = undefined; state.environmentBrowser = undefined; render(); });
+commands.register("environment.form.cancel", () => {
+  state.environmentForm = undefined;
+  state.environmentBrowser = undefined;
+  state.environmentBrowserOpen = false;
+  state.environmentSelectedPath = undefined;
+  render();
+});
 commands.register("environment.run", runWithSelectedEnvironment);
 commands.register("view.explorer", () => { state.sidebarView = "explorer"; state.sidebarVisible = true; render(); });
 commands.register("view.plugins", () => {
@@ -1124,6 +1148,12 @@ capabilities.register("core.events", events);
 capabilities.register("core.plugins", plugins);
 
 window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.environmentBrowserOpen) {
+    event.preventDefault();
+    state.environmentBrowserOpen = false;
+    render();
+    return;
+  }
   if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "s") {
     event.preventDefault(); void commands.execute("file.saveAs").catch(showError); return;
   }

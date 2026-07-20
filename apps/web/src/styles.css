@@ -130,6 +130,87 @@ button {
   color: #e1e4ea;
 }
 
+.environment-path-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.environment-path-picker input[readonly] {
+  color: #b8c0cc;
+}
+
+.modal-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: rgb(8 10 14 / 72%);
+  backdrop-filter: blur(2px);
+}
+
+.environment-browser-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(820px, 92vw);
+  height: min(680px, 86vh);
+  overflow: hidden;
+  border: 1px solid #444b58;
+  border-radius: 10px;
+  background: #1b1e25;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 48%);
+}
+
+.environment-browser-modal > header,
+.environment-browser-modal > footer {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-color: #343944;
+}
+
+.environment-browser-modal > header {
+  border-bottom: 1px solid #343944;
+}
+
+.environment-browser-modal > footer {
+  justify-content: flex-end;
+  border-top: 1px solid #343944;
+}
+
+.environment-browser-modal h2,
+.environment-browser-modal p {
+  margin: 0;
+}
+
+.environment-browser-modal h2 {
+  font-size: 17px;
+}
+
+.environment-browser-modal header p {
+  margin-top: 4px;
+  color: #9da5b4;
+  font-size: 12px;
+}
+
+.environment-browser-modal__content {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+  padding: 16px 18px;
+}
+
+.environment-browser-modal__loading {
+  display: grid;
+  place-items: center;
+  color: #9da5b4;
+}
+
 .environment-browser {
   display: grid;
   gap: 8px;
@@ -158,7 +239,7 @@ button {
 .environment-browser__entries {
   display: grid;
   gap: 4px;
-  max-height: 260px;
+  min-height: 0;
   overflow: auto;
 }
 
@@ -194,6 +275,19 @@ button {
   border: 1px solid #52734d;
   border-radius: 4px;
   background: #1c281d;
+}
+
+.environment-browser__selected > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.environment-browser__selected small {
+  overflow: hidden;
+  color: #9da5b4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .environment-list {
