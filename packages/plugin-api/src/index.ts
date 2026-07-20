@@ -138,9 +138,21 @@ export interface ExecutionEnvironment {
   readonly name: string;
   readonly status: "ready" | "creating" | "error";
   readonly executable?: string;
+  readonly path?: string;
+  readonly managed?: boolean;
   readonly version?: string;
   readonly packages?: readonly string[];
   readonly error?: string;
+}
+
+export interface EnvironmentCreateRequest {
+  readonly name: string;
+  readonly path?: string;
+}
+
+export interface EnvironmentImportRequest {
+  readonly path: string;
+  readonly name?: string;
 }
 
 export interface EnvironmentExecutionRequest {
@@ -154,7 +166,8 @@ export interface ExecutionEnvironmentProvider {
   readonly name: string;
   readonly extensions: readonly string[];
   list(): Promise<readonly ExecutionEnvironment[]>;
-  create(name: string): Promise<ExecutionEnvironment>;
+  create(request: EnvironmentCreateRequest): Promise<ExecutionEnvironment>;
+  importExisting(request: EnvironmentImportRequest): Promise<ExecutionEnvironment>;
   remove(environmentId: string): Promise<void>;
   installPackages(environmentId: string, packages: readonly string[]): Promise<ExecutionEnvironment>;
   run(

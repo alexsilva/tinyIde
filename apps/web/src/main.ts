@@ -94,7 +94,7 @@ interface AppState {
   openedEnvironmentIds: Set<string>;
   selectedEnvironmentId: string | undefined;
   environmentBusy: boolean;
-  environmentForm: "create" | "packages" | undefined;
+  environmentForm: "create" | "import" | "packages" | undefined;
   logs: string[];
   notice: string | undefined;
   error: string | undefined;
@@ -600,13 +600,16 @@ function renderEnvironments(): string {
     .join("");
 
   const createForm = state.environmentForm === "create"
-    ? `<form class="environment-manager__form" data-form="environment-create"><input name="name" value=".venv" aria-label="Nome do ambiente" /><button class="primary-button" type="submit">Criar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></form>`
+    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-create"><strong>Criar novo ambiente</strong><label>Nome<input name="name" value=".venv" aria-label="Nome do ambiente" /></label><label>Local opcional<input name="path" placeholder="Vazio usa .tinyide/environments/python/.venv" aria-label="Local do novo ambiente" /></label><small>O diretório informado não pode existir. O Python será criado com python -m venv.</small><div><button class="primary-button" type="submit">Criar ambiente</button><button type="button" data-command="environment.form.cancel">Cancelar</button></div></form>`
+    : "";
+  const importForm = state.environmentForm === "import"
+    ? `<form class="environment-manager__form environment-manager__form--stacked" data-form="environment-import"><strong>Abrir ambiente existente</strong><label>Caminho do venv<input name="path" placeholder="/caminho/do/projeto/.venv" aria-label="Caminho do ambiente existente" /></label><label>Nome opcional<input name="name" placeholder="Usa o nome da pasta" aria-label="Nome do ambiente existente" /></label><small>O diretório precisa conter pyvenv.cfg e um executável Python válido.</small><div><button class="primary-button" type="submit">Validar e adicionar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></div></form>`
     : "";
   const packagesForm = state.environmentForm === "packages"
     ? `<form class="environment-manager__form" data-form="environment-packages"><input name="packages" placeholder="django requests" aria-label="Pacotes" /><button class="primary-button" type="submit">Instalar</button><button type="button" data-command="environment.form.cancel">Cancelar</button></form>`
     : "";
 
-  return `<div class="environment-manager"><div class="environment-manager__toolbar"><button data-command="environment.refresh">Atualizar</button><button class="primary-button" data-command="environment.create">Novo ambiente</button></div>${createForm}${packagesForm}<div class="environment-list">${cards || '<div class="empty-state"><p>Nenhum ambiente criado.</p></div>'}</div></div>`;
+  return `<div class="environment-manager"><div class="environment-manager__toolbar"><button data-command="environment.refresh">Atualizar</button><button class="primary-button" data-command="environment.create">Criar novo</button><button data-command="environment.import">Abrir existente</button></div>${createForm}${importForm}${packagesForm}<div class="environment-list">${cards || '<div class="empty-state"><p>Nenhum ambiente registrado.</p><p>Use “Criar novo” ou “Abrir existente”.</p></div>'}</div></div>`;
 }
 
 function renderSidebar(): string {
@@ -715,12 +718,44 @@ async function submitExecutionEnvironment(name: string): Promise<void> {
   state.error = undefined;
   render();
   try {
-    const environment = await provider.create(normalizedName);
+    const form = appRoot.querySelector<HTMLFormElement>('[data-form="environment-create"]');
+    const pathValue = form ? new FormData(form).get("path") : undefined;
+    const path = typeof pathValue === "string" && pathValue.trim() ? pathValue.trim() : undefined;
+    const environment = await provider.create({
+      name: normalizedName,
+      ...(path ? { path } : {}),
+    });
     await refreshEnvironments();
     state.openedEnvironmentIds.add(environment.id);
     state.selectedEnvironmentId = environment.id;
     state.environmentForm = undefined;
     showNotice(`Ambiente '${environment.name}' criado.`);
+  } finally {
+    state.environmentBusy = false;
+    render();
+  }
+}
+
+async function importExecutionEnvironment(path: string, name: string): Promise<void> {
+  const provider = environmentProvider();
+  if (!provider) throw new Error("Nenhum plugin de ambiente disponível.");
+  const normalizedPath = path.trim();
+  if (!normalizedPath) throw new Error("Informe o caminho do ambiente existente.");
+  state.environmentBusy = true;
+  state.notice = `Validando ambiente em '${normalizedPath}'...`;
+  state.error = undefined;
+  render();
+  try {
+    const normalizedName = name.trim();
+    const environment = await provider.importExisting({
+      path: normalizedPath,
+      ...(normalizedName ? { name: normalizedName } : {}),
+    });
+    await refreshEnvironments();
+    state.openedEnvironmentIds.add(environment.id);
+    state.selectedEnvironmentId = environment.id;
+    state.environmentForm = undefined;
+    showNotice(`Ambiente existente '${environment.name}' adicionado e aberto.`);
   } finally {
     state.environmentBusy = false;
     render();
@@ -950,6 +985,16 @@ function bindInteractions(): void {
     const name = new FormData(event.currentTarget as HTMLFormElement).get("name");
     void submitExecutionEnvironment(typeof name === "string" ? name : "").catch(showError);
   });
+  appRoot.querySelector<HTMLFormElement>('[data-form="environment-import"]')?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const path = formData.get("path");
+    const name = formData.get("name");
+    void importExecutionEnvironment(
+      typeof path === "string" ? path : "",
+      typeof name === "string" ? name : "",
+    ).catch(showError);
+  });
   appRoot.querySelector<HTMLFormElement>('[data-form="environment-packages"]')?.addEventListener("submit", (event) => {
     event.preventDefault();
     const packages = new FormData(event.currentTarget as HTMLFormElement).get("packages");
@@ -972,6 +1017,12 @@ commands.register("language.lint", lintActiveDocument);
 commands.register("language.run", runActiveDocument);
 commands.register("environment.refresh", refreshEnvironments);
 commands.register("environment.create", createExecutionEnvironment);
+commands.register("environment.import", () => {
+  state.sidebarView = "environments";
+  state.sidebarVisible = true;
+  state.environmentForm = "import";
+  render();
+});
 commands.register("environment.packages", installEnvironmentPackages);
 commands.register("environment.remove", removeSelectedEnvironment);
 commands.register("environment.open", openEnvironment);
