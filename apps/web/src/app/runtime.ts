@@ -1,7 +1,4 @@
-import {
-  inferWorkspaceRoot,
-  resolveExecutionProfile,
-} from "@tinyide/core";
+import { resolveExecutionProfile } from "@tinyide/core";
 import type {
   ExecutionEnvironment,
   ExecutionEnvironmentProvider,
@@ -10,6 +7,7 @@ import type {
   ExecutionProfileExecutableOption,
   ExecutionProfileVariableContribution,
   LanguageProvider,
+  LanguageLintSettings,
   ProcessExecutionRequest,
   ScriptExecutionContribution,
   TextDiagnostic,
@@ -78,6 +76,7 @@ export async function loadEnvironments(): Promise<readonly ExecutionEnvironment[
 
 export async function loadProfileContributions(input: {
   readonly workspaceName?: string;
+  readonly workspaceRoot?: string;
   readonly activeDocument?: OpenDocument;
 }): Promise<ProfileContributions> {
   const providers = platform.capabilities.getAll<ExecutionProfileContributionProvider>(
@@ -87,6 +86,7 @@ export async function loadProfileContributions(input: {
     ...(input.workspaceName && input.workspaceName !== "Sem workspace"
       ? { workspaceName: input.workspaceName }
       : {}),
+    ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),
     ...(input.activeDocument?.name ? { activeFileName: input.activeDocument.name } : {}),
     ...(input.activeDocument?.path ? { activeFilePath: input.activeDocument.path } : {}),
   };
@@ -102,16 +102,38 @@ export async function loadProfileContributions(input: {
   };
 }
 
-export async function lintDocument(document: OpenDocument): Promise<readonly TextDiagnostic[]> {
+export async function lintDocument(
+  document: OpenDocument,
+  settings?: LanguageLintSettings,
+): Promise<readonly TextDiagnostic[]> {
   const provider = languageProviderFor(document);
   if (!provider) throw new Error("Nenhum provider de linguagem disponível para este arquivo.");
-  return provider.lint(document.content, document.name);
+  return provider.lint(document.content, document.name, settings);
 }
 
 export async function readHostContext(): Promise<{ readonly workspaceRoot: string }> {
   const response = await fetch("/core-api/context", { cache: "no-store" });
   if (!response.ok) throw new Error("Não foi possível obter o contexto de execução do host.");
   return response.json() as Promise<{ readonly workspaceRoot: string }>;
+}
+
+export async function setHostWorkspace(
+  workspaceName: string,
+  workspaceRootHint?: string,
+): Promise<{ readonly workspaceRoot: string }> {
+  const response = await fetch("/core-api/workspace", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: workspaceName,
+      ...(workspaceRootHint ? { path: workspaceRootHint } : {}),
+    }),
+  });
+  const payload = await response.json() as { readonly workspaceRoot?: string; readonly error?: string };
+  if (!response.ok || !payload.workspaceRoot) {
+    throw new Error(payload.error ?? "Não foi possível definir a raiz do workspace no host.");
+  }
+  return { workspaceRoot: payload.workspaceRoot };
 }
 
 export async function startHostProcess(request: ProcessExecutionRequest): Promise<HostProcessSnapshot> {
@@ -161,7 +183,7 @@ export async function runExecutionProfile(input: {
   readonly environments: readonly ExecutionEnvironment[];
   readonly callbacks: RunProfileCallbacks;
 }): Promise<void> {
-  const { profile, activeDocument, workspaceName, environments, callbacks } = input;
+  const { profile, activeDocument, environments, callbacks } = input;
   const environmentId = profile.environment.mode === "fixed"
     ? profile.environment.environmentId
     : undefined;
@@ -172,22 +194,7 @@ export async function runExecutionProfile(input: {
     throw new Error("O perfil exige um ambiente com executável disponível.");
   }
 
-  const host = await readHostContext();
-  const workspaceRoot = inferWorkspaceRoot({
-    workspaceName: workspaceName === "Sem workspace" ? undefined : workspaceName,
-    pathHints: [
-      ...profile.steps.flatMap((step) => [step.workingDirectory, step.command, step.executable]),
-      environment?.path,
-      environment?.executable,
-      host.workspaceRoot,
-    ],
-  });
-  if (!workspaceRoot) {
-    throw new Error(
-      `O workspace '${workspaceName}' não está vinculado a um caminho no host. `
-      + "Configure um diretório de trabalho absoluto ou um ambiente dentro do workspace.",
-    );
-  }
+  const { workspaceRoot } = await readHostContext();
 
   const activePath = activeDocument?.path
     ? `${workspaceRoot}/${activeDocument.path.replace(/^\/+/, "")}`

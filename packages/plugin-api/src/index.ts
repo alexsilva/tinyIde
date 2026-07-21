@@ -100,6 +100,17 @@ export interface TextDiagnostic {
   readonly code?: string;
 }
 
+export interface LanguageLintRule {
+  readonly id: string;
+  readonly label: string;
+  readonly description?: string;
+  readonly defaultEnabled: boolean;
+}
+
+export interface LanguageLintSettings {
+  readonly enabledRuleIds: readonly string[];
+}
+
 export interface SyntaxToken {
   readonly start: number;
   readonly end: number;
@@ -173,6 +184,7 @@ export interface ProcessExecutionRequest {
 
 export interface ExecutionProfileContributionContext {
   readonly workspaceName?: string;
+  readonly workspaceRoot?: string;
   readonly activeFileName?: string;
   readonly activeFilePath?: string;
 }
@@ -218,8 +230,13 @@ export interface LanguageProvider {
   readonly id: string;
   readonly name: string;
   readonly extensions: readonly string[];
+  readonly lintRules?: readonly LanguageLintRule[];
   highlight(source: string): readonly SyntaxToken[];
-  lint(source: string, fileName: string): Promise<readonly TextDiagnostic[]>;
+  lint(
+    source: string,
+    fileName: string,
+    settings?: LanguageLintSettings,
+  ): Promise<readonly TextDiagnostic[]>;
 }
 
 export const LANGUAGE_PROVIDER_CAPABILITY = "language.provider";

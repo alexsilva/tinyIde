@@ -76,15 +76,22 @@ function processSnapshot(record) {
 }
 
 export function createExecutionBackend({ workspaceRoot }) {
-  const resolvedWorkspaceRoot = resolve(workspaceRoot);
+  const getWorkspaceRoot = typeof workspaceRoot === "function"
+    ? workspaceRoot
+    : () => workspaceRoot;
   const processes = new Map();
 
+  function resolvedWorkspaceRoot() {
+    return resolve(getWorkspaceRoot());
+  }
+
   function startProcess(payload) {
+    const workspaceRoot = resolvedWorkspaceRoot();
     const executable = requiredString(payload.executable, "executable");
     const args = stringArray(payload.arguments ?? [], "arguments");
     const workingDirectory = payload.workingDirectory
-      ? resolve(resolvedWorkspaceRoot, requiredString(payload.workingDirectory, "workingDirectory"))
-      : resolvedWorkspaceRoot;
+      ? resolve(workspaceRoot, requiredString(payload.workingDirectory, "workingDirectory"))
+      : workspaceRoot;
     const environmentVariables = environmentRecord(payload.environmentVariables);
     const id = randomUUID();
     const startedAt = Date.now();
@@ -135,7 +142,7 @@ export function createExecutionBackend({ workspaceRoot }) {
   return async function executionBackend(request, response, relativePath) {
     try {
       if (request.method === "GET" && relativePath === "/context") {
-        writeJson(response, 200, { workspaceRoot: resolvedWorkspaceRoot });
+        writeJson(response, 200, { workspaceRoot: resolvedWorkspaceRoot() });
         return;
       }
 

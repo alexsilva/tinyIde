@@ -1,5 +1,5 @@
 import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, extname, join, normalize, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
@@ -17,10 +17,67 @@ const contentTypes = {
 
 function developmentPluginServer() {
   const backendHandlers = new Map();
-  const executionBackend = createExecutionBackend({ workspaceRoot: resolve(configDirectory, "../..") });
+  const hostRoot = resolve(configDirectory, "../..");
+  let activeWorkspaceRoot = hostRoot;
+  const executionBackend = createExecutionBackend({ workspaceRoot: () => activeWorkspaceRoot });
+
+  async function readJson(request) {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+  }
+
+  function isInsideHostRoot(candidate) {
+    const relativePath = relative(hostRoot, candidate);
+    return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
+  }
+
+  function findWorkspaceByName(name) {
+    if (basename(hostRoot) === name) return hostRoot;
+    const ignored = new Set([".git", ".venv", "node_modules", "dist", "coverage"]);
+    const queue = [{ path: hostRoot, depth: 0 }];
+    const matches = [];
+    while (queue.length) {
+      const current = queue.shift();
+      if (!current || current.depth >= 4) continue;
+      for (const entry of readdirSync(current.path, { withFileTypes: true })) {
+        if (!entry.isDirectory() || ignored.has(entry.name)) continue;
+        const directoryPath = join(current.path, entry.name);
+        if (entry.name === name) matches.push(directoryPath);
+        if (matches.length > 1) break;
+        queue.push({ path: directoryPath, depth: current.depth + 1 });
+      }
+      if (matches.length > 1) break;
+    }
+    if (matches.length > 1) {
+      throw new Error(`Há mais de um diretório chamado '${name}' dentro da raiz do host.`);
+    }
+    return matches[0];
+  }
+
+  function resolveWorkspaceSelection(payload) {
+    const name = typeof payload.name === "string" ? payload.name.trim() : "";
+    if (!name || name.includes("/") || name.includes("\\") || name.includes("\0")) {
+      throw new Error("Nome de workspace inválido.");
+    }
+    if (typeof payload.path === "string" && payload.path.trim()) {
+      const candidate = resolve(payload.path.trim());
+      if (!isInsideHostRoot(candidate) || !existsSync(candidate) || !statSync(candidate).isDirectory()) {
+        throw new Error("O workspace salvo não está disponível dentro da raiz do host.");
+      }
+      if (basename(candidate) !== name) throw new Error("O caminho salvo não corresponde ao workspace selecionado.");
+      return candidate;
+    }
+    const candidate = findWorkspaceByName(name);
+    if (!candidate) {
+      throw new Error(`Não foi possível vincular o diretório '${name}' à raiz do host '${hostRoot}'.`);
+    }
+    return candidate;
+  }
 
   async function resolveBackend(pluginId) {
-    if (backendHandlers.has(pluginId)) return backendHandlers.get(pluginId);
+    const cacheKey = `${pluginId}:${activeWorkspaceRoot}`;
+    if (backendHandlers.has(cacheKey)) return backendHandlers.get(cacheKey);
 
     for (const directoryName of readdirSync(pluginsRoot)) {
       const manifestPath = join(pluginsRoot, directoryName, "plugin.json");
@@ -33,8 +90,8 @@ function developmentPluginServer() {
       if (typeof imported.createBackend !== "function") {
         throw new Error(`Plugin backend must export createBackend(): ${pluginId}`);
       }
-      const handler = imported.createBackend({ workspaceRoot: resolve(configDirectory, "../..") });
-      backendHandlers.set(pluginId, handler);
+      const handler = imported.createBackend({ workspaceRoot: activeWorkspaceRoot });
+      backendHandlers.set(cacheKey, handler);
       return handler;
     }
 
@@ -43,6 +100,23 @@ function developmentPluginServer() {
 
   const middleware = (request, response, next) => {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
+
+    if (request.method === "POST" && requestUrl.pathname === "/core-api/workspace") {
+      void readJson(request)
+        .then((payload) => {
+          activeWorkspaceRoot = resolveWorkspaceSelection(payload);
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          response.end(JSON.stringify({ workspaceRoot: activeWorkspaceRoot }));
+        })
+        .catch((error) => {
+          response.statusCode = 400;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        });
+      return;
+    }
 
     if (requestUrl.pathname.startsWith("/core-api/")) {
       const relativePath = requestUrl.pathname.slice("/core-api".length);

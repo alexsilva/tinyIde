@@ -25,6 +25,7 @@ export interface LayoutState {
 
 export interface SessionState extends LayoutState {
   readonly workspaceName: string;
+  readonly workspaceRoot?: string;
   readonly activeDocumentId?: string;
   readonly expandedDirectories: readonly string[];
   readonly explorerShowHidden: boolean;
@@ -54,6 +55,7 @@ interface StoredDocument {
 export interface ApplicationSnapshot {
   readonly version: 2;
   readonly workspaceName: string;
+  readonly workspaceRoot?: string;
   readonly workspaceHandle?: BrowserDirectoryHandle;
   readonly workspaceEntries: readonly StoredWorkspaceEntry[];
   readonly documents: readonly StoredDocument[];
@@ -95,6 +97,7 @@ export function readSession(): SessionState {
       panelHeight: clamp(Number(parsed.panelHeight) || DEFAULT_LAYOUT.panelHeight, 96, 640),
       panelTab: parsed.panelTab === "problems" ? "problems" : "output",
       workspaceName: typeof parsed.workspaceName === "string" ? parsed.workspaceName : "Sem workspace",
+      ...(typeof parsed.workspaceRoot === "string" ? { workspaceRoot: parsed.workspaceRoot } : {}),
       ...(typeof parsed.activeDocumentId === "string" ? { activeDocumentId: parsed.activeDocumentId } : {}),
       expandedDirectories: Array.isArray(parsed.expandedDirectories)
         ? parsed.expandedDirectories.filter((value): value is string => typeof value === "string")
@@ -144,6 +147,7 @@ export async function readReactSnapshot(): Promise<ApplicationSnapshot | undefin
 
 export async function writeReactSnapshot(input: {
   readonly workspaceName: string;
+  readonly workspaceRoot?: string;
   readonly workspaceHandle?: BrowserDirectoryHandle;
   readonly workspaceEntries: readonly WorkspaceEntry[];
   readonly documents: readonly OpenDocument[];
@@ -153,6 +157,7 @@ export async function writeReactSnapshot(input: {
   const base = {
     version: 2 as const,
     workspaceName: input.workspaceName,
+    ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),
     workspaceEntries: serializeEntries(input.workspaceEntries),
     documents: input.documents.map((document) => ({
       id: document.id,

@@ -45,6 +45,7 @@ import type {
   ExecutionEnvironmentProvider,
   ExecutionProfile,
   ExecutionProfileExecutableOption,
+  LanguageLintSettings,
   LanguageProvider,
   TextDiagnostic,
 } from "@tinyide/plugin-api";
@@ -77,16 +78,40 @@ import {
   runExecutionProfile,
   runScript,
   scriptExecutionFor,
+  setHostWorkspace,
   stopHostProcess,
 } from "./runtime";
 
 const PROFILE_KEY = "tinyide.react.executionProfiles.v1";
+const LINT_SETTINGS_KEY = "tinyide.react.lintSettings.v1";
 
 type SidebarView = PersistedSidebarView;
 
 interface StoredProfiles {
   readonly profiles: readonly ExecutionProfile[];
   readonly selectedId?: string;
+}
+
+function lintSettingsStorageKey(workspaceName: string, providerId: string): string {
+  return `${LINT_SETTINGS_KEY}:${encodeURIComponent(workspaceName)}:${encodeURIComponent(providerId)}`;
+}
+
+function readLintSettings(workspaceName: string, provider: LanguageProvider): LanguageLintSettings {
+  const defaults = (provider.lintRules ?? [])
+    .filter((rule) => rule.defaultEnabled)
+    .map((rule) => rule.id);
+  try {
+    const raw = localStorage.getItem(lintSettingsStorageKey(workspaceName, provider.id));
+    if (!raw) return { enabledRuleIds: defaults };
+    const parsed = JSON.parse(raw) as Partial<LanguageLintSettings>;
+    return {
+      enabledRuleIds: Array.isArray(parsed.enabledRuleIds)
+        ? parsed.enabledRuleIds.filter((value): value is string => typeof value === "string")
+        : defaults,
+    };
+  } catch {
+    return { enabledRuleIds: defaults };
+  }
 }
 
 function makeProfile(): ExecutionProfile {
@@ -109,15 +134,30 @@ function makeProfile(): ExecutionProfile {
   };
 }
 
-function readProfiles(): StoredProfiles {
+function profileStorageKey(workspaceName: string): string {
+  const scope = workspaceName && workspaceName !== "Sem workspace" ? workspaceName : "global";
+  return `${PROFILE_KEY}:${scope}`;
+}
+
+function readProfiles(workspaceName: string): StoredProfiles {
   try {
-    const raw = localStorage.getItem(PROFILE_KEY);
+    const scopedKey = profileStorageKey(workspaceName);
+    let raw = localStorage.getItem(scopedKey);
+    if (!raw) {
+      raw = localStorage.getItem(PROFILE_KEY);
+      if (raw) {
+        localStorage.setItem(scopedKey, raw);
+        localStorage.removeItem(PROFILE_KEY);
+      }
+    }
     if (!raw) return { profiles: [] };
     const parsed = JSON.parse(raw) as StoredProfiles;
-    return {
+    const result = {
       profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
       ...(typeof parsed.selectedId === "string" ? { selectedId: parsed.selectedId } : {}),
     };
+    if (!localStorage.getItem(scopedKey)) localStorage.setItem(scopedKey, JSON.stringify(result));
+    return result;
   } catch {
     return { profiles: [] };
   }
@@ -272,6 +312,31 @@ function HighlightedSource({ source, provider }: { readonly source: string; read
   if (cursor < source.length) fragments.push(source.slice(cursor));
   fragments.push("\n");
   return <>{fragments}</>;
+}
+
+function DiagnosticLayer({ diagnostics }: { readonly diagnostics: readonly TextDiagnostic[] }) {
+  return (
+    <div className="diagnostic-layer" aria-hidden="true">
+      {diagnostics.map((diagnostic, index) => {
+        const endColumn = diagnostic.endLine === diagnostic.line
+          ? diagnostic.endColumn ?? diagnostic.column + 1
+          : diagnostic.column + 1;
+        const width = Math.max(1, endColumn - diagnostic.column);
+        return (
+          <span
+            className={`diagnostic-marker diagnostic-marker--${diagnostic.severity}`}
+            key={`${diagnostic.line}:${diagnostic.column}:${diagnostic.code ?? index}`}
+            style={{
+              "--diagnostic-line": diagnostic.line,
+              "--diagnostic-column": diagnostic.column,
+              "--diagnostic-width": width,
+            } as React.CSSProperties}
+            title={diagnostic.message}
+          />
+        );
+      })}
+    </div>
+  );
 }
 
 async function hydrateExpandedEntries(
@@ -653,6 +718,7 @@ export function App() {
   const [panelTab, setPanelTab] = useState<"output" | "problems">(initialSession.panelTab);
   const [workspaceHandle, setWorkspaceHandle] = useState<BrowserDirectoryHandle>();
   const [workspaceName, setWorkspaceName] = useState(initialSession.workspaceName);
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | undefined>(initialSession.workspaceRoot);
   const [entries, setEntries] = useState<readonly WorkspaceEntry[]>([]);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set(initialSession.expandedDirectories));
   const [explorerShowHidden, setExplorerShowHidden] = useState(initialSession.explorerShowHidden);
@@ -675,8 +741,10 @@ export function App() {
   const [executableOptions, setExecutableOptions] = useState<readonly ExecutionProfileExecutableOption[]>([]);
   const [busy, setBusy] = useState(false);
   const [activeProcessId, setActiveProcessId] = useState<string>();
-  const [profilesState, setProfilesState] = useState<StoredProfiles>(() => readProfiles());
+  const [profilesState, setProfilesState] = useState<StoredProfiles>(() => readProfiles(initialSession.workspaceName));
   const [profilesOpen, setProfilesOpen] = useState(false);
+  const [lintSettingsOpen, setLintSettingsOpen] = useState(false);
+  const [lintEnabledRuleIds, setLintEnabledRuleIds] = useState<readonly string[]>([]);
   const [pluginRemovalId, setPluginRemovalId] = useState<string>();
   const [error, setError] = useState<string>();
   const [workspaceAccess, setWorkspaceAccess] = useState<"ready" | "permission-required" | "missing">("ready");
@@ -694,6 +762,14 @@ export function App() {
   const activeLanguageProvider = languageProviderFor(activeDocument);
   const activeScriptExecution = scriptExecutionFor(activeDocument);
   const selectedProfile = profilesState.profiles.find((profile) => profile.id === profilesState.selectedId);
+
+  useEffect(() => {
+    if (!activeLanguageProvider) {
+      setLintEnabledRuleIds([]);
+      return;
+    }
+    setLintEnabledRuleIds(readLintSettings(workspaceName, activeLanguageProvider).enabledRuleIds);
+  }, [workspaceName, activeLanguageProvider?.id]);
 
   const invoke = useCallback((operation: () => void | Promise<void>) => {
     setError(undefined);
@@ -720,7 +796,7 @@ export function App() {
 
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      void lintDocument(activeDocument)
+      void lintDocument(activeDocument, { enabledRuleIds: lintEnabledRuleIds })
         .then((items) => {
           if (!cancelled) setDiagnostics(items);
         })
@@ -733,7 +809,7 @@ export function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeDocument?.id, activeDocument?.content, activeLanguageProvider]);
+  }, [activeDocument?.id, activeDocument?.content, activeLanguageProvider, lintEnabledRuleIds]);
 
   useEffect(() => {
     return platform.subscribe(() => setPlatformSnapshot(platform.snapshot()));
@@ -743,6 +819,14 @@ export function App() {
     platform.initialize()
       .then(async () => {
         const snapshot = await readReactSnapshot();
+        const restoredWorkspaceName = snapshot?.workspaceName ?? initialSession.workspaceName;
+        let restoredWorkspaceRoot = snapshot?.workspaceRoot ?? initialSession.workspaceRoot;
+        if (restoredWorkspaceName !== "Sem workspace") {
+          const hostWorkspace = await setHostWorkspace(restoredWorkspaceName, restoredWorkspaceRoot);
+          restoredWorkspaceRoot = hostWorkspace.workspaceRoot;
+          setWorkspaceRoot(hostWorkspace.workspaceRoot);
+          setProfilesState(readProfiles(restoredWorkspaceName));
+        }
         if (snapshot) {
           setWorkspaceName(snapshot.workspaceName);
           setWorkspaceHandle(snapshot.workspaceHandle);
@@ -774,7 +858,8 @@ export function App() {
           : loadedEnvironments[0]?.id);
         const restoredActive = snapshot?.documents[0] as OpenDocument | undefined;
         const contributions = await loadProfileContributions({
-          workspaceName: snapshot?.workspaceName ?? workspaceName,
+          workspaceName: restoredWorkspaceName,
+          ...(restoredWorkspaceRoot ? { workspaceRoot: restoredWorkspaceRoot } : {}),
           ...(restoredActive ? { activeDocument: restoredActive } : {}),
         });
         setExecutableOptions(contributions.executableOptions);
@@ -792,12 +877,13 @@ export function App() {
       panelHeight,
       panelTab,
       workspaceName,
+      ...(workspaceRoot ? { workspaceRoot } : {}),
       ...(activeDocumentId ? { activeDocumentId } : {}),
       expandedDirectories: [...expanded],
       explorerShowHidden,
       ...(selectedEnvironmentId ? { selectedEnvironmentId } : {}),
     });
-  }, [sidebarView, sidebarVisible, sidebarWidth, panelVisible, panelHeight, panelTab, workspaceName, activeDocumentId, expanded, explorerShowHidden, selectedEnvironmentId]);
+  }, [sidebarView, sidebarVisible, sidebarWidth, panelVisible, panelHeight, panelTab, workspaceName, workspaceRoot, activeDocumentId, expanded, explorerShowHidden, selectedEnvironmentId]);
 
   useEffect(() => {
     if (!restoredRef.current) return;
@@ -805,6 +891,7 @@ export function App() {
     snapshotTimerRef.current = setTimeout(() => {
       void writeReactSnapshot({
         workspaceName,
+        ...(workspaceRoot ? { workspaceRoot } : {}),
         ...(workspaceHandle ? { workspaceHandle } : {}),
         workspaceEntries: entries,
         documents,
@@ -815,7 +902,7 @@ export function App() {
     return () => {
       if (snapshotTimerRef.current) clearTimeout(snapshotTimerRef.current);
     };
-  }, [workspaceName, workspaceHandle, entries, documents, diagnostics, output]);
+  }, [workspaceName, workspaceRoot, workspaceHandle, entries, documents, diagnostics, output]);
 
   useEffect(() => {
     if (!platformSnapshot.initialized) return;
@@ -827,26 +914,31 @@ export function App() {
     });
     void loadProfileContributions({
       workspaceName,
+      ...(workspaceRoot ? { workspaceRoot } : {}),
       ...(activeDocument ? { activeDocument } : {}),
     }).then((contributions) => {
       setExecutableOptions(contributions.executableOptions);
     });
-  }, [platformSnapshot.plugins, platformSnapshot.initialized, workspaceName, activeDocument?.id]);
+  }, [platformSnapshot.plugins, platformSnapshot.initialized, workspaceName, workspaceRoot, activeDocument?.id]);
 
   const updateProfiles = (profiles: readonly ExecutionProfile[], selectedId?: string) => {
     const next = { profiles, ...(selectedId ? { selectedId } : {}) };
     setProfilesState(next);
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(next));
+    localStorage.setItem(profileStorageKey(workspaceName), JSON.stringify(next));
   };
 
   const openFolder = async () => {
     if (!window.showDirectoryPicker) throw new Error("Este navegador não oferece seleção de pastas.");
     const handle = await window.showDirectoryPicker();
+    const hostWorkspace = await setHostWorkspace(handle.name);
     setWorkspaceHandle(handle);
     setWorkspaceName(handle.name);
+    setWorkspaceRoot(hostWorkspace.workspaceRoot);
+    setProfilesState(readProfiles(handle.name));
     setEntries(await listDirectory(handle));
     setExpanded(new Set());
     setWorkspaceAccess("ready");
+    await refreshEnvironments();
   };
 
   const reconnectWorkspace = async () => {
@@ -856,9 +948,13 @@ export function App() {
       throw new Error("Acesso ao workspace não foi concedido.");
     }
     const rootEntries = await listDirectory(workspaceHandle);
+    const hostWorkspace = await setHostWorkspace(workspaceHandle.name, workspaceRoot);
     setEntries(await hydrateExpandedEntries(rootEntries, expanded));
     setWorkspaceName(workspaceHandle.name);
+    setWorkspaceRoot(hostWorkspace.workspaceRoot);
+    setProfilesState(readProfiles(workspaceHandle.name));
     setWorkspaceAccess("ready");
+    await refreshEnvironments();
   };
 
   const openSingleFile = async () => {
@@ -1532,6 +1628,9 @@ export function App() {
                       {profilesState.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
                     </select>
                     <button className="icon-button small" type="button" aria-label="Gerenciar perfis" onClick={() => setProfilesOpen(true)}><Settings2 size={14} /></button>
+                    {activeLanguageProvider?.lintRules?.length ? (
+                      <button className="icon-button small" type="button" aria-label="Configurar lint" title="Configurar lint" onClick={() => setLintSettingsOpen(true)}><Code2 size={14} /></button>
+                    ) : null}
                     {busy
                       ? <button className="button danger compact" type="button" onClick={() => invoke(stopExecution)}><Square size={13} /> Parar</button>
                       : <button className="button primary compact" type="button" disabled={!selectedProfile} onClick={() => invoke(runSelectedProfile)}><Play size={13} /> Executar</button>}
@@ -1551,6 +1650,7 @@ export function App() {
                   {activeLanguageProvider && activeDocument ? (
                     <div className="highlight-editor">
                       <pre className="syntax-layer"><HighlightedSource source={activeDocument.content} provider={activeLanguageProvider} /></pre>
+                      <DiagnosticLayer diagnostics={diagnostics} />
                       <textarea
                         ref={editorRef}
                         className="code-editor code-editor--highlighted"
@@ -1559,10 +1659,15 @@ export function App() {
                         onChange={(event) => updateDocument(event.target.value)}
                         onSelect={(event) => captureEditorState(event.currentTarget)}
                         onScroll={(event) => {
-                          const syntax = event.currentTarget.previousElementSibling as HTMLElement | null;
+                          const syntax = event.currentTarget.parentElement?.querySelector<HTMLElement>(".syntax-layer") ?? null;
+                          const diagnosticLayer = event.currentTarget.parentElement?.querySelector<HTMLElement>(".diagnostic-layer") ?? null;
                           if (syntax) {
                             syntax.scrollTop = event.currentTarget.scrollTop;
                             syntax.scrollLeft = event.currentTarget.scrollLeft;
+                          }
+                          if (diagnosticLayer) {
+                            diagnosticLayer.scrollTop = event.currentTarget.scrollTop;
+                            diagnosticLayer.scrollLeft = event.currentTarget.scrollLeft;
                           }
                           captureEditorState(event.currentTarget);
                         }}
@@ -1627,6 +1732,50 @@ export function App() {
           onBrowseCommand={() => pickHostPath("file")}
           onChange={updateProfiles}
         />
+
+        <Dialog.Root open={lintSettingsOpen} onOpenChange={setLintSettingsOpen}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="dialog-overlay" />
+            <Dialog.Content className="lint-settings-dialog">
+              <div className="dialog-heading">
+                <div>
+                  <span className="eyebrow">ANÁLISE</span>
+                  <Dialog.Title>Configurar lint</Dialog.Title>
+                  <Dialog.Description>
+                    Selecione os casos que {activeLanguageProvider?.name ?? "o provider"} deve detectar neste workspace.
+                  </Dialog.Description>
+                </div>
+                <Dialog.Close asChild><button className="icon-button" type="button" aria-label="Fechar"><X size={16} /></button></Dialog.Close>
+              </div>
+              <div className="lint-rule-list">
+                {(activeLanguageProvider?.lintRules ?? []).map((rule) => (
+                  <label className="lint-rule" key={rule.id}>
+                    <input
+                      type="checkbox"
+                      checked={lintEnabledRuleIds.includes(rule.id)}
+                      onChange={(event) => {
+                        const next = event.target.checked
+                          ? [...new Set([...lintEnabledRuleIds, rule.id])]
+                          : lintEnabledRuleIds.filter((id) => id !== rule.id);
+                        setLintEnabledRuleIds(next);
+                        if (activeLanguageProvider) {
+                          localStorage.setItem(
+                            lintSettingsStorageKey(workspaceName, activeLanguageProvider.id),
+                            JSON.stringify({ enabledRuleIds: next }),
+                          );
+                        }
+                      }}
+                    />
+                    <span><strong>{rule.label}</strong>{rule.description ? <small>{rule.description}</small> : null}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="dialog-actions">
+                <Dialog.Close asChild><button className="button primary" type="button">Concluir</button></Dialog.Close>
+              </div>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
 
         <Dialog.Root open={Boolean(environmentBrowserMode)} onOpenChange={(open) => {
           if (!open) cancelEnvironmentBrowser();

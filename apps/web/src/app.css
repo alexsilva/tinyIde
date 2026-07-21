@@ -284,6 +284,7 @@ button { color: inherit; }
 
 .highlight-editor { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #0f1218; }
 .syntax-layer,
+.diagnostic-layer,
 .code-editor--highlighted {
   position: absolute;
   inset: 0;
@@ -298,6 +299,19 @@ button { color: inherit; }
   white-space: pre;
 }
 .syntax-layer { pointer-events: none; color: #d4d8df; background: #0f1218; }
+.diagnostic-layer { pointer-events: none; z-index: 2; overflow: hidden; background: transparent; }
+.diagnostic-marker {
+  position: absolute;
+  top: calc(18px + (var(--diagnostic-line) - 1) * 21.45px);
+  left: calc(20px + (var(--diagnostic-column) - 1) * 7.82px);
+  width: calc(var(--diagnostic-width) * 7.82px);
+  min-width: 7.82px;
+  height: 20px;
+  border-bottom: 2px wavy #e75b65;
+  background: rgb(231 91 101 / 8%);
+}
+.diagnostic-marker--warning { border-bottom-color: #d6a84b; background: rgb(214 168 75 / 8%); }
+.diagnostic-marker--information { border-bottom-color: #58a6ff; background: rgb(88 166 255 / 8%); }
 .code-editor--highlighted { resize: none; color: transparent; caret-color: #f2f4f8; background: transparent; -webkit-text-fill-color: transparent; }
 .code-editor--highlighted::selection { background: rgb(80 110 170 / 52%); -webkit-text-fill-color: transparent; }
 .syntax-keyword { color: #c586c0; }
@@ -308,6 +322,12 @@ button { color: inherit; }
 .syntax-class { color: #4ec9b0; }
 .syntax-decorator { color: #d7ba7d; }
 .syntax-builtin { color: #4fc1ff; }
+
+.lint-settings-dialog { position: fixed; z-index: 70; top: 50%; left: 50%; width: min(560px, calc(100vw - 32px)); transform: translate(-50%, -50%); border: 1px solid var(--border-strong); border-radius: 10px; padding: 18px; background: #151922; box-shadow: 0 30px 90px rgb(0 0 0 / 60%); }
+.lint-rule-list { display: grid; gap: 8px; margin: 18px 0; }
+.lint-rule { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); }
+.lint-rule span { display: grid; gap: 3px; }
+.lint-rule small { color: var(--muted); line-height: 1.4; }
 .syntax-operator { color: #d4d4d4; }
 
 .diagnostics-strip { display: flex; gap: 6px; overflow-x: auto; padding: 5px 8px; border-bottom: 1px solid var(--border); background: #171b22; }
