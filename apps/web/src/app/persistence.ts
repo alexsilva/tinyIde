@@ -9,6 +9,7 @@ import type {
   OpenDocument,
   WorkspaceEntry,
 } from "../browser-filesystem";
+import { resolveFileHandle } from "../browser-filesystem";
 
 const SESSION_KEY = "tinyide.react.session.v2";
 
@@ -43,6 +44,7 @@ interface StoredDocument {
   readonly id: string;
   readonly name: string;
   readonly path?: string;
+  readonly workspaceRoot?: string;
   readonly handle?: BrowserFileHandle;
   readonly content: string;
   readonly savedContent: string;
@@ -145,6 +147,45 @@ export async function readReactSnapshot(): Promise<ApplicationSnapshot | undefin
   return snapshot?.version === 2 ? snapshot : undefined;
 }
 
+export function workspaceDocumentsForSnapshot(
+  documents: readonly OpenDocument[],
+  workspaceRoot: string | undefined,
+): readonly OpenDocument[] {
+  if (!workspaceRoot) return [];
+  return documents.filter((document) => (
+    Boolean(document.path) && document.workspaceRoot === workspaceRoot
+  ));
+}
+
+export async function restoreWorkspaceDocuments(
+  documents: readonly StoredDocument[],
+  workspaceRoot: string | undefined,
+  workspaceHandle?: BrowserDirectoryHandle,
+): Promise<readonly OpenDocument[]> {
+  if (!workspaceRoot) return [];
+  const restored = await Promise.all(documents.map(async (document): Promise<OpenDocument | undefined> => {
+    if (!document.path) return undefined;
+    if (document.workspaceRoot && document.workspaceRoot !== workspaceRoot) return undefined;
+    if (!document.workspaceRoot && !workspaceHandle) return undefined;
+
+    let handle = document.handle;
+    if (workspaceHandle) {
+      try {
+        handle = await resolveFileHandle(workspaceHandle, document.path);
+      } catch {
+        return undefined;
+      }
+    }
+
+    return {
+      ...document,
+      workspaceRoot,
+      ...(handle ? { handle } : {}),
+    };
+  }));
+  return restored.filter((document): document is OpenDocument => Boolean(document));
+}
+
 export async function writeReactSnapshot(input: {
   readonly workspaceName: string;
   readonly workspaceRoot?: string;
@@ -154,15 +195,17 @@ export async function writeReactSnapshot(input: {
   readonly diagnostics: readonly TextDiagnostic[];
   readonly output: readonly string[];
 }): Promise<void> {
+  const workspaceDocuments = workspaceDocumentsForSnapshot(input.documents, input.workspaceRoot);
   const base = {
     version: 2 as const,
     workspaceName: input.workspaceName,
     ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),
     workspaceEntries: serializeEntries(input.workspaceEntries),
-    documents: input.documents.map((document) => ({
+    documents: workspaceDocuments.map((document) => ({
       id: document.id,
       name: document.name,
       ...(document.path ? { path: document.path } : {}),
+      ...(document.workspaceRoot ? { workspaceRoot: document.workspaceRoot } : {}),
       ...(document.handle ? { handle: document.handle } : {}),
       content: document.content,
       savedContent: document.savedContent,
@@ -175,16 +218,30 @@ export async function writeReactSnapshot(input: {
     output: input.output,
   };
 
+  const snapshotWithHandles = {
+    ...base,
+    ...(input.workspaceHandle ? { workspaceHandle: input.workspaceHandle } : {}),
+  };
+
   try {
-    await writeApplicationSnapshot({
-      ...base,
-      ...(input.workspaceHandle ? { workspaceHandle: input.workspaceHandle } : {}),
-    });
+    await writeApplicationSnapshot(snapshotWithHandles);
+    return;
   } catch (error) {
-    console.warn("Não foi possível persistir handles; salvando snapshot sem handles.", error);
-    await writeApplicationSnapshot({
-      ...base,
-      documents: base.documents.map(({ handle: _handle, ...document }) => document),
-    });
+    console.warn("Não foi possível persistir todos os handles; tentando preservar o workspace.", error);
   }
+
+  const snapshotWithoutDocumentHandles = {
+    ...snapshotWithHandles,
+    documents: base.documents.map(({ handle: _handle, ...document }) => document),
+  };
+
+  try {
+    await writeApplicationSnapshot(snapshotWithoutDocumentHandles);
+    return;
+  } catch (error) {
+    console.warn("Não foi possível persistir o handle do workspace; salvando apenas dados serializáveis.", error);
+  }
+
+  const { workspaceHandle: _workspaceHandle, ...serializableSnapshot } = snapshotWithoutDocumentHandles;
+  await writeApplicationSnapshot(serializableSnapshot);
 }

@@ -38,6 +38,7 @@ export interface OpenDocument {
   readonly id: string;
   readonly name: string;
   readonly path?: string;
+  readonly workspaceRoot?: string;
   readonly handle?: BrowserFileHandle;
   readonly content: string;
   readonly savedContent: string;
@@ -83,9 +84,36 @@ export async function listDirectory(
   });
 }
 
+function workspacePathSegments(path: string): readonly string[] {
+  return path.split("/").filter(Boolean);
+}
+
+export async function resolveDirectoryHandle(
+  workspaceHandle: BrowserDirectoryHandle,
+  path: string,
+): Promise<BrowserDirectoryHandle> {
+  let current = workspaceHandle;
+  for (const segment of workspacePathSegments(path)) {
+    current = await current.getDirectoryHandle(segment);
+  }
+  return current;
+}
+
+export async function resolveFileHandle(
+  workspaceHandle: BrowserDirectoryHandle,
+  path: string,
+): Promise<BrowserFileHandle> {
+  const segments = [...workspacePathSegments(path)];
+  const fileName = segments.pop();
+  if (!fileName) throw new Error("O caminho do arquivo está vazio.");
+  const parent = await resolveDirectoryHandle(workspaceHandle, segments.join("/"));
+  return parent.getFileHandle(fileName);
+}
+
 export async function readFileDocument(
   handle: BrowserFileHandle,
   path?: string,
+  workspaceRoot?: string,
 ): Promise<OpenDocument> {
   const file = await handle.getFile();
   const content = await file.text();
@@ -93,6 +121,7 @@ export async function readFileDocument(
     id: path ?? `file:${file.name}`,
     name: file.name,
     ...(path ? { path } : {}),
+    ...(workspaceRoot ? { workspaceRoot } : {}),
     handle,
     content,
     savedContent: content,

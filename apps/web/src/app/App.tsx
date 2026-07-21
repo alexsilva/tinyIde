@@ -54,6 +54,8 @@ import type {
 import {
   listDirectory,
   readFileDocument,
+  resolveDirectoryHandle,
+  resolveFileHandle,
   writeFileDocument,
   type BrowserDirectoryHandle,
   type BrowserFileHandle,
@@ -66,6 +68,7 @@ import {
   deserializeEntries,
   readReactSnapshot,
   readSession,
+  restoreWorkspaceDocuments,
   writeReactSnapshot,
   writeSession,
   type PersistedSidebarView,
@@ -769,6 +772,7 @@ export function App() {
   const explorerHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const browserResolverRef = useRef<((path: string | undefined) => void) | undefined>(undefined);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const highlightedEditorScrollRef = useRef<HTMLDivElement | null>(null);
   const workspaceSettingsRef = useRef<WorkspaceSettings>(EMPTY_WORKSPACE_SETTINGS);
   const workspaceSettingsWriteQueueRef = useRef<Promise<WorkspaceSettings>>(Promise.resolve(EMPTY_WORKSPACE_SETTINGS));
 
@@ -898,6 +902,7 @@ export function App() {
     platform.initialize()
       .then(async () => {
         const snapshot = await readReactSnapshot();
+        let restoredDocuments: readonly OpenDocument[] = [];
         const restoredWorkspaceName = snapshot?.workspaceName ?? initialSession.workspaceName;
         let restoredWorkspaceRoot = snapshot?.workspaceRoot ?? initialSession.workspaceRoot;
         if (restoredWorkspaceName !== "Sem workspace") {
@@ -919,20 +924,30 @@ export function App() {
               const rootEntries = await listDirectory(snapshot.workspaceHandle);
               setEntries(await hydrateExpandedEntries(rootEntries, new Set(initialSession.expandedDirectories)));
               setWorkspaceAccess("ready");
+              restoredDocuments = await restoreWorkspaceDocuments(
+                snapshot.documents,
+                restoredWorkspaceRoot,
+                snapshot.workspaceHandle,
+              );
             } else {
               setEntries(deserializeEntries(snapshot.workspaceEntries));
               setWorkspaceAccess("permission-required");
+              restoredDocuments = await restoreWorkspaceDocuments(snapshot.documents, restoredWorkspaceRoot);
             }
           } else {
             setEntries(deserializeEntries(snapshot.workspaceEntries));
             if (snapshot.workspaceName !== "Sem workspace") setWorkspaceAccess("missing");
+            restoredDocuments = await restoreWorkspaceDocuments(snapshot.documents, restoredWorkspaceRoot);
           }
-          setDocuments(snapshot.documents);
+          setDocuments(restoredDocuments);
           setDiagnostics(snapshot.diagnostics);
           setOutput([...snapshot.output]);
-          setActiveDocumentId((current) => current && snapshot.documents.some((document) => document.id === current)
-            ? current
-            : snapshot.documents[0]?.id);
+          setActiveDocumentId(
+            initialSession.activeDocumentId
+              && restoredDocuments.some((document) => document.id === initialSession.activeDocumentId)
+              ? initialSession.activeDocumentId
+              : restoredDocuments[0]?.id,
+          );
         }
         const loadedEnvironments = await loadEnvironments();
         setEnvironments(loadedEnvironments);
@@ -948,7 +963,7 @@ export function App() {
           };
           replaceWorkspaceSettings(await writeWorkspaceSettings(restoredWorkspaceRoot, nextSettings));
         }
-        const restoredActive = snapshot?.documents[0] as OpenDocument | undefined;
+        const restoredActive = restoredDocuments[0];
         const contributions = await loadProfileContributions({
           workspaceName: restoredWorkspaceName,
           ...(restoredWorkspaceRoot ? { workspaceRoot: restoredWorkspaceRoot } : {}),
@@ -1074,8 +1089,13 @@ export function App() {
 
   const openEntry = async (entry: WorkspaceEntry) => {
     if (entry.kind !== "file") return;
-    if (!entry.handle) throw new Error("Restaure o acesso ao workspace antes de abrir este arquivo.");
-    const document = await readFileDocument(entry.handle as BrowserFileHandle, entry.path);
+    const handle = entry.handle?.kind === "file"
+      ? entry.handle
+      : workspaceHandle
+        ? await resolveFileHandle(workspaceHandle, entry.path)
+        : undefined;
+    if (!handle) throw new Error("Restaure o acesso ao workspace antes de abrir este arquivo.");
+    const document = await readFileDocument(handle, entry.path, workspaceRoot);
     setDocuments((current) => {
       const index = current.findIndex((item) => item.id === document.id);
       return index === -1 ? [...current, document] : current.map((item) => item.id === document.id ? document : item);
@@ -1218,10 +1238,15 @@ export function App() {
       return;
     }
 
-    if (!entry.handle) throw new Error("Restaure o acesso ao workspace antes de expandir esta pasta.");
-    const children = await listDirectory(entry.handle as BrowserDirectoryHandle, entry.path);
+    const handle = entry.handle?.kind === "directory"
+      ? entry.handle
+      : workspaceHandle
+        ? await resolveDirectoryHandle(workspaceHandle, entry.path)
+        : undefined;
+    if (!handle) throw new Error("Restaure o acesso ao workspace antes de expandir esta pasta.");
+    const children = await listDirectory(handle, entry.path);
     const replaceChildren = (items: readonly WorkspaceEntry[]): readonly WorkspaceEntry[] => items.map((item) => {
-      if (item.path === entry.path) return { ...item, children };
+      if (item.path === entry.path) return { ...item, handle, children };
       return item.children ? { ...item, children: replaceChildren(item.children) } : item;
     });
     setEntries((current) => replaceChildren(current));
@@ -1234,15 +1259,18 @@ export function App() {
     setDiagnostics([]);
   };
 
-  const captureEditorState = (textarea: HTMLTextAreaElement) => {
+  const captureEditorState = (
+    textarea: HTMLTextAreaElement,
+    scrollContainer: HTMLElement = textarea,
+  ) => {
     if (!activeDocumentId) return;
     setDocuments((current) => current.map((document) => document.id === activeDocumentId
       ? {
           ...document,
           selectionStart: textarea.selectionStart,
           selectionEnd: textarea.selectionEnd,
-          scrollTop: textarea.scrollTop,
-          scrollLeft: textarea.scrollLeft,
+          scrollTop: scrollContainer.scrollTop,
+          scrollLeft: scrollContainer.scrollLeft,
         }
       : document));
   };
@@ -1252,8 +1280,9 @@ export function App() {
     if (!textarea || !activeDocument) return;
     requestAnimationFrame(() => {
       textarea.setSelectionRange(activeDocument.selectionStart, activeDocument.selectionEnd);
-      textarea.scrollTop = activeDocument.scrollTop;
-      textarea.scrollLeft = activeDocument.scrollLeft;
+      const scrollContainer = highlightedEditorScrollRef.current ?? textarea;
+      scrollContainer.scrollTop = activeDocument.scrollTop;
+      scrollContainer.scrollLeft = activeDocument.scrollLeft;
     });
   }, [activeDocumentId]);
 
@@ -1309,7 +1338,7 @@ export function App() {
 
     if (explorerCreation === "file") {
       const handle = await workspaceHandle.getFileHandle(name, { create: true });
-      const document = await readFileDocument(handle, name);
+      const document = await readFileDocument(handle, name, workspaceRoot);
       setDocuments((current) => current.some((item) => item.id === document.id) ? current : [...current, document]);
       setActiveDocumentId(document.id);
     } else if (explorerCreation === "directory") {
@@ -1362,9 +1391,14 @@ export function App() {
       executableDocument = await writeFileDocument(document, document.handle);
       setDocuments((current) => current.map((item) => item.id === document.id ? executableDocument : item));
     }
-    const selectedEnvironment = selectedEnvironmentId
-      ? environments.find((environment) => environment.id === selectedEnvironmentId)
-      : undefined;
+    const selectedEnvironment = (
+      selectedEnvironmentId
+        ? environments.find((environment) => environment.id === selectedEnvironmentId)
+        : undefined
+    ) ?? environments.find((environment) => environment.status === "ready" && environment.executable);
+    if (!selectedEnvironment?.executable || selectedEnvironment.status !== "ready") {
+      throw new Error("Configure um ambiente Python pronto antes de executar o script.");
+    }
     setBusy(true);
     setPanelVisible(true);
     setPanelTab("output");
@@ -1372,7 +1406,7 @@ export function App() {
       await runScript({
         contribution,
         document: executableDocument,
-        ...(selectedEnvironment ? { environment: selectedEnvironment } : {}),
+        environment: selectedEnvironment,
         callbacks: {
           onProcessStarted: setActiveProcessId,
           onProcessFinished: () => setActiveProcessId(undefined),
@@ -1972,30 +2006,26 @@ export function App() {
                     </div>
                   ) : null}
                   {activeLanguageProvider && activeDocument ? (
-                    <div className="highlight-editor">
-                      <pre className="syntax-layer"><HighlightedSource source={activeDocument.content} provider={activeLanguageProvider} /></pre>
-                      <DiagnosticLayer diagnostics={diagnostics} />
-                      <textarea
-                        ref={editorRef}
-                        className="code-editor code-editor--highlighted"
-                        spellCheck={false}
-                        value={activeDocument.content}
-                        onChange={(event) => updateDocument(event.target.value)}
-                        onSelect={(event) => captureEditorState(event.currentTarget)}
-                        onScroll={(event) => {
-                          const syntax = event.currentTarget.parentElement?.querySelector<HTMLElement>(".syntax-layer") ?? null;
-                          const diagnosticLayer = event.currentTarget.parentElement?.querySelector<HTMLElement>(".diagnostic-layer") ?? null;
-                          if (syntax) {
-                            syntax.scrollTop = event.currentTarget.scrollTop;
-                            syntax.scrollLeft = event.currentTarget.scrollLeft;
-                          }
-                          if (diagnosticLayer) {
-                            diagnosticLayer.scrollTop = event.currentTarget.scrollTop;
-                            diagnosticLayer.scrollLeft = event.currentTarget.scrollLeft;
-                          }
-                          captureEditorState(event.currentTarget);
-                        }}
-                      />
+                    <div
+                      ref={highlightedEditorScrollRef}
+                      className="highlight-editor"
+                      onScroll={(event) => {
+                        if (editorRef.current) captureEditorState(editorRef.current, event.currentTarget);
+                      }}
+                    >
+                      <div className="highlight-editor__content">
+                        <pre className="syntax-layer"><HighlightedSource source={activeDocument.content} provider={activeLanguageProvider} /></pre>
+                        <DiagnosticLayer diagnostics={diagnostics} />
+                        <textarea
+                          ref={editorRef}
+                          className="code-editor code-editor--highlighted"
+                          spellCheck={false}
+                          wrap="off"
+                          value={activeDocument.content}
+                          onChange={(event) => updateDocument(event.target.value)}
+                          onSelect={(event) => captureEditorState(event.currentTarget, highlightedEditorScrollRef.current ?? event.currentTarget)}
+                        />
+                      </div>
                     </div>
                   ) : (
                     <textarea
