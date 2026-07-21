@@ -94,6 +94,13 @@ import {
   type WorkspaceExecutionProfiles,
   type WorkspaceSettings,
 } from "./workspace-settings";
+import {
+  createEditorHistory,
+  recordEditorHistory,
+  redoEditorHistory,
+  undoEditorHistory,
+  type EditorHistory,
+} from "./editor-history";
 
 const PROFILE_KEY = "tinyide.react.executionProfiles.v1";
 const LINT_SETTINGS_KEY = "tinyide.react.lintSettings.v1";
@@ -815,6 +822,7 @@ export function App() {
   const browserResolverRef = useRef<((path: string | undefined) => void) | undefined>(undefined);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const highlightedEditorScrollRef = useRef<HTMLDivElement | null>(null);
+  const editorHistoriesRef = useRef<Map<string, EditorHistory>>(new Map());
   const workspaceSettingsRef = useRef<WorkspaceSettings>(EMPTY_WORKSPACE_SETTINGS);
   const workspaceSettingsWriteQueueRef = useRef<Promise<WorkspaceSettings>>(Promise.resolve(EMPTY_WORKSPACE_SETTINGS));
 
@@ -1295,10 +1303,77 @@ export function App() {
     setExpanded((current) => new Set(current).add(entry.path));
   };
 
-  const updateDocument = (content: string) => {
+  const updateDocument = (textarea: HTMLTextAreaElement) => {
     if (!activeDocumentId) return;
-    setDocuments((current) => current.map((document) => document.id === activeDocumentId ? { ...document, content } : document));
+    const content = textarea.value;
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    setDocuments((current) => current.map((document) => {
+      if (document.id !== activeDocumentId) return document;
+      const history = editorHistoriesRef.current.get(document.id)
+        ?? createEditorHistory({
+          content: document.content,
+          selectionStart: document.selectionStart,
+          selectionEnd: document.selectionEnd,
+        });
+      editorHistoriesRef.current.set(document.id, recordEditorHistory(history, {
+        content,
+        selectionStart,
+        selectionEnd,
+      }));
+      return {
+        ...document,
+        content,
+        selectionStart,
+        selectionEnd,
+      };
+    }));
     setDiagnostics([]);
+  };
+
+  const navigateEditorHistory = (
+    direction: "undo" | "redo",
+    textarea: HTMLTextAreaElement,
+  ) => {
+    if (!activeDocumentId) return;
+    const document = documents.find((candidate) => candidate.id === activeDocumentId);
+    if (!document) return;
+    const history = editorHistoriesRef.current.get(document.id)
+      ?? createEditorHistory({
+        content: document.content,
+        selectionStart: document.selectionStart,
+        selectionEnd: document.selectionEnd,
+      });
+    const navigation = direction === "undo"
+      ? undoEditorHistory(history)
+      : redoEditorHistory(history);
+    editorHistoriesRef.current.set(document.id, navigation.history);
+    if (!navigation.snapshot) return;
+
+    const { snapshot } = navigation;
+    setDocuments((current) => current.map((candidate) => candidate.id === document.id
+      ? {
+          ...candidate,
+          content: snapshot.content,
+          selectionStart: snapshot.selectionStart,
+          selectionEnd: snapshot.selectionEnd,
+        }
+      : candidate));
+    setDiagnostics([]);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+    });
+  };
+
+  const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    const key = event.key.toLocaleLowerCase();
+    const undo = key === "z" && !event.shiftKey;
+    const redo = (key === "z" && event.shiftKey) || key === "y";
+    if (!undo && !redo) return;
+    event.preventDefault();
+    navigateEditorHistory(undo ? "undo" : "redo", event.currentTarget);
   };
 
   const captureEditorState = (
@@ -1465,6 +1540,7 @@ export function App() {
     const index = documents.findIndex((document) => document.id === documentId);
     if (index < 0) return;
     const next = documents.filter((document) => document.id !== documentId);
+    editorHistoriesRef.current.delete(documentId);
     setDocuments(next);
     if (activeDocumentId === documentId) {
       setActiveDocumentId(next[index]?.id ?? next[index - 1]?.id);
@@ -2069,7 +2145,8 @@ export function App() {
                           spellCheck={false}
                           wrap="off"
                           value={activeDocument.content}
-                          onChange={(event) => updateDocument(event.target.value)}
+                          onChange={(event) => updateDocument(event.currentTarget)}
+                          onKeyDown={handleEditorKeyDown}
                           onSelect={(event) => captureEditorState(event.currentTarget, highlightedEditorScrollRef.current ?? event.currentTarget)}
                         />
                       </div>
@@ -2080,7 +2157,8 @@ export function App() {
                       className="code-editor"
                       spellCheck={false}
                       value={activeDocument?.content ?? ""}
-                      onChange={(event) => updateDocument(event.target.value)}
+                      onChange={(event) => updateDocument(event.currentTarget)}
+                      onKeyDown={handleEditorKeyDown}
                       onSelect={(event) => captureEditorState(event.currentTarget)}
                       onScroll={(event) => captureEditorState(event.currentTarget)}
                     />
