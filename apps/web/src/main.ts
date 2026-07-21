@@ -332,6 +332,7 @@ interface AppState {
   environmentSelectedPath: string | undefined;
   executionProfilesOpen: boolean;
   executionProfileEditingId: string | undefined;
+  executionProfileRemovalId: string | undefined;
   executionProfileExecutableOptions: ExecutionProfileExecutableOption[];
   executionProfileVariables: ExecutionProfileVariableContribution[];
   executionProfileContributionsLoading: boolean;
@@ -392,6 +393,7 @@ const state: AppState = {
   environmentSelectedPath: undefined,
   executionProfilesOpen: false,
   executionProfileEditingId: undefined,
+  executionProfileRemovalId: undefined,
   executionProfileExecutableOptions: [],
   executionProfileVariables: [],
   executionProfileContributionsLoading: false,
@@ -1751,6 +1753,28 @@ function environmentExecutableDisplay(option: ExecutionProfileExecutableOption |
   return parts.at(-1) ?? option.label;
 }
 
+function updateExecutionProfilePreview(form: HTMLFormElement): void {
+  const executableDisplay = form.querySelector<HTMLInputElement>("[data-profile-executable-display]");
+  const command = form.elements.namedItem("command") as HTMLInputElement | null;
+  const parameters = form.elements.namedItem("parameters") as HTMLTextAreaElement | null;
+  const preview = form.querySelector<HTMLInputElement>("[data-profile-command-preview]");
+  if (!preview) return;
+
+  let parsedParameters: string[] = [];
+  try {
+    parsedParameters = parseCommandLineArguments(parameters?.value ?? "");
+  } catch {
+    const rawParameters = parameters?.value.trim();
+    if (rawParameters) parsedParameters = [rawParameters];
+  }
+
+  preview.value = [
+    executableDisplay?.value.trim() || "executável",
+    command?.value.trim() ?? "",
+    ...parsedParameters,
+  ].filter(Boolean).join(" ");
+}
+
 
 function renderSharedFileBrowserModal(): string {
   const snapshot = fileBrowser.snapshot();
@@ -1873,12 +1897,21 @@ function renderExecutionProfilesModal(): string {
     .join("");
   const cards = profiles.map((candidate) => {
     const selected = candidate.id === selectedId;
-    return `<article class="execution-profile-card${selected ? " is-active" : ""}"><div><strong>${escapeHtml(candidate.name)}</strong><small>${candidate.steps.length} etapa(s) · ${candidate.environment.mode === "none" ? "sem ambiente" : "ambiente fixo"}</small></div><div>${renderButton(selected ? "Ativo" : "Usar", selected ? "check" : "play", { command: "execution.profile.select", size: "small", disabled: selected, data: { "profile-id": candidate.id } })}${renderButton("Editar", "saveAs", { command: "execution.profile.edit", size: "small", data: { "profile-id": candidate.id } })}${renderButton("Remover", "trash", { command: "execution.profile.remove", size: "small", variant: "danger", data: { "profile-id": candidate.id } })}</div></article>`;
+    return `<article class="execution-profile-card${selected ? " is-active" : ""}">${renderButton("Remover perfil", "close", { command: "execution.profile.remove.request", iconOnly: true, className: "execution-profile-card__remove", title: `Remover ${candidate.name}`, data: { "profile-id": candidate.id } })}<div class="execution-profile-card__summary"><span class="execution-profile-card__icon">${renderIcon(selected ? "play" : "terminal")}</span><div><strong>${escapeHtml(candidate.name)}</strong><small>${candidate.steps.length} etapa(s) · ${candidate.environment.mode === "none" ? "sem ambiente" : "ambiente fixo"}</small></div></div><div class="execution-profile-card__actions">${renderButton(selected ? "Ativo" : "Usar", selected ? "check" : "play", { command: "execution.profile.select", size: "small", disabled: selected, data: { "profile-id": candidate.id } })}${renderButton("Editar", "saveAs", { command: "execution.profile.edit", size: "small", data: { "profile-id": candidate.id } })}</div></article>`;
   }).join("");
   const previewExecutable = executableDisplay || "executável";
   const preview = [previewExecutable, commandValue, ...commandParameters].filter(Boolean).join(" ");
 
-  return `<div class="modal-backdrop" role="presentation"><section class="execution-profiles-modal" role="dialog" aria-modal="true" aria-labelledby="execution-profiles-title"><header><div><span class="execution-profiles-modal__eyebrow">EXECUÇÃO</span><h2 id="execution-profiles-title">Perfis de execução</h2><p>Configure comandos reutilizáveis para este workspace.</p></div>${renderButton("Fechar", "close", { command: "execution.profiles.close", iconOnly: true })}</header><div class="execution-profiles-modal__content"><aside><div class="execution-profile-sidebar__heading"><strong>Perfis</strong><span>${profiles.length}</span></div><div class="execution-profile-list">${cards || '<div class="execution-profile-empty"><strong>Nenhum perfil</strong><small>Crie o primeiro perfil para executar seu projeto.</small></div>'}</div>${renderButton("Novo perfil", "fileAdd", { command: "execution.profile.new", size: "small", variant: "primary" })}</aside><form data-form="execution-profile" class="execution-profile-form"><input type="hidden" name="id" value="${escapeHtml(profile.id)}"/><input type="hidden" name="executable" value="${escapeHtml(executableValue)}"/><div class="execution-profile-form__body"><div class="execution-profile-identity"><label>Nome do perfil<input name="name" value="${escapeHtml(profile.name)}" required /></label><label class="execution-profile-environment-field">Ambiente<select name="environmentId" ${state.executionProfileContributionsLoading ? "disabled" : ""}><option value="">Nenhum ambiente</option>${missingEnvironmentOption}${environmentOptions}</select><small data-profile-environment-description>${escapeHtml(selectedEnvironmentDescription)}</small></label></div><section class="execution-profile-command-panel"><div class="execution-profile-command-panel__heading"><div><span class="execution-profile-command-panel__icon">${renderIcon("terminal")}</span><div><strong>Comando</strong><small>Configure o executável, o comando e seus parâmetros.</small></div></div><span class="execution-profile-command-panel__badge">ETAPA 1</span></div>${state.executionProfileContributionsLoading ? '<p class="muted">Carregando ferramentas...</p>' : contributedExecutables ? `<div class="execution-profile-sources">${contributedExecutables}</div>` : ""}<label>Executável<div class="execution-profile-field-action"><input data-profile-executable-display value="${escapeHtml(executableDisplay)}" placeholder="Selecione um ambiente ou informe o executável" ${currentEnvironmentId ? "readonly" : ""}/></div><small>${currentEnvironmentId ? "Fornecido pelo ambiente selecionado." : "Informe um caminho ou escolha uma ferramenta fornecida por plugin."}</small></label><label>Comando<div class="execution-profile-field-action"><input name="command" value="${escapeHtml(commandValue)}" placeholder="Digite um comando ou selecione um script" autocomplete="off"/>${renderButton("Selecionar arquivo", "folderOpen", { command: "execution.profile.pickCommandFile", size: "small", className: "execution-profile-command-picker" })}</div><small>Texto livre. Selecionar um arquivo apenas preenche este campo.</small></label><label>Parâmetros <small>sintaxe de linha de comando</small><textarea name="parameters" rows="6" placeholder="runserver localhost:9092">${escapeHtml(commandParametersText)}</textarea><small>Espaços separam argumentos. Use aspas para preservar valores com espaços.</small></label></section><details class="execution-profile-advanced"><summary><span>${renderIcon("environment")}</span><div><strong>Contexto e opções</strong><small>Diretório, variáveis e comportamento da execução.</small></div></summary><div class="execution-profile-advanced__content"><label>Diretório de trabalho<select name="workingDirectoryMode"><option value="workspace" ${workingDirectoryMode === "workspace" ? "selected" : ""}>Raiz do workspace</option><option value="custom" ${workingDirectoryMode === "custom" ? "selected" : ""}>Caminho personalizado</option></select></label><label data-profile-custom-working-directory ${workingDirectoryMode === "custom" ? "" : "hidden"}>Caminho personalizado<input name="customWorkingDirectory" value="${escapeHtml(customWorkingDirectory)}" placeholder="/caminho/do/projeto"/></label><label>Variáveis de ambiente <small>CHAVE=valor</small><textarea name="environmentVariables" rows="3">${escapeHtml(Object.entries(step.environmentVariables ?? {}).map(([name, value]) => `${name}=${value}`).join("\n"))}</textarea></label><div class="execution-profile-options"><label class="checkbox-label"><input type="checkbox" name="saveBeforeRun" ${profile.saveBeforeRun !== false ? "checked" : ""}/> Salvar antes de executar</label><label class="checkbox-label"><input type="checkbox" name="continueOnError" ${step.continueOnError ? "checked" : ""}/> Continuar após falha</label></div></div></details></div><input type="hidden" name="stepName" value="${escapeHtml(step.name)}"/><div class="execution-profile-footer"><div class="execution-profile-preview"><span>${renderIcon("terminal")}</span><div><small>Prévia do comando</small><code data-profile-command-preview>${escapeHtml(preview)}</code></div></div><div class="form-actions">${renderButton("Cancelar", "close", { command: "execution.profiles.close" })}${renderButton("Salvar perfil", "save", { type: "submit", variant: "primary" })}</div></div></form></div></section></div>`;
+  return `<div class="modal-backdrop execution-profiles-backdrop" role="presentation"><section class="execution-profiles-modal" role="dialog" aria-modal="true" aria-labelledby="execution-profiles-title"><header><div class="execution-profiles-modal__heading"><span class="execution-profiles-modal__heading-icon">${renderIcon("play")}</span><div><span class="execution-profiles-modal__eyebrow">EXECUÇÃO</span><h2 id="execution-profiles-title">Perfis de execução</h2><p>Configure comandos reutilizáveis para este workspace.</p></div></div><div class="execution-profiles-modal__workspace"><small>Workspace atual</small><strong>${escapeHtml(state.workspaceName ?? "Global")}</strong></div>${renderButton("Fechar", "close", { command: "execution.profiles.close", iconOnly: true })}</header><div class="execution-profiles-modal__content"><aside><div class="execution-profile-sidebar__heading"><div><strong>Perfis</strong><small>Configurações salvas</small></div><span>${profiles.length}</span></div><div class="execution-profile-list">${cards || '<div class="execution-profile-empty"><strong>Nenhum perfil</strong><small>Crie o primeiro perfil para executar seu projeto.</small></div>'}</div><div class="execution-profile-sidebar__footer">${renderButton("Novo perfil", "fileAdd", { command: "execution.profile.new", size: "small", variant: "primary" })}</div></aside><form data-form="execution-profile" class="execution-profile-form"><input type="hidden" name="id" value="${escapeHtml(profile.id)}"/><input type="hidden" name="executable" value="${escapeHtml(executableValue)}"/><div class="execution-profile-form__body"><section class="execution-profile-identity"><div class="execution-profile-section-heading"><span>${renderIcon("saveAs")}</span><div><strong>Identificação</strong><small>Defina como este perfil será reconhecido e qual ambiente utilizará.</small></div></div><div class="execution-profile-identity__fields"><label>Nome do perfil<input name="name" value="${escapeHtml(profile.name)}" required /></label><label class="execution-profile-environment-field">Ambiente<select name="environmentId" ${state.executionProfileContributionsLoading ? "disabled" : ""}><option value="">Nenhum ambiente</option>${missingEnvironmentOption}${environmentOptions}</select><small data-profile-environment-description>${escapeHtml(selectedEnvironmentDescription)}</small></label></div></section><section class="execution-profile-command-panel"><div class="execution-profile-command-panel__heading"><div><span class="execution-profile-command-panel__icon">${renderIcon("terminal")}</span><div><strong>Comando</strong><small>Configure o executável, o comando e seus parâmetros.</small></div></div></div>${state.executionProfileContributionsLoading ? '<p class="muted">Carregando ferramentas...</p>' : contributedExecutables ? `<div class="execution-profile-sources">${contributedExecutables}</div>` : ""}<label>Executável<div class="execution-profile-field-action"><input data-profile-executable-display value="${escapeHtml(executableDisplay)}" placeholder="Selecione um ambiente ou informe o executável" ${currentEnvironmentId ? "readonly" : ""}/></div><small>${currentEnvironmentId ? "Fornecido pelo ambiente selecionado." : "Informe um caminho ou escolha uma ferramenta fornecida por plugin."}</small></label><label>Comando<div class="execution-profile-field-action"><input name="command" value="${escapeHtml(commandValue)}" placeholder="Digite um comando ou selecione um script" autocomplete="off"/>${renderButton("Selecionar arquivo", "folderOpen", { command: "execution.profile.pickCommandFile", size: "small", className: "execution-profile-command-picker" })}</div><small>Texto livre. Selecionar um arquivo apenas preenche este campo.</small></label><label>Parâmetros <small>sintaxe de linha de comando</small><textarea name="parameters" rows="6" placeholder="runserver localhost:9092">${escapeHtml(commandParametersText)}</textarea><small>Espaços separam argumentos. Use aspas para preservar valores com espaços.</small></label></section><details class="execution-profile-advanced"><summary><span class="execution-profile-advanced__icon">${renderIcon("environment")}</span><div><strong>Contexto e opções</strong><small>Diretório, variáveis e comportamento da execução.</small></div><span class="execution-profile-advanced__chevron">›</span></summary><div class="execution-profile-advanced__content"><div class="execution-profile-advanced__grid"><label>Diretório de trabalho<select name="workingDirectoryMode"><option value="workspace" ${workingDirectoryMode === "workspace" ? "selected" : ""}>Raiz do workspace</option><option value="custom" ${workingDirectoryMode === "custom" ? "selected" : ""}>Caminho personalizado</option></select></label><label data-profile-custom-working-directory ${workingDirectoryMode === "custom" ? "" : "hidden"}>Caminho personalizado<input name="customWorkingDirectory" value="${escapeHtml(customWorkingDirectory)}" placeholder="/caminho/do/projeto"/></label></div><label>Variáveis de ambiente <small>CHAVE=valor</small><textarea name="environmentVariables" rows="3">${escapeHtml(Object.entries(step.environmentVariables ?? {}).map(([name, value]) => `${name}=${value}`).join("\n"))}</textarea></label><div class="execution-profile-options"><label class="execution-profile-option"><input type="checkbox" name="saveBeforeRun" ${profile.saveBeforeRun !== false ? "checked" : ""}/><span><strong>Salvar antes de executar</strong><small>Persiste alterações abertas antes de iniciar o processo.</small></span></label><label class="execution-profile-option"><input type="checkbox" name="continueOnError" ${step.continueOnError ? "checked" : ""}/><span><strong>Continuar após falha</strong><small>Permite seguir para próximas etapas quando houver erro.</small></span></label></div></div></details></div><input type="hidden" name="stepName" value="${escapeHtml(step.name)}"/><div class="execution-profile-footer"><div class="execution-profile-preview"><span>${renderIcon("terminal")}</span><small>Prévia do comando</small><input data-profile-command-preview value="${escapeHtml(preview)}" disabled aria-label="Prévia do comando"/></div><div class="form-actions">${renderButton("Cancelar", "close", { command: "execution.profiles.close" })}${renderButton("Salvar perfil", "save", { type: "submit", variant: "primary" })}</div></div></form></div></section></div>`;
+}
+
+function renderExecutionProfileRemovalModal(): string {
+  const profileId = state.executionProfileRemovalId;
+  if (!profileId) return "";
+  const profile = executionProfiles.get(profileId);
+  if (!profile) return "";
+
+  return `<div class="modal-backdrop execution-profile-confirmation-backdrop" role="presentation"><section class="execution-profile-confirmation" role="alertdialog" aria-modal="true" aria-labelledby="execution-profile-removal-title" aria-describedby="execution-profile-removal-description"><div class="execution-profile-confirmation__icon">${renderIcon("trash")}</div><div class="execution-profile-confirmation__content"><span class="execution-profile-confirmation__eyebrow">CONFIRMAÇÃO</span><h2 id="execution-profile-removal-title">Remover perfil?</h2><p id="execution-profile-removal-description">O perfil <strong>${escapeHtml(profile.name)}</strong> será removido permanentemente deste workspace.</p></div><div class="execution-profile-confirmation__actions">${renderButton("Cancelar", "close", { command: "execution.profile.remove.cancel" })}${renderButton("Remover perfil", "trash", { command: "execution.profile.remove.confirm", variant: "danger", data: { "profile-id": profile.id } })}</div></section></div>`;
 }
 
 
@@ -2413,6 +2446,7 @@ function render(): void {
       </footer>
       ${renderNotice()}
       ${renderExecutionProfilesModal()}
+      ${renderExecutionProfileRemovalModal()}
       ${renderSharedFileBrowserModal()}
     </div>
   `;
@@ -2545,7 +2579,10 @@ function bindInteractions(): void {
           executableDisplay.readOnly = true;
         }
         if (description) description.textContent = option.description ?? option.label;
-        if (form) executionProfileDraft = executionProfileFromForm(form);
+        if (form) {
+          executionProfileDraft = executionProfileFromForm(form);
+          updateExecutionProfilePreview(form);
+        }
         return;
       }
       if (executable?.value === "${environmentExecutable}") executable.value = "";
@@ -2554,7 +2591,10 @@ function bindInteractions(): void {
         executableDisplay.readOnly = false;
       }
       if (description) description.textContent = "O perfil executará sem ambiente vinculado.";
-      if (form) executionProfileDraft = executionProfileFromForm(form);
+      if (form) {
+        executionProfileDraft = executionProfileFromForm(form);
+        updateExecutionProfilePreview(form);
+      }
     });
   const executionProfileForm = appRoot.querySelector<HTMLFormElement>('[data-form="execution-profile"]');
   executionProfileForm?.querySelector<HTMLInputElement>("[data-profile-executable-display]")
@@ -2562,6 +2602,7 @@ function bindInteractions(): void {
       const display = event.currentTarget as HTMLInputElement;
       const executable = display.form?.elements.namedItem("executable") as HTMLInputElement | null;
       if (executable && !display.readOnly) executable.value = display.value;
+      if (display.form) updateExecutionProfilePreview(display.form);
     });
   executionProfileForm?.querySelector<HTMLSelectElement>('select[name="workingDirectoryMode"]')
     ?.addEventListener("change", (event) => {
@@ -2571,9 +2612,11 @@ function bindInteractions(): void {
     });
   executionProfileForm?.addEventListener("input", () => {
     executionProfileDraft = executionProfileFromForm(executionProfileForm);
+    updateExecutionProfilePreview(executionProfileForm);
   });
   executionProfileForm?.addEventListener("change", () => {
     executionProfileDraft = executionProfileFromForm(executionProfileForm);
+    updateExecutionProfilePreview(executionProfileForm);
   });
   executionProfileForm?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2699,6 +2742,7 @@ commands.register("execution.profiles.close", () => {
   executionProfileDraft = undefined;
   state.executionProfilesOpen = false;
   state.executionProfileEditingId = undefined;
+  state.executionProfileRemovalId = undefined;
   render();
 });
 commands.register("execution.profile.new", () => {
@@ -2720,10 +2764,20 @@ commands.register("execution.profile.select", (rawId: unknown) => {
   persistExecutionProfiles();
   render();
 });
-commands.register("execution.profile.remove", (rawId: unknown) => {
+commands.register("execution.profile.remove.request", (rawId: unknown) => {
+  if (typeof rawId !== "string" || !executionProfiles.get(rawId)) throw new Error("Perfil inválido.");
+  state.executionProfileRemovalId = rawId;
+  render();
+});
+commands.register("execution.profile.remove.cancel", () => {
+  state.executionProfileRemovalId = undefined;
+  render();
+});
+commands.register("execution.profile.remove.confirm", (rawId: unknown) => {
   if (typeof rawId !== "string") throw new Error("Perfil inválido.");
   executionProfiles.remove(rawId);
   persistExecutionProfiles();
+  state.executionProfileRemovalId = undefined;
   if (state.executionProfileEditingId === rawId) {
     state.executionProfileEditingId = undefined;
     executionProfileDraft = emptyExecutionProfile();
@@ -2736,7 +2790,10 @@ commands.register("execution.profile.useExecutable", (rawValue: unknown) => {
   const executable = form?.elements.namedItem("executable") as HTMLInputElement | null;
   const display = form?.querySelector<HTMLInputElement>("[data-profile-executable-display]");
   if (executable) executable.value = rawValue;
-  if (display) display.value = rawValue;
+  if (display) {
+    display.value = rawValue;
+    display.dispatchEvent(new Event("input", { bubbles: true }));
+  }
 });
 commands.register("fileBrowser.close", () => fileBrowser.close());
 commands.register("fileBrowser.activate", (path: unknown) => typeof path === "string" ? fileBrowser.activate(path) : undefined);
