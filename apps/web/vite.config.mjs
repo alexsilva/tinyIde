@@ -2,6 +2,7 @@ import { createReadStream, existsSync, readFileSync, readdirSync, statSync } fro
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 import { createExecutionBackend } from "./execution-backend.mjs";
 
 const configDirectory = dirname(fileURLToPath(import.meta.url));
@@ -119,7 +120,7 @@ function developmentPluginServer() {
 }
 
 export default defineConfig({
-  plugins: [developmentPluginServer()],
+  plugins: [react(), developmentPluginServer()],
   server: {
     host: "0.0.0.0",
     port: 5174,

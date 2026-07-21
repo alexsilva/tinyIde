@@ -1,0 +1,114 @@
+export interface BrowserPermissionDescriptor {
+  readonly mode: "read" | "readwrite";
+}
+
+export interface BrowserWritableFileStream {
+  write(data: string): Promise<void>;
+  close(): Promise<void>;
+}
+
+export interface BrowserFileHandle {
+  readonly kind: "file";
+  readonly name: string;
+  getFile(): Promise<File>;
+  createWritable(): Promise<BrowserWritableFileStream>;
+  queryPermission?(descriptor: BrowserPermissionDescriptor): Promise<PermissionState>;
+  requestPermission?(descriptor: BrowserPermissionDescriptor): Promise<PermissionState>;
+}
+
+export interface BrowserDirectoryHandle {
+  readonly kind: "directory";
+  readonly name: string;
+  values(): AsyncIterableIterator<BrowserFileHandle | BrowserDirectoryHandle>;
+  queryPermission?(descriptor: BrowserPermissionDescriptor): Promise<PermissionState>;
+  requestPermission?(descriptor: BrowserPermissionDescriptor): Promise<PermissionState>;
+}
+
+export interface WorkspaceEntry {
+  readonly name: string;
+  readonly path: string;
+  readonly kind: "file" | "directory";
+  readonly handle: BrowserFileHandle | BrowserDirectoryHandle;
+  readonly children?: readonly WorkspaceEntry[];
+}
+
+export interface OpenDocument {
+  readonly id: string;
+  readonly name: string;
+  readonly path?: string;
+  readonly handle?: BrowserFileHandle;
+  readonly content: string;
+  readonly savedContent: string;
+}
+
+declare global {
+  interface Window {
+    showDirectoryPicker?: () => Promise<BrowserDirectoryHandle>;
+    showOpenFilePicker?: () => Promise<BrowserFileHandle[]>;
+    showSaveFilePicker?: (options?: {
+      readonly suggestedName?: string;
+      readonly types?: readonly {
+        readonly description: string;
+        readonly accept: Readonly<Record<string, readonly string[]>>;
+      }[];
+    }) => Promise<BrowserFileHandle>;
+  }
+}
+
+export async function listDirectory(
+  handle: BrowserDirectoryHandle,
+  parentPath = "",
+): Promise<readonly WorkspaceEntry[]> {
+  const entries: WorkspaceEntry[] = [];
+
+  for await (const child of handle.values()) {
+    const path = parentPath ? `${parentPath}/${child.name}` : child.name;
+    entries.push({
+      name: child.name,
+      path,
+      kind: child.kind,
+      handle: child,
+    });
+  }
+
+  return entries.sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
+    return left.name.localeCompare(right.name);
+  });
+}
+
+export async function readFileDocument(
+  handle: BrowserFileHandle,
+  path?: string,
+): Promise<OpenDocument> {
+  const file = await handle.getFile();
+  const content = await file.text();
+  return {
+    id: path ?? `file:${file.name}`,
+    name: file.name,
+    ...(path ? { path } : {}),
+    handle,
+    content,
+    savedContent: content,
+  };
+}
+
+export async function writeFileDocument(
+  document: OpenDocument,
+  handle: BrowserFileHandle,
+): Promise<OpenDocument> {
+  const writable = await handle.createWritable();
+  try {
+    await writable.write(document.content);
+  } finally {
+    await writable.close();
+  }
+
+  return {
+    ...document,
+    id: document.path ?? `file:${handle.name}`,
+    name: handle.name,
+    handle,
+    savedContent: document.content,
+  };
+}
