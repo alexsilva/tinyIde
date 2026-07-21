@@ -2760,7 +2760,13 @@ commands.register("execution.profile.edit", (rawId: unknown) => {
 });
 commands.register("execution.profile.select", (rawId: unknown) => {
   if (typeof rawId !== "string") throw new Error("Perfil inválido.");
+  const profile = executionProfiles.get(rawId);
+  if (!profile) throw new Error("Perfil inválido.");
   executionProfiles.select(rawId);
+  if (state.executionProfilesOpen) {
+    state.executionProfileEditingId = rawId;
+    executionProfileDraft = profile;
+  }
   persistExecutionProfiles();
   render();
 });
