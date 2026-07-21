@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_OUTPUT_CHARS = 1024 * 1024;
+const WORKSPACE_SETTINGS_VERSION = 1;
 
 function writeJson(response, statusCode, value) {
   response.statusCode = statusCode;
@@ -75,6 +77,56 @@ function processSnapshot(record) {
   };
 }
 
+function workspaceSettingsPath(workspaceRoot) {
+  return join(workspaceRoot, ".tinyide", "settings.json");
+}
+
+function normalizeWorkspaceSettings(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Configuração do workspace inválida.");
+  }
+  const serialized = JSON.stringify(value);
+  if (serialized.length > MAX_BODY_BYTES) {
+    throw new Error("Configuração do workspace excede o limite permitido.");
+  }
+  return {
+    ...value,
+    version: WORKSPACE_SETTINGS_VERSION,
+  };
+}
+
+async function readWorkspaceSettings(workspaceRoot) {
+  try {
+    const parsed = JSON.parse(await readFile(workspaceSettingsPath(workspaceRoot), "utf8"));
+    return normalizeWorkspaceSettings(parsed);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return writeWorkspaceSettings(workspaceRoot, { version: WORKSPACE_SETTINGS_VERSION });
+    }
+    if (error instanceof SyntaxError) {
+      throw new Error("O arquivo .tinyide/settings.json contém JSON inválido.");
+    }
+    throw error;
+  }
+}
+
+async function writeWorkspaceSettings(workspaceRoot, value) {
+  const settings = normalizeWorkspaceSettings(value);
+  const settingsPath = workspaceSettingsPath(workspaceRoot);
+  const temporaryPath = `${settingsPath}.${randomUUID()}.tmp`;
+  await mkdir(dirname(settingsPath), { recursive: true });
+  await writeFile(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  await rename(temporaryPath, settingsPath);
+  return settings;
+}
+
+function assertExpectedWorkspace(request, workspaceRoot) {
+  const expected = request.headers["x-tinyide-workspace-root"];
+  if (typeof expected === "string" && resolve(expected) !== workspaceRoot) {
+    throw new Error("O workspace ativo mudou durante a operação de configuração.");
+  }
+}
+
 export function createExecutionBackend({ workspaceRoot }) {
   const getWorkspaceRoot = typeof workspaceRoot === "function"
     ? workspaceRoot
@@ -141,8 +193,23 @@ export function createExecutionBackend({ workspaceRoot }) {
 
   return async function executionBackend(request, response, relativePath) {
     try {
+      const workspaceRoot = resolvedWorkspaceRoot();
       if (request.method === "GET" && relativePath === "/context") {
-        writeJson(response, 200, { workspaceRoot: resolvedWorkspaceRoot() });
+        writeJson(response, 200, { workspaceRoot });
+        return;
+      }
+
+      if (relativePath === "/workspace/settings") {
+        assertExpectedWorkspace(request, workspaceRoot);
+        if (request.method === "GET") {
+          writeJson(response, 200, await readWorkspaceSettings(workspaceRoot));
+          return;
+        }
+        if (request.method === "PUT") {
+          writeJson(response, 200, await writeWorkspaceSettings(workspaceRoot, await readJson(request)));
+          return;
+        }
+        writeJson(response, 405, { error: "Método não permitido para configuração do workspace." });
         return;
       }
 

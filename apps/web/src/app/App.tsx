@@ -81,36 +81,44 @@ import {
   setHostWorkspace,
   stopHostProcess,
 } from "./runtime";
+import {
+  EMPTY_WORKSPACE_SETTINGS,
+  readWorkspaceSettings,
+  writeWorkspaceSettings,
+  type WorkspaceExecutionProfiles,
+  type WorkspaceSettings,
+} from "./workspace-settings";
 
 const PROFILE_KEY = "tinyide.react.executionProfiles.v1";
 const LINT_SETTINGS_KEY = "tinyide.react.lintSettings.v1";
 
 type SidebarView = PersistedSidebarView;
 
-interface StoredProfiles {
-  readonly profiles: readonly ExecutionProfile[];
-  readonly selectedId?: string;
-}
+type StoredProfiles = WorkspaceExecutionProfiles;
 
 function lintSettingsStorageKey(workspaceName: string, providerId: string): string {
   return `${LINT_SETTINGS_KEY}:${encodeURIComponent(workspaceName)}:${encodeURIComponent(providerId)}`;
 }
 
-function readLintSettings(workspaceName: string, provider: LanguageProvider): LanguageLintSettings {
+function defaultLintSettings(provider: LanguageProvider): LanguageLintSettings {
   const defaults = (provider.lintRules ?? [])
     .filter((rule) => rule.defaultEnabled)
     .map((rule) => rule.id);
+  return { enabledRuleIds: defaults };
+}
+
+function readLegacyLintSettings(workspaceName: string, provider: LanguageProvider): LanguageLintSettings | undefined {
   try {
     const raw = localStorage.getItem(lintSettingsStorageKey(workspaceName, provider.id));
-    if (!raw) return { enabledRuleIds: defaults };
+    if (!raw) return undefined;
     const parsed = JSON.parse(raw) as Partial<LanguageLintSettings>;
     return {
       enabledRuleIds: Array.isArray(parsed.enabledRuleIds)
         ? parsed.enabledRuleIds.filter((value): value is string => typeof value === "string")
-        : defaults,
+        : defaultLintSettings(provider).enabledRuleIds,
     };
   } catch {
-    return { enabledRuleIds: defaults };
+    return undefined;
   }
 }
 
@@ -139,7 +147,7 @@ function profileStorageKey(workspaceName: string): string {
   return `${PROFILE_KEY}:${scope}`;
 }
 
-function readProfiles(workspaceName: string): StoredProfiles {
+function readLegacyProfiles(workspaceName: string): StoredProfiles | undefined {
   try {
     const scopedKey = profileStorageKey(workspaceName);
     let raw = localStorage.getItem(scopedKey);
@@ -150,7 +158,7 @@ function readProfiles(workspaceName: string): StoredProfiles {
         localStorage.removeItem(PROFILE_KEY);
       }
     }
-    if (!raw) return { profiles: [] };
+    if (!raw) return undefined;
     const parsed = JSON.parse(raw) as StoredProfiles;
     const result = {
       profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
@@ -159,7 +167,7 @@ function readProfiles(workspaceName: string): StoredProfiles {
     if (!localStorage.getItem(scopedKey)) localStorage.setItem(scopedKey, JSON.stringify(result));
     return result;
   } catch {
-    return { profiles: [] };
+    return undefined;
   }
 }
 
@@ -727,7 +735,7 @@ export function App() {
   const [output, setOutput] = useState<string[]>(["tinyIde React shell inicializado."]);
   const [diagnostics, setDiagnostics] = useState<readonly TextDiagnostic[]>([]);
   const [environments, setEnvironments] = useState<readonly ExecutionEnvironment[]>([]);
-  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | undefined>(initialSession.selectedEnvironmentId);
+  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | undefined>();
   const [environmentBusy, setEnvironmentBusy] = useState(false);
   const [environmentForm, setEnvironmentForm] = useState<"addProcess" | "addVenv" | "createVenv" | "packages" | "edit">();
   const [editingEnvironmentId, setEditingEnvironmentId] = useState<string>();
@@ -741,7 +749,8 @@ export function App() {
   const [executableOptions, setExecutableOptions] = useState<readonly ExecutionProfileExecutableOption[]>([]);
   const [busy, setBusy] = useState(false);
   const [activeProcessId, setActiveProcessId] = useState<string>();
-  const [profilesState, setProfilesState] = useState<StoredProfiles>(() => readProfiles(initialSession.workspaceName));
+  const [profilesState, setProfilesState] = useState<StoredProfiles>({ profiles: [] });
+  const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettings>(EMPTY_WORKSPACE_SETTINGS);
   const [profilesOpen, setProfilesOpen] = useState(false);
   const [lintSettingsOpen, setLintSettingsOpen] = useState(false);
   const [lintEnabledRuleIds, setLintEnabledRuleIds] = useState<readonly string[]>([]);
@@ -757,19 +766,62 @@ export function App() {
   const explorerHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const browserResolverRef = useRef<((path: string | undefined) => void) | undefined>(undefined);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const workspaceSettingsRef = useRef<WorkspaceSettings>(EMPTY_WORKSPACE_SETTINGS);
+  const workspaceSettingsWriteQueueRef = useRef<Promise<WorkspaceSettings>>(Promise.resolve(EMPTY_WORKSPACE_SETTINGS));
 
   const activeDocument = documents.find((document) => document.id === activeDocumentId);
   const activeLanguageProvider = languageProviderFor(activeDocument);
   const activeScriptExecution = scriptExecutionFor(activeDocument);
   const selectedProfile = profilesState.profiles.find((profile) => profile.id === profilesState.selectedId);
 
+  const replaceWorkspaceSettings = useCallback((settings: WorkspaceSettings) => {
+    workspaceSettingsRef.current = settings;
+    setWorkspaceSettings(settings);
+  }, []);
+
+  const persistWorkspaceSettings = useCallback(async (settings: WorkspaceSettings) => {
+    if (!workspaceRoot) throw new Error("Abra um workspace antes de salvar configurações locais.");
+    const targetWorkspaceRoot = workspaceRoot;
+    replaceWorkspaceSettings(settings);
+    const write = workspaceSettingsWriteQueueRef.current
+      .catch(() => EMPTY_WORKSPACE_SETTINGS)
+      .then(() => writeWorkspaceSettings(targetWorkspaceRoot, settings));
+    workspaceSettingsWriteQueueRef.current = write;
+    const saved = await write;
+    if (workspaceSettingsRef.current === settings) replaceWorkspaceSettings(saved);
+  }, [workspaceRoot, replaceWorkspaceSettings]);
+
+  const updateWorkspaceSettings = useCallback(async (
+    update: (current: WorkspaceSettings) => WorkspaceSettings,
+  ) => {
+    await persistWorkspaceSettings(update(workspaceSettingsRef.current));
+  }, [persistWorkspaceSettings]);
+
   useEffect(() => {
     if (!activeLanguageProvider) {
       setLintEnabledRuleIds([]);
       return;
     }
-    setLintEnabledRuleIds(readLintSettings(workspaceName, activeLanguageProvider).enabledRuleIds);
-  }, [workspaceName, activeLanguageProvider?.id]);
+    const configured = workspaceSettings.lint?.[activeLanguageProvider.id];
+    if (configured) {
+      setLintEnabledRuleIds(configured.enabledRuleIds);
+      return;
+    }
+    const legacy = readLegacyLintSettings(workspaceName, activeLanguageProvider);
+    const settings = legacy ?? defaultLintSettings(activeLanguageProvider);
+    setLintEnabledRuleIds(settings.enabledRuleIds);
+    if (legacy && workspaceRoot) {
+      void updateWorkspaceSettings((current) => ({
+        ...current,
+        lint: {
+          ...current.lint,
+          [activeLanguageProvider.id]: legacy,
+        },
+      })).then(() => {
+        localStorage.removeItem(lintSettingsStorageKey(workspaceName, activeLanguageProvider.id));
+      }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+    }
+  }, [workspaceName, workspaceRoot, workspaceSettings.lint, activeLanguageProvider?.id, updateWorkspaceSettings]);
 
   const invoke = useCallback((operation: () => void | Promise<void>) => {
     setError(undefined);
@@ -815,6 +867,31 @@ export function App() {
     return platform.subscribe(() => setPlatformSnapshot(platform.snapshot()));
   }, []);
 
+  const loadLocalWorkspaceSettings = useCallback(async (
+    name: string,
+    root: string,
+    legacySelectedEnvironmentId?: string,
+  ): Promise<WorkspaceSettings> => {
+    let settings = await readWorkspaceSettings(root);
+    let migrated = false;
+    const legacyProfiles = settings.executionProfiles ? undefined : readLegacyProfiles(name);
+    if (legacyProfiles) {
+      settings = { ...settings, executionProfiles: legacyProfiles };
+      migrated = true;
+    }
+    if (!settings.environment?.selectedId && legacySelectedEnvironmentId) {
+      settings = { ...settings, environment: { selectedId: legacySelectedEnvironmentId } };
+      migrated = true;
+    }
+    if (migrated) {
+      settings = await writeWorkspaceSettings(root, settings);
+      if (legacyProfiles) localStorage.removeItem(profileStorageKey(name));
+    }
+    replaceWorkspaceSettings(settings);
+    setProfilesState(settings.executionProfiles ?? { profiles: [] });
+    return settings;
+  }, [replaceWorkspaceSettings]);
+
   useEffect(() => {
     platform.initialize()
       .then(async () => {
@@ -825,7 +902,11 @@ export function App() {
           const hostWorkspace = await setHostWorkspace(restoredWorkspaceName, restoredWorkspaceRoot);
           restoredWorkspaceRoot = hostWorkspace.workspaceRoot;
           setWorkspaceRoot(hostWorkspace.workspaceRoot);
-          setProfilesState(readProfiles(restoredWorkspaceName));
+          await loadLocalWorkspaceSettings(
+            restoredWorkspaceName,
+            hostWorkspace.workspaceRoot,
+            initialSession.selectedEnvironmentId,
+          );
         }
         if (snapshot) {
           setWorkspaceName(snapshot.workspaceName);
@@ -853,9 +934,18 @@ export function App() {
         }
         const loadedEnvironments = await loadEnvironments();
         setEnvironments(loadedEnvironments);
-        setSelectedEnvironmentId((current) => current && loadedEnvironments.some((environment) => environment.id === current)
-          ? current
-          : loadedEnvironments[0]?.id);
+        const configuredEnvironmentId = workspaceSettingsRef.current.environment?.selectedId;
+        const restoredSelectedEnvironmentId = configuredEnvironmentId && loadedEnvironments.some((environment) => environment.id === configuredEnvironmentId)
+          ? configuredEnvironmentId
+          : loadedEnvironments[0]?.id;
+        setSelectedEnvironmentId(restoredSelectedEnvironmentId);
+        if (restoredWorkspaceRoot && restoredSelectedEnvironmentId !== configuredEnvironmentId) {
+          const nextSettings: WorkspaceSettings = {
+            ...workspaceSettingsRef.current,
+            environment: restoredSelectedEnvironmentId ? { selectedId: restoredSelectedEnvironmentId } : {},
+          };
+          replaceWorkspaceSettings(await writeWorkspaceSettings(restoredWorkspaceRoot, nextSettings));
+        }
         const restoredActive = snapshot?.documents[0] as OpenDocument | undefined;
         const contributions = await loadProfileContributions({
           workspaceName: restoredWorkspaceName,
@@ -881,9 +971,8 @@ export function App() {
       ...(activeDocumentId ? { activeDocumentId } : {}),
       expandedDirectories: [...expanded],
       explorerShowHidden,
-      ...(selectedEnvironmentId ? { selectedEnvironmentId } : {}),
     });
-  }, [sidebarView, sidebarVisible, sidebarWidth, panelVisible, panelHeight, panelTab, workspaceName, workspaceRoot, activeDocumentId, expanded, explorerShowHidden, selectedEnvironmentId]);
+  }, [sidebarView, sidebarVisible, sidebarWidth, panelVisible, panelHeight, panelTab, workspaceName, workspaceRoot, activeDocumentId, expanded, explorerShowHidden]);
 
   useEffect(() => {
     if (!restoredRef.current) return;
@@ -908,9 +997,21 @@ export function App() {
     if (!platformSnapshot.initialized) return;
     void loadEnvironments().then((loaded) => {
       setEnvironments(loaded);
-      setSelectedEnvironmentId((current) => current && loaded.some((environment) => environment.id === current)
-        ? current
-        : loaded[0]?.id);
+      const configured = workspaceSettingsRef.current.environment?.selectedId;
+      const nextSelected = configured && loaded.some((environment) => environment.id === configured)
+        ? configured
+        : loaded[0]?.id;
+      setSelectedEnvironmentId(nextSelected);
+      if (workspaceRoot && nextSelected !== configured) {
+        const nextSettings: WorkspaceSettings = {
+          ...workspaceSettingsRef.current,
+          environment: nextSelected ? { selectedId: nextSelected } : {},
+        };
+        replaceWorkspaceSettings(nextSettings);
+        void writeWorkspaceSettings(workspaceRoot, nextSettings)
+          .then(replaceWorkspaceSettings)
+          .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+      }
     });
     void loadProfileContributions({
       workspaceName,
@@ -919,26 +1020,29 @@ export function App() {
     }).then((contributions) => {
       setExecutableOptions(contributions.executableOptions);
     });
-  }, [platformSnapshot.plugins, platformSnapshot.initialized, workspaceName, workspaceRoot, activeDocument?.id]);
+  }, [platformSnapshot.plugins, platformSnapshot.initialized, workspaceName, workspaceRoot, activeDocument?.id, replaceWorkspaceSettings]);
 
   const updateProfiles = (profiles: readonly ExecutionProfile[], selectedId?: string) => {
     const next = { profiles, ...(selectedId ? { selectedId } : {}) };
     setProfilesState(next);
-    localStorage.setItem(profileStorageKey(workspaceName), JSON.stringify(next));
+    void updateWorkspaceSettings((current) => ({
+      ...current,
+      executionProfiles: next,
+    })).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
   };
 
   const openFolder = async () => {
     if (!window.showDirectoryPicker) throw new Error("Este navegador não oferece seleção de pastas.");
     const handle = await window.showDirectoryPicker();
     const hostWorkspace = await setHostWorkspace(handle.name);
+    const localSettings = await loadLocalWorkspaceSettings(handle.name, hostWorkspace.workspaceRoot);
     setWorkspaceHandle(handle);
     setWorkspaceName(handle.name);
     setWorkspaceRoot(hostWorkspace.workspaceRoot);
-    setProfilesState(readProfiles(handle.name));
     setEntries(await listDirectory(handle));
     setExpanded(new Set());
     setWorkspaceAccess("ready");
-    await refreshEnvironments();
+    await refreshEnvironments(localSettings.environment?.selectedId, hostWorkspace.workspaceRoot);
   };
 
   const reconnectWorkspace = async () => {
@@ -949,12 +1053,12 @@ export function App() {
     }
     const rootEntries = await listDirectory(workspaceHandle);
     const hostWorkspace = await setHostWorkspace(workspaceHandle.name, workspaceRoot);
+    const localSettings = await loadLocalWorkspaceSettings(workspaceHandle.name, hostWorkspace.workspaceRoot);
     setEntries(await hydrateExpandedEntries(rootEntries, expanded));
     setWorkspaceName(workspaceHandle.name);
     setWorkspaceRoot(hostWorkspace.workspaceRoot);
-    setProfilesState(readProfiles(workspaceHandle.name));
     setWorkspaceAccess("ready");
-    await refreshEnvironments();
+    await refreshEnvironments(localSettings.environment?.selectedId, hostWorkspace.workspaceRoot);
   };
 
   const openSingleFile = async () => {
@@ -1149,12 +1253,32 @@ export function App() {
     await stopHostProcess(activeProcessId);
   };
 
-  const refreshEnvironments = async () => {
+  const selectEnvironment = (environmentId: string | undefined) => {
+    setSelectedEnvironmentId(environmentId);
+    void updateWorkspaceSettings((current) => ({
+      ...current,
+      environment: environmentId ? { selectedId: environmentId } : {},
+    })).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+  };
+
+  const refreshEnvironments = async (
+    preferredId = workspaceSettingsRef.current.environment?.selectedId,
+    targetWorkspaceRoot = workspaceRoot,
+  ) => {
     const loaded = await loadEnvironments();
     setEnvironments(loaded);
-    setSelectedEnvironmentId((current) => current && loaded.some((environment) => environment.id === current)
-      ? current
-      : loaded[0]?.id);
+    const nextSelectedId = preferredId && loaded.some((environment) => environment.id === preferredId)
+      ? preferredId
+      : loaded[0]?.id;
+    setSelectedEnvironmentId(nextSelectedId);
+    if (nextSelectedId && nextSelectedId !== workspaceSettingsRef.current.environment?.selectedId && targetWorkspaceRoot) {
+      const nextSettings: WorkspaceSettings = {
+        ...workspaceSettingsRef.current,
+        environment: { selectedId: nextSelectedId },
+      };
+      replaceWorkspaceSettings(nextSettings);
+      replaceWorkspaceSettings(await writeWorkspaceSettings(targetWorkspaceRoot, nextSettings));
+    }
   };
 
   const loadEnvironmentBrowser = async (
@@ -1225,8 +1349,7 @@ export function App() {
         const name = String(data.get("name") ?? "").trim();
         if (!name || !environmentPath) throw new Error("Informe o nome e selecione o executável Python.");
         const created = await provider.addProcess({ name, executable: environmentPath });
-        await refreshEnvironments();
-        setSelectedEnvironmentId(created.id);
+        await refreshEnvironments(created.id);
       } else if (environmentForm === "addVenv") {
         if (!environmentPath) throw new Error("Selecione a pasta do ambiente virtual.");
         const name = String(data.get("name") ?? "").trim();
@@ -1234,8 +1357,7 @@ export function App() {
           path: environmentPath,
           ...(name ? { name } : {}),
         });
-        await refreshEnvironments();
-        setSelectedEnvironmentId(created.id);
+        await refreshEnvironments(created.id);
       } else if (environmentForm === "createVenv") {
         const name = String(data.get("name") ?? "").trim();
         const pythonExecutable = String(data.get("pythonExecutable") ?? "").trim();
@@ -1246,8 +1368,7 @@ export function App() {
           pythonExecutable,
           ...(path ? { path } : {}),
         });
-        await refreshEnvironments();
-        setSelectedEnvironmentId(created.id);
+        await refreshEnvironments(created.id);
       } else if (environmentForm === "edit") {
         if (!editingEnvironmentId || !provider.update) throw new Error("Este gerenciador não permite editar ambientes.");
         const current = environments.find((environment) => environment.id === editingEnvironmentId);
@@ -1260,8 +1381,7 @@ export function App() {
         const updated = await provider.update(editingEnvironmentId, current.type === "venv"
           ? { name, path: location }
           : { name, executable: location });
-        await refreshEnvironments();
-        setSelectedEnvironmentId(updated.id);
+        await refreshEnvironments(updated.id);
       } else {
         if (!selectedEnvironmentId) throw new Error("Selecione um ambiente virtual.");
         const packages = String(data.get("packages") ?? "").trim().split(/\s+/).filter(Boolean);
@@ -1578,9 +1698,9 @@ export function App() {
                         <button className="card-delete" type="button" aria-label={`Remover ${environment.name}`} title={`Remover ${environment.name}`} onClick={() => invoke(() => removeEnvironment(environment.id))}><X size={14} /></button>
                         <div><strong>{environment.name}</strong><span>{environment.type === "venv" ? "Ambiente virtual" : "Executável Python"}{environment.version ? ` · ${environment.version}` : ""}</span><small>{environment.executable}</small></div>
                         <div className="environment-card__actions">
-                          <button className="button secondary compact" disabled={selectedEnvironmentId === environment.id} type="button" onClick={() => setSelectedEnvironmentId(environment.id)}>{selectedEnvironmentId === environment.id ? "Selecionado" : "Selecionar"}</button>
+                          <button className="button secondary compact" disabled={selectedEnvironmentId === environment.id} type="button" onClick={() => selectEnvironment(environment.id)}>{selectedEnvironmentId === environment.id ? "Selecionado" : "Selecionar"}</button>
                           {environmentProvider()?.update ? <button className="button secondary compact" type="button" onClick={() => { setEditingEnvironmentId(environment.id); setEnvironmentPath(environment.type === "venv" ? environment.path ?? "" : environment.executable ?? ""); setEnvironmentForm("edit"); }}>Editar</button> : null}
-                          {environment.type === "venv" ? <button className="button secondary compact" type="button" onClick={() => { setSelectedEnvironmentId(environment.id); setEnvironmentForm("packages"); }}>Pacotes</button> : null}
+                          {environment.type === "venv" ? <button className="button secondary compact" type="button" onClick={() => { selectEnvironment(environment.id); setEnvironmentForm("packages"); }}>Pacotes</button> : null}
                         </div>
                       </article>
                     ))}
@@ -1759,10 +1879,13 @@ export function App() {
                           : lintEnabledRuleIds.filter((id) => id !== rule.id);
                         setLintEnabledRuleIds(next);
                         if (activeLanguageProvider) {
-                          localStorage.setItem(
-                            lintSettingsStorageKey(workspaceName, activeLanguageProvider.id),
-                            JSON.stringify({ enabledRuleIds: next }),
-                          );
+                          void updateWorkspaceSettings((current) => ({
+                            ...current,
+                            lint: {
+                              ...current.lint,
+                              [activeLanguageProvider.id]: { enabledRuleIds: next },
+                            },
+                          })).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
                         }
                       }}
                     />
