@@ -1,4 +1,8 @@
 export { CapabilityRegistry } from "./capability-registry";
+export {
+  formatCommandLineArguments,
+  parseCommandLineArguments,
+} from "./command-line-arguments";
 export { CommandRegistry } from "./command-registry";
 export { EventBus } from "./event-bus";
 export {

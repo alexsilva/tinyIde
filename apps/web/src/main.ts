@@ -5,7 +5,9 @@ import {
   EventBus,
   ModulePluginHost,
   PluginManager,
+  formatCommandLineArguments,
   inferWorkspaceRoot,
+  parseCommandLineArguments,
   resolveExecutionProfile,
 } from "@tinyide/core";
 import type {
@@ -40,7 +42,8 @@ const PLUGIN_STORAGE_KEY = "tinyide.installedPlugins.v2";
 const LEGACY_PLUGIN_STORAGE_KEY = "tinyide.installedPlugins";
 const LAYOUT_STORAGE_KEY = "tinyide.layout.v1";
 const RUN_PROFILE_STORAGE_KEY = "tinyide.pythonRunProfile.v1";
-const EXECUTION_PROFILES_STORAGE_KEY = "tinyide.executionProfiles.v1";
+const EXECUTION_PROFILES_STORAGE_KEY = "tinyide.executionProfiles.v2";
+const LEGACY_EXECUTION_PROFILES_STORAGE_KEY = "tinyide.executionProfiles.v1";
 const ENVIRONMENT_BROWSER_STORAGE_KEY = "tinyide.environmentBrowser.v1";
 const SESSION_STORAGE_KEY = "tinyide.session.v2";
 const LEGACY_SESSION_STORAGE_KEY = "tinyide.session.v1";
@@ -163,43 +166,6 @@ interface RunProfile {
   readonly workingDirectory: string;
   readonly arguments: string;
   readonly environmentVariables: string;
-}
-
-function parseArgumentLine(value: string): string[] {
-  const result: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | undefined;
-  let escaped = false;
-  for (const character of value.trim()) {
-    if (escaped) {
-      current += character;
-      escaped = false;
-      continue;
-    }
-    if (character === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (character === quote) quote = undefined;
-      else current += character;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      continue;
-    }
-    if (/\s/.test(character)) {
-      if (current) result.push(current);
-      current = "";
-      continue;
-    }
-    current += character;
-  }
-  if (quote) throw new Error("Argumentos contêm aspas não fechadas.");
-  if (escaped) current += "\\";
-  if (current) result.push(current);
-  return result;
 }
 
 function parseEnvironmentVariables(value: string): Record<string, string> {
@@ -452,7 +418,12 @@ function executionProfileStorageKey(): string {
 
 function loadExecutionProfiles(): void {
   try {
-    const parsed = JSON.parse(localStorage.getItem(executionProfileStorageKey()) ?? "{}") as Partial<StoredExecutionProfiles>;
+    const current = localStorage.getItem(executionProfileStorageKey());
+    const legacy = current
+      ? undefined
+      : localStorage.getItem(`${LEGACY_EXECUTION_PROFILES_STORAGE_KEY}:${state.workspaceName ?? "global"}`);
+    const migratedFromLegacy = !current && Boolean(legacy);
+    const parsed = JSON.parse(current ?? legacy ?? "{}") as Partial<StoredExecutionProfiles>;
     const profiles = Array.isArray(parsed.profiles)
       ? (parsed.profiles as readonly LegacyExecutionProfile[]).map((profile) => ({
           ...profile,
@@ -474,9 +445,13 @@ function loadExecutionProfiles(): void {
                   ? legacyArguments[0]
                   : "",
               parameters: Array.isArray(parameters)
-                ? [...parameters]
+                ? migratedFromLegacy
+                  ? parameters.flatMap((parameter) => parseCommandLineArguments(parameter))
+                  : [...parameters]
                 : Array.isArray(legacyArguments)
-                  ? legacyArguments.slice(1)
+                  ? migratedFromLegacy
+                    ? legacyArguments.slice(1).flatMap((parameter) => parseCommandLineArguments(parameter))
+                    : legacyArguments.slice(1)
                   : [],
             };
           }),
@@ -486,6 +461,7 @@ function loadExecutionProfiles(): void {
       profiles,
       typeof parsed.selectedProfileId === "string" ? parsed.selectedProfileId : undefined,
     );
+    if (migratedFromLegacy) persistExecutionProfiles();
   } catch {
     executionProfiles = new ExecutionProfileManager();
   }
@@ -1754,10 +1730,7 @@ function executionProfileFromForm(form: HTMLFormElement): ExecutionProfile {
       name: String(data.get("stepName") ?? "Executar").trim(),
       executable: String(data.get("executable") ?? "").trim(),
       command: String(data.get("command") ?? "").trim(),
-      parameters: String(data.get("parameters") ?? "")
-        .split(/\r?\n/)
-        .map((value) => value.trim())
-        .filter(Boolean),
+      parameters: parseCommandLineArguments(String(data.get("parameters") ?? "")),
       ...(workingDirectory ? { workingDirectory } : {}),
       environmentVariables: parseEnvironmentVariables(String(data.get("environmentVariables") ?? "")),
       continueOnError: data.get("continueOnError") === "on",
@@ -1825,7 +1798,9 @@ async function openProfileCommandFileBrowser(): Promise<void> {
       const path = request.path ?? "";
       const handle = handles.get(path);
       if (!handle) throw new Error(`Pasta não encontrada: ${path}`);
-      const entries = await readDirectory(handle, path);
+      const entries = (await readDirectory(handle, path)).filter(
+        (entry) => request.includeHidden || !entry.name.startsWith("."),
+      );
       const mapped = entries.map<FileBrowserEntry>((entry) => {
         if (entry.kind === "directory" && entry.handle) handles.set(entry.path, entry.handle as BrowserDirectoryHandle);
         return { name: entry.name, path: entry.path, kind: entry.kind, action: entry.kind === "directory" ? "navigate" : "select", detail: entry.kind === "directory" ? "Pasta" : "Arquivo", icon: entry.kind === "directory" ? "folder" : "file" };
@@ -1834,7 +1809,7 @@ async function openProfileCommandFileBrowser(): Promise<void> {
       return { path, ...(parentPath !== undefined ? { parentPath } : {}), entries: mapped };
     },
   };
-  await fileBrowser.open({ title: "Selecionar arquivo", description: "Selecione um arquivo para preencher o campo Comando.", confirmLabel: "Usar arquivo", selectionTitle: "Arquivo selecionado", emptySelectionTitle: "Nenhum arquivo selecionado", emptySelectionDescription: "Escolha um arquivo na lista.", selectionIcon: "file", source, onConfirm(path) { const input = appRoot.querySelector<HTMLInputElement>('[data-form="execution-profile"] input[name="command"]'); if (!input) throw new Error("O campo Comando não está disponível."); input.value = path; input.dispatchEvent(new Event("input", { bubbles: true })); } });
+  await fileBrowser.open({ title: "Selecionar arquivo", description: "Selecione um arquivo para preencher o campo Comando.", confirmLabel: "Usar arquivo", selectionTitle: "Arquivo selecionado", emptySelectionTitle: "Nenhum arquivo selecionado", emptySelectionDescription: "Escolha um arquivo na lista.", selectionIcon: "file", source, allowHiddenToggle: true, onConfirm(path) { const input = appRoot.querySelector<HTMLInputElement>('[data-form="execution-profile"] input[name="command"]'); if (!input) throw new Error("O campo Comando não está disponível."); input.value = path; input.dispatchEvent(new Event("input", { bubbles: true })); } });
 }
 
 async function openEnvironmentFileBrowser(mode: "directory" | "file"): Promise<void> {
@@ -1887,6 +1862,7 @@ function renderExecutionProfilesModal(): string {
   const executableDisplay = currentEnvironmentId ? environmentExecutable : step.executable === "${environmentExecutable}" ? "" : step.executable;
   const commandValue = step.command;
   const commandParameters = step.parameters;
+  const commandParametersText = formatCommandLineArguments(commandParameters);
   const workingDirectoryMode = !step.workingDirectory || step.workingDirectory === "${workspaceRoot}"
     ? "workspace"
     : "custom";
@@ -1902,7 +1878,7 @@ function renderExecutionProfilesModal(): string {
   const previewExecutable = executableDisplay || "executável";
   const preview = [previewExecutable, commandValue, ...commandParameters].filter(Boolean).join(" ");
 
-  return `<div class="modal-backdrop" role="presentation"><section class="execution-profiles-modal" role="dialog" aria-modal="true" aria-labelledby="execution-profiles-title"><header><div><span class="execution-profiles-modal__eyebrow">EXECUÇÃO</span><h2 id="execution-profiles-title">Perfis de execução</h2><p>Configure comandos reutilizáveis para este workspace.</p></div>${renderButton("Fechar", "close", { command: "execution.profiles.close", iconOnly: true })}</header><div class="execution-profiles-modal__content"><aside><div class="execution-profile-sidebar__heading"><strong>Perfis</strong><span>${profiles.length}</span></div><div class="execution-profile-list">${cards || '<div class="execution-profile-empty"><strong>Nenhum perfil</strong><small>Crie o primeiro perfil para executar seu projeto.</small></div>'}</div>${renderButton("Novo perfil", "fileAdd", { command: "execution.profile.new", size: "small", variant: "primary" })}</aside><form data-form="execution-profile" class="execution-profile-form"><input type="hidden" name="id" value="${escapeHtml(profile.id)}"/><input type="hidden" name="executable" value="${escapeHtml(executableValue)}"/><div class="execution-profile-form__body"><div class="execution-profile-identity"><label>Nome do perfil<input name="name" value="${escapeHtml(profile.name)}" required /></label><label class="execution-profile-environment-field">Ambiente<select name="environmentId" ${state.executionProfileContributionsLoading ? "disabled" : ""}><option value="">Nenhum ambiente</option>${missingEnvironmentOption}${environmentOptions}</select><small data-profile-environment-description>${escapeHtml(selectedEnvironmentDescription)}</small></label></div><section class="execution-profile-command-panel"><div class="execution-profile-command-panel__heading"><div><span class="execution-profile-command-panel__icon">${renderIcon("terminal")}</span><div><strong>Comando</strong><small>Configure o executável, o comando e seus parâmetros.</small></div></div><span class="execution-profile-command-panel__badge">ETAPA 1</span></div>${state.executionProfileContributionsLoading ? '<p class="muted">Carregando ferramentas...</p>' : contributedExecutables ? `<div class="execution-profile-sources">${contributedExecutables}</div>` : ""}<label>Executável<div class="execution-profile-field-action"><input data-profile-executable-display value="${escapeHtml(executableDisplay)}" placeholder="Selecione um ambiente ou informe o executável" ${currentEnvironmentId ? "readonly" : ""}/></div><small>${currentEnvironmentId ? "Fornecido pelo ambiente selecionado." : "Informe um caminho ou escolha uma ferramenta fornecida por plugin."}</small></label><label>Comando<div class="execution-profile-field-action"><input name="command" value="${escapeHtml(commandValue)}" placeholder="Digite um comando ou selecione um script" autocomplete="off"/>${renderButton("Selecionar arquivo", "folderOpen", { command: "execution.profile.pickCommandFile", size: "small", className: "execution-profile-command-picker" })}</div><small>Texto livre. Selecionar um arquivo apenas preenche este campo.</small></label><label>Parâmetros <small>um por linha, na ordem de execução</small><textarea name="parameters" rows="6" placeholder="--flag&#10;valor">${escapeHtml(commandParameters.join("\n"))}</textarea><small>Parâmetros enviados após o comando.</small></label></section><details class="execution-profile-advanced"><summary><span>${renderIcon("environment")}</span><div><strong>Contexto e opções</strong><small>Diretório, variáveis e comportamento da execução.</small></div></summary><div class="execution-profile-advanced__content"><label>Diretório de trabalho<select name="workingDirectoryMode"><option value="workspace" ${workingDirectoryMode === "workspace" ? "selected" : ""}>Raiz do workspace</option><option value="custom" ${workingDirectoryMode === "custom" ? "selected" : ""}>Caminho personalizado</option></select></label><label data-profile-custom-working-directory ${workingDirectoryMode === "custom" ? "" : "hidden"}>Caminho personalizado<input name="customWorkingDirectory" value="${escapeHtml(customWorkingDirectory)}" placeholder="/caminho/do/projeto"/></label><label>Variáveis de ambiente <small>CHAVE=valor</small><textarea name="environmentVariables" rows="3">${escapeHtml(Object.entries(step.environmentVariables ?? {}).map(([name, value]) => `${name}=${value}`).join("\n"))}</textarea></label><div class="execution-profile-options"><label class="checkbox-label"><input type="checkbox" name="saveBeforeRun" ${profile.saveBeforeRun !== false ? "checked" : ""}/> Salvar antes de executar</label><label class="checkbox-label"><input type="checkbox" name="continueOnError" ${step.continueOnError ? "checked" : ""}/> Continuar após falha</label></div></div></details></div><input type="hidden" name="stepName" value="${escapeHtml(step.name)}"/><div class="execution-profile-footer"><div class="execution-profile-preview"><span>${renderIcon("terminal")}</span><div><small>Prévia do comando</small><code data-profile-command-preview>${escapeHtml(preview)}</code></div></div><div class="form-actions">${renderButton("Cancelar", "close", { command: "execution.profiles.close" })}${renderButton("Salvar perfil", "save", { type: "submit", variant: "primary" })}</div></div></form></div></section></div>`;
+  return `<div class="modal-backdrop" role="presentation"><section class="execution-profiles-modal" role="dialog" aria-modal="true" aria-labelledby="execution-profiles-title"><header><div><span class="execution-profiles-modal__eyebrow">EXECUÇÃO</span><h2 id="execution-profiles-title">Perfis de execução</h2><p>Configure comandos reutilizáveis para este workspace.</p></div>${renderButton("Fechar", "close", { command: "execution.profiles.close", iconOnly: true })}</header><div class="execution-profiles-modal__content"><aside><div class="execution-profile-sidebar__heading"><strong>Perfis</strong><span>${profiles.length}</span></div><div class="execution-profile-list">${cards || '<div class="execution-profile-empty"><strong>Nenhum perfil</strong><small>Crie o primeiro perfil para executar seu projeto.</small></div>'}</div>${renderButton("Novo perfil", "fileAdd", { command: "execution.profile.new", size: "small", variant: "primary" })}</aside><form data-form="execution-profile" class="execution-profile-form"><input type="hidden" name="id" value="${escapeHtml(profile.id)}"/><input type="hidden" name="executable" value="${escapeHtml(executableValue)}"/><div class="execution-profile-form__body"><div class="execution-profile-identity"><label>Nome do perfil<input name="name" value="${escapeHtml(profile.name)}" required /></label><label class="execution-profile-environment-field">Ambiente<select name="environmentId" ${state.executionProfileContributionsLoading ? "disabled" : ""}><option value="">Nenhum ambiente</option>${missingEnvironmentOption}${environmentOptions}</select><small data-profile-environment-description>${escapeHtml(selectedEnvironmentDescription)}</small></label></div><section class="execution-profile-command-panel"><div class="execution-profile-command-panel__heading"><div><span class="execution-profile-command-panel__icon">${renderIcon("terminal")}</span><div><strong>Comando</strong><small>Configure o executável, o comando e seus parâmetros.</small></div></div><span class="execution-profile-command-panel__badge">ETAPA 1</span></div>${state.executionProfileContributionsLoading ? '<p class="muted">Carregando ferramentas...</p>' : contributedExecutables ? `<div class="execution-profile-sources">${contributedExecutables}</div>` : ""}<label>Executável<div class="execution-profile-field-action"><input data-profile-executable-display value="${escapeHtml(executableDisplay)}" placeholder="Selecione um ambiente ou informe o executável" ${currentEnvironmentId ? "readonly" : ""}/></div><small>${currentEnvironmentId ? "Fornecido pelo ambiente selecionado." : "Informe um caminho ou escolha uma ferramenta fornecida por plugin."}</small></label><label>Comando<div class="execution-profile-field-action"><input name="command" value="${escapeHtml(commandValue)}" placeholder="Digite um comando ou selecione um script" autocomplete="off"/>${renderButton("Selecionar arquivo", "folderOpen", { command: "execution.profile.pickCommandFile", size: "small", className: "execution-profile-command-picker" })}</div><small>Texto livre. Selecionar um arquivo apenas preenche este campo.</small></label><label>Parâmetros <small>sintaxe de linha de comando</small><textarea name="parameters" rows="6" placeholder="runserver localhost:9092">${escapeHtml(commandParametersText)}</textarea><small>Espaços separam argumentos. Use aspas para preservar valores com espaços.</small></label></section><details class="execution-profile-advanced"><summary><span>${renderIcon("environment")}</span><div><strong>Contexto e opções</strong><small>Diretório, variáveis e comportamento da execução.</small></div></summary><div class="execution-profile-advanced__content"><label>Diretório de trabalho<select name="workingDirectoryMode"><option value="workspace" ${workingDirectoryMode === "workspace" ? "selected" : ""}>Raiz do workspace</option><option value="custom" ${workingDirectoryMode === "custom" ? "selected" : ""}>Caminho personalizado</option></select></label><label data-profile-custom-working-directory ${workingDirectoryMode === "custom" ? "" : "hidden"}>Caminho personalizado<input name="customWorkingDirectory" value="${escapeHtml(customWorkingDirectory)}" placeholder="/caminho/do/projeto"/></label><label>Variáveis de ambiente <small>CHAVE=valor</small><textarea name="environmentVariables" rows="3">${escapeHtml(Object.entries(step.environmentVariables ?? {}).map(([name, value]) => `${name}=${value}`).join("\n"))}</textarea></label><div class="execution-profile-options"><label class="checkbox-label"><input type="checkbox" name="saveBeforeRun" ${profile.saveBeforeRun !== false ? "checked" : ""}/> Salvar antes de executar</label><label class="checkbox-label"><input type="checkbox" name="continueOnError" ${step.continueOnError ? "checked" : ""}/> Continuar após falha</label></div></div></details></div><input type="hidden" name="stepName" value="${escapeHtml(step.name)}"/><div class="execution-profile-footer"><div class="execution-profile-preview"><span>${renderIcon("terminal")}</span><div><small>Prévia do comando</small><code data-profile-command-preview>${escapeHtml(preview)}</code></div></div><div class="form-actions">${renderButton("Cancelar", "close", { command: "execution.profiles.close" })}${renderButton("Salvar perfil", "save", { type: "submit", variant: "primary" })}</div></div></form></div></section></div>`;
 }
 
 
@@ -2285,7 +2261,7 @@ async function runWithSelectedEnvironment(): Promise<void> {
   try {
     const profile = state.runProfile;
     const commonRequest = {
-      args: parseArgumentLine(profile.arguments),
+      args: parseCommandLineArguments(profile.arguments),
       environmentVariables: parseEnvironmentVariables(profile.environmentVariables),
       ...(profile.workingDirectory.trim()
         ? { workingDirectory: profile.workingDirectory.trim() }
@@ -2660,7 +2636,7 @@ function bindInteractions(): void {
       showError(new Error("Informe o script ou módulo do perfil de execução."));
       return;
     }
-    parseArgumentLine(profile.arguments);
+    parseCommandLineArguments(profile.arguments);
     parseEnvironmentVariables(profile.environmentVariables);
     state.runProfile = profile;
     localStorage.setItem(RUN_PROFILE_STORAGE_KEY, JSON.stringify(profile));
