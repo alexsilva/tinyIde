@@ -1,24 +1,38 @@
 import {
   CapabilityRegistry,
   CommandRegistry,
+  ExecutionProfileManager,
   EventBus,
   ModulePluginHost,
   PluginManager,
+  inferWorkspaceRoot,
+  resolveExecutionProfile,
 } from "@tinyide/core";
 import type {
-  ExecutionEnvironmentDirectoryListing,
+  ExecutionProfile,
+  ExecutionProfileStep,
+  ExecutionProfileContributionProvider,
+  ExecutionProfileExecutableOption,
+  ExecutionProfileVariableContribution,
   ExecutionEnvironmentRunRequest,
   ExecutionEnvironment,
   ExecutionEnvironmentProvider,
   LanguageProvider,
+  ProcessExecutionRequest,
   PluginManifest,
   PluginRecord,
+  ScriptExecutionResult,
   TextDiagnostic,
 } from "@tinyide/plugin-api";
 import {
   readApplicationSnapshot,
   writeApplicationSnapshot,
 } from "./session-store";
+import {
+  FileBrowserController,
+  type FileBrowserEntry,
+  type FileBrowserSource,
+} from "./file-browser";
 import "./styles.css";
 
 const PLATFORM_VERSION = "0.4.0";
@@ -26,6 +40,7 @@ const PLUGIN_STORAGE_KEY = "tinyide.installedPlugins.v2";
 const LEGACY_PLUGIN_STORAGE_KEY = "tinyide.installedPlugins";
 const LAYOUT_STORAGE_KEY = "tinyide.layout.v1";
 const RUN_PROFILE_STORAGE_KEY = "tinyide.pythonRunProfile.v1";
+const EXECUTION_PROFILES_STORAGE_KEY = "tinyide.executionProfiles.v1";
 const ENVIRONMENT_BROWSER_STORAGE_KEY = "tinyide.environmentBrowser.v1";
 const SESSION_STORAGE_KEY = "tinyide.session.v2";
 const LEGACY_SESSION_STORAGE_KEY = "tinyide.session.v1";
@@ -44,6 +59,33 @@ interface StoredLayout {
 interface StoredEnvironmentBrowserPaths {
   readonly directory?: string;
   readonly file?: string;
+}
+
+interface StoredExecutionProfiles {
+  readonly profiles: readonly ExecutionProfile[];
+  readonly selectedProfileId?: string;
+}
+
+interface LegacyExecutionProfileStep extends Omit<ExecutionProfileStep, "command" | "parameters"> {
+  readonly command?: string;
+  readonly parameters?: readonly string[];
+  readonly arguments?: readonly string[];
+}
+
+interface LegacyExecutionProfile extends Omit<ExecutionProfile, "environment" | "steps"> {
+  readonly environment: ExecutionProfile["environment"] | { readonly mode: "selected" };
+  readonly steps: readonly LegacyExecutionProfileStep[];
+}
+
+interface HostProcessSnapshot extends ScriptExecutionResult {
+  readonly id: string;
+  readonly status: "running" | "exited";
+  readonly executable: string;
+  readonly arguments: readonly string[];
+  readonly workingDirectory: string;
+  readonly signal?: string;
+  readonly startedAt: number;
+  readonly finishedAt?: number;
 }
 
 function readEnvironmentBrowserPaths(): StoredEnvironmentBrowserPaths {
@@ -321,14 +363,14 @@ interface AppState {
   selectedEnvironmentId: string | undefined;
   environmentBusy: boolean;
   environmentForm: "createVenv" | "addVenv" | "addProcess" | "packages" | "run" | undefined;
-  environmentBrowser: ExecutionEnvironmentDirectoryListing | undefined;
-  environmentBrowserLoading: boolean;
-  environmentBrowserOpen: boolean;
-  environmentBrowserMode: "directory" | "file";
-  environmentBrowserFilter: string;
-  environmentBrowserIncludeHidden: boolean;
-  environmentBrowserSelectedPath: string | undefined;
   environmentSelectedPath: string | undefined;
+  executionProfilesOpen: boolean;
+  executionProfileEditingId: string | undefined;
+  executionProfileExecutableOptions: ExecutionProfileExecutableOption[];
+  executionProfileVariables: ExecutionProfileVariableContribution[];
+  executionProfileContributionsLoading: boolean;
+  executionBusy: boolean;
+  activeProcessId: string | undefined;
   runProfile: RunProfile;
   logs: string[];
   notice: string | undefined;
@@ -343,6 +385,9 @@ const events = new EventBus();
 const commands = new CommandRegistry();
 const capabilities = new CapabilityRegistry();
 const pluginSourceUrls = new Map<string, string>();
+let executionProfiles = new ExecutionProfileManager();
+let executionProfileDraft: ExecutionProfile | undefined;
+let fileBrowser!: FileBrowserController;
 
 const pluginHost = new ModulePluginHost({
   loadModule(plugin) {
@@ -352,6 +397,8 @@ const pluginHost = new ModulePluginHost({
   },
 });
 const plugins = new PluginManager({ platformVersion: PLATFORM_VERSION, events, host: pluginHost });
+
+fileBrowser = new FileBrowserController(() => render());
 
 const state: AppState = {
   sidebarVisible: true,
@@ -376,14 +423,14 @@ const state: AppState = {
   selectedEnvironmentId: undefined,
   environmentBusy: false,
   environmentForm: undefined,
-  environmentBrowser: undefined,
-  environmentBrowserLoading: false,
-  environmentBrowserOpen: false,
-  environmentBrowserMode: "directory",
-  environmentBrowserFilter: "",
-  environmentBrowserIncludeHidden: false,
-  environmentBrowserSelectedPath: undefined,
   environmentSelectedPath: undefined,
+  executionProfilesOpen: false,
+  executionProfileEditingId: undefined,
+  executionProfileExecutableOptions: [],
+  executionProfileVariables: [],
+  executionProfileContributionsLoading: false,
+  executionBusy: false,
+  activeProcessId: undefined,
   runProfile: readRunProfile(),
   logs: ["tinyIde core initialized", `platform version ${PLATFORM_VERSION}`],
   notice: undefined,
@@ -397,6 +444,87 @@ function activeDocument(): OpenDocument | undefined {
 
 function documentKey(document: Pick<OpenDocument, "name" | "path">): string {
   return document.path ?? document.name;
+}
+
+function executionProfileStorageKey(): string {
+  return `${EXECUTION_PROFILES_STORAGE_KEY}:${state.workspaceName ?? "global"}`;
+}
+
+function loadExecutionProfiles(): void {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(executionProfileStorageKey()) ?? "{}") as Partial<StoredExecutionProfiles>;
+    const profiles = Array.isArray(parsed.profiles)
+      ? (parsed.profiles as readonly LegacyExecutionProfile[]).map((profile) => ({
+          ...profile,
+          environment: profile.environment.mode === "selected"
+            ? { mode: "none" as const }
+            : profile.environment,
+          steps: profile.steps.map((step) => {
+            const {
+              arguments: legacyArguments,
+              command,
+              parameters,
+              ...rest
+            } = step;
+            return {
+              ...rest,
+              command: typeof command === "string"
+                ? command
+                : Array.isArray(legacyArguments) && typeof legacyArguments[0] === "string"
+                  ? legacyArguments[0]
+                  : "",
+              parameters: Array.isArray(parameters)
+                ? [...parameters]
+                : Array.isArray(legacyArguments)
+                  ? legacyArguments.slice(1)
+                  : [],
+            };
+          }),
+        }))
+      : [];
+    executionProfiles = new ExecutionProfileManager(
+      profiles,
+      typeof parsed.selectedProfileId === "string" ? parsed.selectedProfileId : undefined,
+    );
+  } catch {
+    executionProfiles = new ExecutionProfileManager();
+  }
+}
+
+function persistExecutionProfiles(): void {
+  const selectedProfileId = executionProfiles.selectedId();
+  const stored: StoredExecutionProfiles = {
+    profiles: executionProfiles.list(),
+    ...(selectedProfileId ? { selectedProfileId } : {}),
+  };
+  localStorage.setItem(executionProfileStorageKey(), JSON.stringify(stored));
+}
+
+function executionProfileContributionContext() {
+  const active = activeDocument();
+  return {
+    ...(state.workspaceName ? { workspaceName: state.workspaceName } : {}),
+    ...(active?.name ? { activeFileName: active.name } : {}),
+    ...(active?.path ? { activeFilePath: active.path } : {}),
+  };
+}
+
+async function refreshExecutionProfileContributions(): Promise<void> {
+  state.executionProfileContributionsLoading = true;
+  try {
+    const providers = capabilities.getAll<ExecutionProfileContributionProvider>("execution.profile.contribution");
+    const context = executionProfileContributionContext();
+    const executableGroups = await Promise.all(
+      providers.map(async (provider) => provider.executableOptions ? provider.executableOptions(context) : []),
+    );
+    const variableGroups = await Promise.all(
+      providers.map(async (provider) => provider.variables ? provider.variables(context) : []),
+    );
+    state.executionProfileExecutableOptions = executableGroups.flat();
+    state.executionProfileVariables = variableGroups.flat();
+  } finally {
+    state.executionProfileContributionsLoading = false;
+  }
 }
 
 function serializeWorkspaceEntries(entries: WorkspaceEntry[]): StoredWorkspaceEntry[] {
@@ -620,6 +748,7 @@ async function initializeApplication(): Promise<void> {
       restorePlugins(),
       restoreApplicationState(),
     ]);
+    loadExecutionProfiles();
     await refreshEnvironments();
     if (state.sidebarView === "plugins") await loadPluginCatalog();
   } finally {
@@ -783,6 +912,8 @@ function renderButton(
 
   return `<button class="${classes}" type="${options.type ?? "button"}" ${commandAttribute} ${dataAttributes} ${accessibilityAttributes} ${options.disabled ? "disabled" : ""}>${content}</button>`;
 }
+
+
 
 function renderActivityButton(
   command: string,
@@ -992,8 +1123,6 @@ async function refreshEnvironments(): Promise<void> {
     state.openedEnvironmentIds.clear();
     state.selectedEnvironmentId = undefined;
     state.environmentForm = undefined;
-    state.environmentBrowser = undefined;
-    state.environmentBrowserOpen = false;
     state.environmentSelectedPath = undefined;
     if (state.sidebarView === "environments") {
       state.sidebarView = "explorer";
@@ -1193,6 +1322,7 @@ async function openWorkspace(): Promise<void> {
   state.activeFilePath = undefined;
   state.sidebarVisible = true;
   state.sidebarView = "explorer";
+  loadExecutionProfiles();
   await events.emit("workspace.opened", { name: handle.name });
   showNotice(`Pasta '${handle.name}' aberta.`);
   persistSession();
@@ -1212,6 +1342,7 @@ async function reconnectWorkspace(): Promise<void> {
   }
 
   state.workspaceName = state.workspaceHandle.name;
+  loadExecutionProfiles();
   state.workspaceEntries = await readDirectory(state.workspaceHandle);
   await hydrateExpandedDirectories();
   await events.emit("workspace.opened", { name: state.workspaceHandle.name });
@@ -1582,46 +1713,198 @@ function renderEnvironments(): string {
   return `<div class="environment-manager"><div class="environment-manager__intro"><div><strong>Ambientes Python</strong><p>Cadastre interpretadores e ambientes virtuais disponíveis para o workspace.</p></div>${renderButton("Atualizar", "refresh", { command: "environment.refresh", size: "small", iconOnly: true, title: "Atualizar ambientes" })}</div><div class="environment-manager__toolbar">${addProcessAction}${addVenvAction}${createAction}</div>${createVenvForm}${addVenvForm}${addProcessForm}${packagesForm}${runForm}<div class="environment-list">${cards || emptyState}</div></div>`;
 }
 
-function renderEnvironmentBrowserModal(): string {
-  if (!state.environmentBrowserOpen) return "";
-  const browser = state.environmentBrowser;
-  const normalizedFilter = state.environmentBrowserFilter.trim().toLocaleLowerCase();
-  const visibleBrowserEntries = browser?.entries.filter((entry) =>
-    !normalizedFilter || entry.name.toLocaleLowerCase().includes(normalizedFilter),
-  ) ?? [];
-  const entries = visibleBrowserEntries
-    .map((entry) => {
-      const selectsVenv = state.environmentBrowserMode === "directory"
-        && entry.kind === "directory"
-        && entry.isEnvironment;
-      const command = entry.kind === "file"
-        ? "environment.selectFile"
-        : selectsVenv
-          ? "environment.selectDirectory"
-          : "environment.browse";
-      const icon = entry.kind === "directory" ? (entry.isEnvironment ? "environment" : "folder") : "file";
-      const detail = entry.kind === "file"
-        ? (entry.executable ? "Executável" : "Arquivo")
-        : entry.isEnvironment
-          ? "Venv válido · selecionar"
-          : "Diretório";
-      const selected = state.environmentBrowserSelectedPath === entry.path;
-      return `<button type="button" class="environment-browser__entry${entry.isEnvironment ? " is-environment" : ""}${selected ? " is-selected" : ""}${entry.kind === "file" && !entry.executable ? " is-disabled" : ""}" data-command="${command}" data-browser-name="${escapeHtml(entry.name.toLocaleLowerCase())}" data-browser-path="${escapeHtml(entry.path)}" ${entry.kind === "file" && !entry.executable ? "disabled" : ""}><span class="environment-browser__icon">${renderIcon(icon)}</span><strong>${escapeHtml(entry.name)}</strong><small>${detail}</small></button>`;
+function emptyExecutionProfile(): ExecutionProfile {
+  return {
+    id: `profile-${Date.now().toString(36)}`,
+    name: "Novo perfil",
+    environment: { mode: "none" },
+    saveBeforeRun: true,
+    steps: [
+      {
+        id: "step-1",
+        name: "Executar",
+        executable: "",
+        command: "",
+        parameters: [],
+        workingDirectory: "\${workspaceRoot}",
+      },
+    ],
+  };
+}
+
+function executionProfileFromForm(form: HTMLFormElement): ExecutionProfile {
+  const data = new FormData(form);
+  const environmentSelect = form.elements.namedItem("environmentId") as HTMLSelectElement | null;
+  const environmentId = String(environmentSelect?.value ?? "").trim();
+  const environment = environmentId
+    ? { mode: "fixed" as const, environmentId }
+    : { mode: "none" as const };
+  const workingDirectoryMode = String(data.get("workingDirectoryMode") ?? "workspace");
+  const workingDirectory = workingDirectoryMode === "custom"
+    ? String(data.get("customWorkingDirectory") ?? "").trim()
+    : "${workspaceRoot}";
+
+  return {
+    id: String(data.get("id") ?? "").trim(),
+    name: String(data.get("name") ?? "").trim(),
+    environment,
+    saveBeforeRun: data.get("saveBeforeRun") === "on",
+    steps: [{
+      id: "step-1",
+      name: String(data.get("stepName") ?? "Executar").trim(),
+      executable: String(data.get("executable") ?? "").trim(),
+      command: String(data.get("command") ?? "").trim(),
+      parameters: String(data.get("parameters") ?? "")
+        .split(/\r?\n/)
+        .map((value) => value.trim())
+        .filter(Boolean),
+      ...(workingDirectory ? { workingDirectory } : {}),
+      environmentVariables: parseEnvironmentVariables(String(data.get("environmentVariables") ?? "")),
+      continueOnError: data.get("continueOnError") === "on",
+    }],
+  };
+}
+
+function captureExecutionProfileDraft(): ExecutionProfile | undefined {
+  const form = appRoot.querySelector<HTMLFormElement>('[data-form="execution-profile"]');
+  if (!form) return executionProfileDraft;
+  executionProfileDraft = executionProfileFromForm(form);
+  return executionProfileDraft;
+}
+
+function environmentExecutableDisplay(option: ExecutionProfileExecutableOption | undefined): string {
+  if (!option) return "";
+  const parts = option.description?.split(" · ").filter(Boolean) ?? [];
+  return parts.at(-1) ?? option.label;
+}
+
+
+function renderSharedFileBrowserModal(): string {
+  const snapshot = fileBrowser.snapshot();
+  const options = snapshot.options;
+  if (!snapshot.open || !options) return "";
+  const listing = snapshot.listing;
+  const visiblePaths = new Set(snapshot.visibleEntries.map((entry) => entry.path));
+  const entries = (listing?.entries ?? []).map((entry) =>
+    `<button type="button" class="file-browser__entry${snapshot.selectedPath === entry.path ? " is-selected" : ""}${entry.disabled ? " is-disabled" : ""}" data-command="fileBrowser.activate" data-file-browser-entry data-browser-name="${escapeHtml(entry.name.toLocaleLowerCase())}" data-browser-path="${escapeHtml(entry.path)}" ${visiblePaths.has(entry.path) ? "" : "hidden"} ${entry.disabled ? "disabled" : ""}><span class="file-browser__icon">${renderIcon(entry.icon)}</span><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.detail)}</small></button>`,
+  ).join("");
+  const selection = snapshot.selectedPath
+    ? `<div class="file-browser__selection"><span>${renderIcon(options.selectionIcon)}</span><div><strong>${escapeHtml(options.selectionTitle)}</strong><small>${escapeHtml(snapshot.selectedPath)}</small></div></div>`
+    : `<div class="file-browser__selection is-empty"><span>${renderIcon(options.selectionIcon)}</span><div><strong>${escapeHtml(options.emptySelectionTitle)}</strong><small>${escapeHtml(options.emptySelectionDescription)}</small></div></div>`;
+  const content = snapshot.loading
+    ? `<div class="file-browser-modal__loading">Carregando diretórios...</div>`
+    : `<div class="file-browser__controls"><div class="file-browser__search"><span>${renderIcon("search")}</span><input type="search" data-file-browser-filter value="${escapeHtml(snapshot.filter)}" placeholder="Filtrar nesta pasta"/><button type="button" data-command="fileBrowser.clearFilter" aria-label="Limpar filtro" ${snapshot.filter ? "" : "disabled"}>${renderIcon("close")}</button></div><span class="file-browser__result-count" data-file-browser-result-count>${snapshot.visibleEntries.length} ${snapshot.visibleEntries.length === 1 ? "item" : "itens"}</span>${snapshot.allowHiddenToggle ? `<label class="file-browser__hidden-toggle"><input type="checkbox" data-file-browser-hidden ${snapshot.includeHidden ? "checked" : ""}/> Mostrar ocultos</label>` : ""}</div><div class="file-browser__path">${renderButton("Pasta pai", "folderOpen", { command: "fileBrowser.parent", size: "small", disabled: !listing?.parentPath })}<code>${escapeHtml(listing?.path || state.workspaceName || "Workspace")}</code></div>${selection}<div class="file-browser__entries">${entries}<p class="muted file-browser__empty" data-file-browser-empty ${snapshot.visibleEntries.length ? "hidden" : ""}>Nenhum item corresponde ao filtro.</p></div>`;
+  return `<div class="modal-backdrop file-browser-backdrop" role="presentation"><section class="file-browser-modal" role="dialog" aria-modal="true"><header><div><h2>${escapeHtml(options.title)}</h2><p>${escapeHtml(options.description)}</p></div>${renderButton("Fechar", "close", { command: "fileBrowser.close", iconOnly: true })}</header><div class="file-browser-modal__content">${content}</div><footer>${renderButton("Cancelar", "close", { command: "fileBrowser.close", size: "small" })}${renderButton(options.confirmLabel, "check", { command: "fileBrowser.confirm", size: "small", variant: "primary", disabled: !snapshot.selectedPath })}</footer></section></div>`;
+}
+
+function updateFileBrowserFilter(filter: string): void {
+  fileBrowser.setFilter(filter);
+  const normalizedFilter = filter.trim().toLocaleLowerCase();
+  let visibleCount = 0;
+  appRoot.querySelectorAll<HTMLElement>("[data-file-browser-entry]").forEach((entry) => {
+    const visible = !normalizedFilter || (entry.dataset.browserName ?? "").includes(normalizedFilter);
+    entry.hidden = !visible;
+    if (visible) visibleCount += 1;
+  });
+  const resultCount = appRoot.querySelector<HTMLElement>("[data-file-browser-result-count]");
+  if (resultCount) resultCount.textContent = `${visibleCount} ${visibleCount === 1 ? "item" : "itens"}`;
+  const empty = appRoot.querySelector<HTMLElement>("[data-file-browser-empty]");
+  if (empty) empty.hidden = visibleCount > 0;
+  const clearButton = appRoot.querySelector<HTMLButtonElement>('[data-command="fileBrowser.clearFilter"]');
+  if (clearButton) clearButton.disabled = !filter;
+}
+
+async function openProfileCommandFileBrowser(): Promise<void> {
+  captureExecutionProfileDraft();
+  if (!state.workspaceHandle) await openWorkspace();
+  const rootHandle = state.workspaceHandle;
+  if (!rootHandle) throw new Error("Abra uma pasta antes de selecionar arquivos.");
+  const handles = new Map<string, BrowserDirectoryHandle>([["", rootHandle]]);
+  const source: FileBrowserSource = {
+    async load(request) {
+      const path = request.path ?? "";
+      const handle = handles.get(path);
+      if (!handle) throw new Error(`Pasta não encontrada: ${path}`);
+      const entries = await readDirectory(handle, path);
+      const mapped = entries.map<FileBrowserEntry>((entry) => {
+        if (entry.kind === "directory" && entry.handle) handles.set(entry.path, entry.handle as BrowserDirectoryHandle);
+        return { name: entry.name, path: entry.path, kind: entry.kind, action: entry.kind === "directory" ? "navigate" : "select", detail: entry.kind === "directory" ? "Pasta" : "Arquivo", icon: entry.kind === "directory" ? "folder" : "file" };
+      });
+      const parentPath = path ? path.split("/").slice(0, -1).join("/") : undefined;
+      return { path, ...(parentPath !== undefined ? { parentPath } : {}), entries: mapped };
+    },
+  };
+  await fileBrowser.open({ title: "Selecionar arquivo", description: "Selecione um arquivo para preencher o campo Comando.", confirmLabel: "Usar arquivo", selectionTitle: "Arquivo selecionado", emptySelectionTitle: "Nenhum arquivo selecionado", emptySelectionDescription: "Escolha um arquivo na lista.", selectionIcon: "file", source, onConfirm(path) { const input = appRoot.querySelector<HTMLInputElement>('[data-form="execution-profile"] input[name="command"]'); if (!input) throw new Error("O campo Comando não está disponível."); input.value = path; input.dispatchEvent(new Event("input", { bubbles: true })); } });
+}
+
+async function openEnvironmentFileBrowser(mode: "directory" | "file"): Promise<void> {
+  const provider = executionEnvironmentProvider();
+  const browse = provider?.browse;
+  if (!provider || !browse) throw new Error("O gerenciador não oferece navegação de arquivos.");
+  const source: FileBrowserSource = {
+    async load(request) {
+      const listing = await browse({ ...(request.path ? { path: request.path } : {}), mode, includeHidden: request.includeHidden, filter: "" });
+      return { path: listing.path, ...(listing.parentPath ? { parentPath: listing.parentPath } : {}), entries: listing.entries.map<FileBrowserEntry>((entry) => { const selectable = mode === "file" ? entry.kind === "file" && entry.executable : entry.kind === "directory" && entry.isEnvironment; return { name: entry.name, path: entry.path, kind: entry.kind, action: selectable ? "select" : entry.kind === "directory" ? "navigate" : "select", detail: entry.kind === "file" ? (entry.executable ? "Executável" : "Arquivo") : entry.isEnvironment ? "Venv válido" : "Diretório", icon: entry.kind === "directory" ? (entry.isEnvironment ? "environment" : "folder") : "file", disabled: entry.kind === "file" && !selectable }; }), };
+    },
+  };
+  const initialPath = readEnvironmentBrowserPaths()[mode];
+  await fileBrowser.open({ title: mode === "file" ? "Selecionar executável Python" : "Selecionar diretório do ambiente", description: mode === "file" ? "Navegue até o executável, selecione-o e confirme." : "Navegue até a raiz de um ambiente virtual válido.", confirmLabel: mode === "file" ? "Usar este Python" : "Usar este venv", selectionTitle: mode === "file" ? "Python selecionado" : "Venv selecionado", emptySelectionTitle: "Nenhuma seleção", emptySelectionDescription: mode === "file" ? "Escolha um executável Python." : "Escolha a raiz de um venv válido.", selectionIcon: mode === "file" ? "file" : "environment", source, ...(initialPath ? { initialPath } : {}), allowHiddenToggle: true, onConfirm: async (path) => { if (mode === "file") { if (!provider.validatePythonExecutable) throw new Error("O gerenciador não valida executáveis Python."); await provider.validatePythonExecutable(path); } state.environmentSelectedPath = path; rememberEnvironmentBrowserPath(mode, fileBrowser.snapshot().listing?.path); } });
+}
+
+function renderExecutionProfilesModal(): string {
+  if (!state.executionProfilesOpen) return "";
+  const profiles = executionProfiles.list();
+  const editing = state.executionProfileEditingId
+    ? executionProfiles.get(state.executionProfileEditingId)
+    : undefined;
+  const profile = executionProfileDraft ?? editing ?? emptyExecutionProfile();
+  const step = profile.steps[0] ?? emptyExecutionProfile().steps[0]!;
+  const selectedId = executionProfiles.selectedId();
+  const environmentExecutableOptions = state.executionProfileExecutableOptions
+    .filter((option): option is ExecutionProfileExecutableOption & { readonly environmentId: string } => Boolean(option.environmentId));
+  const environmentsById = new Map<string, ExecutionProfileExecutableOption & { readonly environmentId: string }>();
+  environmentExecutableOptions.forEach((option) => {
+    if (!environmentsById.has(option.environmentId)) environmentsById.set(option.environmentId, option);
+  });
+  const currentEnvironmentId = profile.environment.mode === "fixed"
+    ? profile.environment.environmentId
+    : "";
+  const selectedEnvironmentOption = currentEnvironmentId
+    ? environmentsById.get(currentEnvironmentId)
+    : undefined;
+  const missingEnvironmentOption = currentEnvironmentId && !selectedEnvironmentOption
+    ? `<option value="${escapeHtml(currentEnvironmentId)}" selected>Ambiente indisponível — ${escapeHtml(currentEnvironmentId)}</option>`
+    : "";
+  const environmentOptions = [...environmentsById.values()]
+    .map((option) => {
+      const version = option.description?.split(" · ")[0];
+      return `<option value="${escapeHtml(option.environmentId)}" ${option.environmentId === currentEnvironmentId ? "selected" : ""}>${escapeHtml(option.label)}${version ? ` — ${escapeHtml(version)}` : ""}</option>`;
     })
     .join("");
-  const selectedPath = state.environmentBrowserSelectedPath;
-  const selection = selectedPath
-    ? `<div class="environment-browser__selection" data-environment-browser-selection><span>${renderIcon(state.environmentBrowserMode === "file" ? "file" : "environment")}</span><div><strong>${state.environmentBrowserMode === "file" ? "Python selecionado" : "Venv selecionado"}</strong><small data-environment-browser-selection-path>${escapeHtml(selectedPath)}</small></div></div>`
-    : `<div class="environment-browser__selection is-empty" data-environment-browser-selection><span>${renderIcon(state.environmentBrowserMode === "file" ? "file" : "environment")}</span><div><strong>Nenhuma seleção</strong><small data-environment-browser-selection-path>${state.environmentBrowserMode === "file" ? "Escolha um executável Python." : "Entre na pasta raiz de um venv válido."}</small></div></div>`;
-  const content = state.environmentBrowserLoading
-    ? `<div class="environment-browser-modal__loading">Carregando diretórios...</div>`
-    : browser
-      ? `<div class="environment-browser__controls"><div class="environment-browser__search"><span aria-hidden="true">${renderIcon("search")}</span><input type="search" data-environment-browser-filter value="${escapeHtml(state.environmentBrowserFilter)}" placeholder="Filtrar nesta pasta" aria-label="Filtrar itens desta pasta" autocomplete="off" spellcheck="false" /><button type="button" data-environment-browser-filter-clear aria-label="Limpar filtro" title="Limpar filtro" ${state.environmentBrowserFilter ? "" : "disabled"}>${renderIcon("close")}</button></div><span class="environment-browser__result-count" data-environment-browser-result-count>${visibleBrowserEntries.length} ${visibleBrowserEntries.length === 1 ? "item" : "itens"}</span><label class="environment-browser__hidden-toggle"><input type="checkbox" data-environment-browser-hidden ${state.environmentBrowserIncludeHidden ? "checked" : ""} /> Mostrar ocultos</label></div><div class="environment-browser__path">${renderButton("Pasta pai", "folderOpen", { command: "environment.browse", size: "small", disabled: !browser.parentPath, data: { "browser-path": browser.parentPath ?? browser.path } })}<code title="${escapeHtml(browser.path)}">${escapeHtml(browser.path)}</code></div>${selection}<div class="environment-browser__entries">${entries}<p class="muted environment-browser__empty" data-environment-browser-empty ${visibleBrowserEntries.length ? "hidden" : ""}>Nenhum item corresponde ao filtro.</p></div>`
-      : `<div class="environment-browser-modal__loading">Nenhum diretório carregado.</div>`;
-  const title = state.environmentBrowserMode === "file" ? "Selecionar executável Python" : "Selecionar diretório do ambiente";
-  const confirmLabel = state.environmentBrowserMode === "file" ? "Usar este Python" : "Usar este venv";
-  return `<div class="modal-backdrop" role="presentation"><section class="environment-browser-modal" role="dialog" aria-modal="true" aria-labelledby="environment-browser-title"><header><div><h2 id="environment-browser-title">${title}</h2><p>${state.environmentBrowserMode === "file" ? "Navegue até o executável, selecione-o e confirme." : "Entre na pasta raiz do ambiente virtual e confirme."}</p></div>${renderButton("Fechar", "close", { command: "environment.browser.close", iconOnly: true })}</header><div class="environment-browser-modal__content">${content}</div><footer>${renderButton("Cancelar", "close", { command: "environment.browser.close", size: "small" })}${renderButton(confirmLabel, "check", { command: "environment.browser.confirm", size: "small", variant: "primary", disabled: !selectedPath })}</footer></section></div>`;
+  const selectedEnvironmentDescription = selectedEnvironmentOption?.description ?? "O perfil executará sem ambiente vinculado.";
+  const environmentExecutable = environmentExecutableDisplay(selectedEnvironmentOption);
+  const executableValue = currentEnvironmentId ? "${environmentExecutable}" : step.executable;
+  const executableDisplay = currentEnvironmentId ? environmentExecutable : step.executable === "${environmentExecutable}" ? "" : step.executable;
+  const commandValue = step.command;
+  const commandParameters = step.parameters;
+  const workingDirectoryMode = !step.workingDirectory || step.workingDirectory === "${workspaceRoot}"
+    ? "workspace"
+    : "custom";
+  const customWorkingDirectory = workingDirectoryMode === "custom" ? step.workingDirectory ?? "" : "";
+  const contributedExecutables = state.executionProfileExecutableOptions
+    .filter((option) => !option.environmentId)
+    .map((option) => `<button type="button" class="execution-profile-source" data-command="execution.profile.useExecutable" data-profile-executable="${escapeHtml(option.value)}"><span>${renderIcon("terminal")}</span><span><strong>${escapeHtml(option.label)}</strong>${option.description ? `<small>${escapeHtml(option.description)}</small>` : ""}</span></button>`)
+    .join("");
+  const cards = profiles.map((candidate) => {
+    const selected = candidate.id === selectedId;
+    return `<article class="execution-profile-card${selected ? " is-active" : ""}"><div><strong>${escapeHtml(candidate.name)}</strong><small>${candidate.steps.length} etapa(s) · ${candidate.environment.mode === "none" ? "sem ambiente" : "ambiente fixo"}</small></div><div>${renderButton(selected ? "Ativo" : "Usar", selected ? "check" : "play", { command: "execution.profile.select", size: "small", disabled: selected, data: { "profile-id": candidate.id } })}${renderButton("Editar", "saveAs", { command: "execution.profile.edit", size: "small", data: { "profile-id": candidate.id } })}${renderButton("Remover", "trash", { command: "execution.profile.remove", size: "small", variant: "danger", data: { "profile-id": candidate.id } })}</div></article>`;
+  }).join("");
+  const previewExecutable = executableDisplay || "executável";
+  const preview = [previewExecutable, commandValue, ...commandParameters].filter(Boolean).join(" ");
+
+  return `<div class="modal-backdrop" role="presentation"><section class="execution-profiles-modal" role="dialog" aria-modal="true" aria-labelledby="execution-profiles-title"><header><div><span class="execution-profiles-modal__eyebrow">EXECUÇÃO</span><h2 id="execution-profiles-title">Perfis de execução</h2><p>Configure comandos reutilizáveis para este workspace.</p></div>${renderButton("Fechar", "close", { command: "execution.profiles.close", iconOnly: true })}</header><div class="execution-profiles-modal__content"><aside><div class="execution-profile-sidebar__heading"><strong>Perfis</strong><span>${profiles.length}</span></div><div class="execution-profile-list">${cards || '<div class="execution-profile-empty"><strong>Nenhum perfil</strong><small>Crie o primeiro perfil para executar seu projeto.</small></div>'}</div>${renderButton("Novo perfil", "fileAdd", { command: "execution.profile.new", size: "small", variant: "primary" })}</aside><form data-form="execution-profile" class="execution-profile-form"><input type="hidden" name="id" value="${escapeHtml(profile.id)}"/><input type="hidden" name="executable" value="${escapeHtml(executableValue)}"/><div class="execution-profile-form__body"><div class="execution-profile-identity"><label>Nome do perfil<input name="name" value="${escapeHtml(profile.name)}" required /></label><label class="execution-profile-environment-field">Ambiente<select name="environmentId" ${state.executionProfileContributionsLoading ? "disabled" : ""}><option value="">Nenhum ambiente</option>${missingEnvironmentOption}${environmentOptions}</select><small data-profile-environment-description>${escapeHtml(selectedEnvironmentDescription)}</small></label></div><section class="execution-profile-command-panel"><div class="execution-profile-command-panel__heading"><div><span class="execution-profile-command-panel__icon">${renderIcon("terminal")}</span><div><strong>Comando</strong><small>Configure o executável, o comando e seus parâmetros.</small></div></div><span class="execution-profile-command-panel__badge">ETAPA 1</span></div>${state.executionProfileContributionsLoading ? '<p class="muted">Carregando ferramentas...</p>' : contributedExecutables ? `<div class="execution-profile-sources">${contributedExecutables}</div>` : ""}<label>Executável<div class="execution-profile-field-action"><input data-profile-executable-display value="${escapeHtml(executableDisplay)}" placeholder="Selecione um ambiente ou informe o executável" ${currentEnvironmentId ? "readonly" : ""}/></div><small>${currentEnvironmentId ? "Fornecido pelo ambiente selecionado." : "Informe um caminho ou escolha uma ferramenta fornecida por plugin."}</small></label><label>Comando<div class="execution-profile-field-action"><input name="command" value="${escapeHtml(commandValue)}" placeholder="Digite um comando ou selecione um script" autocomplete="off"/>${renderButton("Selecionar arquivo", "folderOpen", { command: "execution.profile.pickCommandFile", size: "small", className: "execution-profile-command-picker" })}</div><small>Texto livre. Selecionar um arquivo apenas preenche este campo.</small></label><label>Parâmetros <small>um por linha, na ordem de execução</small><textarea name="parameters" rows="6" placeholder="--flag&#10;valor">${escapeHtml(commandParameters.join("\n"))}</textarea><small>Parâmetros enviados após o comando.</small></label></section><details class="execution-profile-advanced"><summary><span>${renderIcon("environment")}</span><div><strong>Contexto e opções</strong><small>Diretório, variáveis e comportamento da execução.</small></div></summary><div class="execution-profile-advanced__content"><label>Diretório de trabalho<select name="workingDirectoryMode"><option value="workspace" ${workingDirectoryMode === "workspace" ? "selected" : ""}>Raiz do workspace</option><option value="custom" ${workingDirectoryMode === "custom" ? "selected" : ""}>Caminho personalizado</option></select></label><label data-profile-custom-working-directory ${workingDirectoryMode === "custom" ? "" : "hidden"}>Caminho personalizado<input name="customWorkingDirectory" value="${escapeHtml(customWorkingDirectory)}" placeholder="/caminho/do/projeto"/></label><label>Variáveis de ambiente <small>CHAVE=valor</small><textarea name="environmentVariables" rows="3">${escapeHtml(Object.entries(step.environmentVariables ?? {}).map(([name, value]) => `${name}=${value}`).join("\n"))}</textarea></label><div class="execution-profile-options"><label class="checkbox-label"><input type="checkbox" name="saveBeforeRun" ${profile.saveBeforeRun !== false ? "checked" : ""}/> Salvar antes de executar</label><label class="checkbox-label"><input type="checkbox" name="continueOnError" ${step.continueOnError ? "checked" : ""}/> Continuar após falha</label></div></div></details></div><input type="hidden" name="stepName" value="${escapeHtml(step.name)}"/><div class="execution-profile-footer"><div class="execution-profile-preview"><span>${renderIcon("terminal")}</span><div><small>Prévia do comando</small><code data-profile-command-preview>${escapeHtml(preview)}</code></div></div><div class="form-actions">${renderButton("Cancelar", "close", { command: "execution.profiles.close" })}${renderButton("Salvar perfil", "save", { type: "submit", variant: "primary" })}</div></div></form></div></section></div>`;
 }
+
 
 function renderSidebar(): string {
   const title = state.sidebarView === "explorer" ? "EXPLORER" : state.sidebarView === "plugins" ? "PLUGINS" : "AMBIENTES";
@@ -1633,20 +1916,13 @@ function renderWelcome(): string {
   return `<div class="welcome-screen"><h1>tinyIde</h1><p>Crie ou abra um arquivo para começar.</p><div class="welcome-actions">${renderButton("Novo arquivo", "fileAdd", { command: "file.new", variant: "primary" })}${renderButton("Abrir arquivo", "file", { command: "file.openPicker" })}${renderButton("Abrir pasta", "folderOpen", { command: "workspace.open" })}</div><small>Atalhos: Ctrl+N, Ctrl+O, Ctrl+S e Ctrl+Shift+S</small></div>`;
 }
 
-function renderEditorEnvironmentControls(active: OpenDocument): string {
-  const provider = executionEnvironmentProviderForExecution(active);
-  if (!provider) return "";
-
-  const options = state.environments
-    .map((environment) => `<option value="${escapeHtml(environment.id)}" ${environment.id === state.selectedEnvironmentId ? "selected" : ""}>${escapeHtml(environment.name)}${environment.version ? ` · ${escapeHtml(environment.version)}` : ""}</option>`)
+function renderExecutionProfileControls(): string {
+  const profiles = executionProfiles.list();
+  const selectedId = executionProfiles.selectedId();
+  const options = profiles
+    .map((profile) => `<option value="${escapeHtml(profile.id)}" ${profile.id === selectedId ? "selected" : ""}>${escapeHtml(profile.name)}</option>`)
     .join("");
-  const selected = state.environments.find((environment) => environment.id === state.selectedEnvironmentId);
-  const canRun = Boolean(state.selectedEnvironmentId) && !state.environmentBusy;
-  const runTitle = selected
-    ? `Executar ${active.name} com ${selected.name}`
-    : `Selecione um ambiente para executar ${active.name}`;
-
-  return `<div class="editor-environment-controls"><select data-environment-select aria-label="Ambiente selecionado" title="${escapeHtml(selected?.executable ?? selected?.name ?? "Selecionar ambiente")}" ${state.environmentBusy ? "disabled" : ""}><option value="" ${state.selectedEnvironmentId ? "" : "selected"}>${options ? "Selecionar ambiente" : "Sem ambiente"}</option>${options}</select>${renderButton(state.environmentBusy ? "Executando" : "Executar", "play", { command: "execution.run", size: "small", variant: "primary", disabled: !canRun, title: runTitle, className: "editor-run-button" })}</div>`;
+  return `<div class="editor-profile-controls"><select data-execution-profile-select aria-label="Perfil de execução" ${state.executionBusy ? "disabled" : ""}><option value="">${profiles.length ? "Selecionar perfil" : "Sem perfis"}</option>${options}</select>${renderButton("Perfis", "saveAs", { command: "execution.profiles.open", size: "small", title: "Gerenciar perfis de execução" })}${state.executionBusy ? renderButton("Parar", "close", { command: "execution.stop", size: "small", variant: "danger" }) : renderButton("Executar", "play", { command: "execution.profile.run", size: "small", variant: "primary", disabled: !selectedId })}</div>`;
 }
 
 function renderEditor(): string {
@@ -1654,7 +1930,7 @@ function renderEditor(): string {
   if (!active) return renderWelcome();
   const dirty = active.content !== active.savedContent;
   const provider = languageProviderFor(active);
-  const environmentControls = renderEditorEnvironmentControls(active);
+  const profileControls = renderExecutionProfileControls();
   const languageActions = provider
     ? renderButton("Lint", "lint", { command: "language.lint", size: "small", disabled: state.languageActionRunning })
     : "";
@@ -1669,7 +1945,7 @@ function renderEditor(): string {
   const editorSurface = provider
     ? `<div class="highlight-editor"><pre class="syntax-layer" data-syntax-layer>${renderHighlightedSource(active.content, provider)}</pre><textarea class="code-input code-input--highlighted" data-editor spellcheck="false" aria-label="Editor de ${escapeHtml(active.name)}">${escapeHtml(active.content)}</textarea></div>`
     : `<textarea class="code-input" data-editor spellcheck="false" aria-label="Editor de ${escapeHtml(active.name)}">${escapeHtml(active.content)}</textarea>`;
-  return `<div class="code-editor"><div class="editor-toolbar"><span class="editor-toolbar__document">${dirty ? "● " : ""}${escapeHtml(active.name)}${provider ? ` · ${escapeHtml(provider.name)}` : ""}</span><div class="editor-toolbar__actions">${environmentControls}${languageActions}${renderButton("Salvar como", "saveAs", { command: "file.saveAs", iconOnly: true })}${renderButton("Salvar", "save", { command: "file.save", iconOnly: true, variant: "primary" })}</div></div>${diagnostics}${editorSurface}</div>`;
+  return `<div class="code-editor"><div class="editor-toolbar"><span class="editor-toolbar__document">${dirty ? "● " : ""}${escapeHtml(active.name)}${provider ? ` · ${escapeHtml(provider.name)}` : ""}</span><div class="editor-toolbar__actions">${profileControls}${languageActions}${renderButton("Salvar como", "saveAs", { command: "file.saveAs", iconOnly: true })}${renderButton("Salvar", "save", { command: "file.save", iconOnly: true, variant: "primary" })}</div></div>${diagnostics}${editorSurface}</div>`;
 }
 
 async function lintActiveDocument(): Promise<void> {
@@ -1751,8 +2027,6 @@ async function submitAddVenv(path: string, name: string): Promise<void> {
     await refreshEnvironments();
     state.selectedEnvironmentId = environment.id;
     state.environmentForm = undefined;
-    state.environmentBrowser = undefined;
-    state.environmentBrowserOpen = false;
     state.environmentSelectedPath = undefined;
     showNotice(`Ambiente '${environment.name}' adicionado.`);
     persistSession();
@@ -1789,80 +2063,6 @@ async function submitAddProcess(name: string, executable: string): Promise<void>
   }
 }
 
-async function browseEnvironmentDirectory(rawPath?: unknown): Promise<void> {
-  const provider = executionEnvironmentProvider();
-  if (!provider?.browse) throw new Error("O gerenciador não oferece navegação de arquivos.");
-  if (typeof rawPath === "string" && rawPath !== state.environmentBrowser?.path) {
-    state.environmentBrowserFilter = "";
-  }
-  state.environmentBrowserOpen = true;
-  state.environmentBrowserLoading = true;
-  render();
-  try {
-    const rememberedPath = readEnvironmentBrowserPaths()[state.environmentBrowserMode];
-    const path = typeof rawPath === "string" ? rawPath : rememberedPath;
-    state.environmentBrowser = await provider.browse({
-      ...(path ? { path } : {}),
-      mode: state.environmentBrowserMode,
-      includeHidden: state.environmentBrowserIncludeHidden,
-      filter: "",
-    });
-    rememberEnvironmentBrowserPath(state.environmentBrowserMode, state.environmentBrowser.path);
-    state.environmentBrowserSelectedPath = state.environmentBrowserMode === "directory" && state.environmentBrowser.isEnvironment
-      ? state.environmentBrowser.path
-      : undefined;
-  } finally {
-    state.environmentBrowserLoading = false;
-    render();
-  }
-}
-
-function selectEnvironmentFile(rawPath: unknown): void {
-  if (typeof rawPath !== "string") throw new Error("Arquivo inválido.");
-  state.environmentBrowserSelectedPath = rawPath;
-  appRoot.querySelectorAll<HTMLElement>(".environment-browser__entry").forEach((entry) => {
-    entry.classList.toggle("is-selected", entry.dataset.browserPath === rawPath);
-  });
-  const selection = appRoot.querySelector<HTMLElement>("[data-environment-browser-selection]");
-  selection?.classList.remove("is-empty");
-  const selectionTitle = selection?.querySelector<HTMLElement>("strong");
-  if (selectionTitle) selectionTitle.textContent = "Python selecionado";
-  const selectionPath = appRoot.querySelector<HTMLElement>("[data-environment-browser-selection-path]");
-  if (selectionPath) selectionPath.textContent = rawPath;
-  const confirm = appRoot.querySelector<HTMLButtonElement>('[data-command="environment.browser.confirm"]');
-  if (confirm) confirm.disabled = false;
-}
-
-function selectEnvironmentDirectory(rawPath: unknown): void {
-  if (typeof rawPath !== "string") throw new Error("Diretório inválido.");
-  state.environmentBrowserSelectedPath = rawPath;
-  appRoot.querySelectorAll<HTMLElement>(".environment-browser__entry").forEach((entry) => {
-    entry.classList.toggle("is-selected", entry.dataset.browserPath === rawPath);
-  });
-  const selection = appRoot.querySelector<HTMLElement>("[data-environment-browser-selection]");
-  selection?.classList.remove("is-empty");
-  const selectionTitle = selection?.querySelector<HTMLElement>("strong");
-  if (selectionTitle) selectionTitle.textContent = "Venv selecionado";
-  const selectionPath = appRoot.querySelector<HTMLElement>("[data-environment-browser-selection-path]");
-  if (selectionPath) selectionPath.textContent = rawPath;
-  const confirm = appRoot.querySelector<HTMLButtonElement>('[data-command="environment.browser.confirm"]');
-  if (confirm) confirm.disabled = false;
-}
-
-async function confirmEnvironmentBrowserSelection(): Promise<void> {
-  const selectedPath = state.environmentBrowserSelectedPath;
-  if (!selectedPath) throw new Error("Selecione um caminho antes de confirmar.");
-  if (state.environmentBrowserMode === "file") {
-    const provider = executionEnvironmentProvider();
-    if (!provider?.validatePythonExecutable) throw new Error("O gerenciador não valida executáveis Python.");
-    await provider.validatePythonExecutable(selectedPath);
-  }
-  state.environmentSelectedPath = selectedPath;
-  rememberEnvironmentBrowserPath(state.environmentBrowserMode, state.environmentBrowser?.path);
-  state.environmentBrowserOpen = false;
-  state.environmentBrowserSelectedPath = undefined;
-  render();
-}
 
 async function installEnvironmentPackages(): Promise<void> {
   const provider = executionEnvironmentProvider();
@@ -1936,6 +2136,135 @@ async function removeEnvironmentById(rawId: unknown): Promise<void> {
   if (typeof rawId !== "string") throw new Error("Ambiente inválido.");
   state.selectedEnvironmentId = rawId;
   await removeSelectedEnvironment();
+}
+
+async function readHostContext(): Promise<{ workspaceRoot: string }> {
+  const response = await fetch("/core-api/context", { cache: "no-store" });
+  if (!response.ok) throw new Error("Não foi possível obter o contexto de execução do host.");
+  return await response.json() as { workspaceRoot: string };
+}
+
+async function startHostProcess(request: ProcessExecutionRequest): Promise<HostProcessSnapshot> {
+  const response = await fetch("/core-api/execution/processes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  const payload = await response.json() as HostProcessSnapshot | { error?: string };
+  if (!response.ok) throw new Error("error" in payload && payload.error ? payload.error : "Falha ao iniciar processo.");
+  return payload as HostProcessSnapshot;
+}
+
+async function readHostProcess(id: string): Promise<HostProcessSnapshot> {
+  const response = await fetch(`/core-api/execution/processes/${encodeURIComponent(id)}`, { cache: "no-store" });
+  const payload = await response.json() as HostProcessSnapshot | { error?: string };
+  if (!response.ok) throw new Error("error" in payload && payload.error ? payload.error : "Falha ao consultar processo.");
+  return payload as HostProcessSnapshot;
+}
+
+async function stopExecutionProfile(): Promise<void> {
+  if (!state.activeProcessId) return;
+  await fetch(`/core-api/execution/processes/${encodeURIComponent(state.activeProcessId)}`, { method: "DELETE" });
+}
+
+function activeFileDirectory(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  const normalized = path.replaceAll("\\", "/");
+  const separator = normalized.lastIndexOf("/");
+  return separator >= 0 ? normalized.slice(0, separator) || "/" : undefined;
+}
+
+async function runSelectedExecutionProfile(): Promise<void> {
+  const profile = executionProfiles.selected();
+  if (!profile) throw new Error("Selecione um perfil de execução.");
+  const active = activeDocument();
+  const environmentId = profile.environment.mode === "fixed"
+    ? profile.environment.environmentId
+    : undefined;
+  const environment = environmentId
+    ? state.environments.find((candidate) => candidate.id === environmentId)
+    : undefined;
+  if (profile.environment.mode !== "none" && !environment?.executable) {
+    throw new Error("O perfil exige um ambiente com executável disponível.");
+  }
+  if (profile.saveBeforeRun && active && active.content !== active.savedContent) await saveFile(false);
+  const host = await readHostContext();
+  const workspaceRoot = inferWorkspaceRoot({
+    workspaceName: state.workspaceName,
+    pathHints: [
+      ...profile.steps.flatMap((step) => [step.workingDirectory, step.command, step.executable]),
+      environment?.path,
+      environment?.executable,
+      host.workspaceRoot,
+    ],
+  });
+  if (!workspaceRoot) {
+    throw new Error(
+      `O workspace '${state.workspaceName ?? "atual"}' não está vinculado a um caminho no host. `
+      + "Selecione um ambiente localizado dentro do workspace ou configure um diretório de trabalho absoluto.",
+    );
+  }
+  const activePath = active?.path
+    ? `${workspaceRoot}/${active.path.replace(/^\/+/, "")}`
+    : active?.name;
+  const activeDirectory = activeFileDirectory(activePath);
+  const variableContext = {
+    workspaceRoot,
+    ...(activePath ? { activeFile: activePath } : {}),
+    ...(activeDirectory ? { activeFileDirectory: activeDirectory } : {}),
+    ...(active?.name ? { activeFileName: active.name } : {}),
+    ...(environment?.executable ? { environmentExecutable: environment.executable } : {}),
+    ...(environment?.path ? { environmentPath: environment.path } : {}),
+  };
+  const steps = resolveExecutionProfile(profile, variableContext);
+
+  state.executionBusy = true;
+  state.panelVisible = true;
+  state.logs = [`[perfil] ${profile.name}`];
+  state.error = undefined;
+  render();
+  try {
+    for (const step of steps) {
+      const workingDirectory = step.workingDirectory ?? workspaceRoot;
+      state.logs = [
+        ...state.logs,
+        `\n[etapa] ${step.name}`,
+        `[diretório] ${workingDirectory}`,
+        `$ ${step.executable} ${step.arguments.join(" ")}`,
+      ];
+      render();
+      let process = await startHostProcess({
+        executable: step.executable,
+        arguments: step.arguments,
+        workingDirectory,
+        ...(step.environmentVariables ? { environmentVariables: step.environmentVariables } : {}),
+      });
+      state.activeProcessId = process.id;
+      while (process.status === "running") {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        process = await readHostProcess(process.id);
+        state.logs = [
+          `[perfil] ${profile.name}`,
+          `[etapa] ${step.name}`,
+          `[diretório] ${workingDirectory}`,
+          `$ ${step.executable} ${step.arguments.join(" ")}`,
+          process.stdout,
+          process.stderr,
+        ].filter(Boolean);
+        const output = appRoot.querySelector<HTMLElement>(".output");
+        if (output) output.scrollTop = output.scrollHeight;
+      }
+      state.activeProcessId = undefined;
+      if (process.exitCode !== 0 && !step.continueOnError) {
+        throw new Error(`A etapa '${step.name}' terminou com código ${process.exitCode}.`);
+      }
+    }
+    showNotice(`Perfil '${profile.name}' concluído.`);
+  } finally {
+    state.executionBusy = false;
+    state.activeProcessId = undefined;
+    render();
+  }
 }
 
 async function runWithSelectedEnvironment(): Promise<void> {
@@ -2107,7 +2436,8 @@ function render(): void {
         <span>Texto</span>
       </footer>
       ${renderNotice()}
-      ${renderEnvironmentBrowserModal()}
+      ${renderExecutionProfilesModal()}
+      ${renderSharedFileBrowserModal()}
     </div>
   `;
   bindInteractions();
@@ -2115,12 +2445,14 @@ function render(): void {
 }
 
 function bindInteractions(): void {
+  appRoot.querySelector<HTMLInputElement>("[data-file-browser-filter]")?.addEventListener("input", (event) => updateFileBrowserFilter((event.currentTarget as HTMLInputElement).value));
+  appRoot.querySelector<HTMLInputElement>("[data-file-browser-hidden]")?.addEventListener("change", (event) => { void fileBrowser.setIncludeHidden((event.currentTarget as HTMLInputElement).checked).catch(showError); });
   appRoot.querySelectorAll<HTMLElement>("[data-command]").forEach((element) => {
     element.addEventListener("click", (event) => {
       event.stopPropagation();
       const command = element.dataset.command;
       if (!command) return;
-      const argument = element.dataset.pluginUrl ?? element.dataset.pluginId ?? element.dataset.environmentId ?? element.dataset.browserPath ?? element.dataset.entryPath ?? element.dataset.filePath;
+      const argument = element.dataset.pluginUrl ?? element.dataset.pluginId ?? element.dataset.profileId ?? element.dataset.profileExecutable ?? element.dataset.profileVariable ?? element.dataset.environmentId ?? element.dataset.browserPath ?? element.dataset.entryPath ?? element.dataset.filePath;
       void commands.execute(command, argument).catch(showError);
     });
   });
@@ -2214,6 +2546,74 @@ function bindInteractions(): void {
     render();
     persistSession();
   });
+  appRoot.querySelector<HTMLSelectElement>("[data-execution-profile-select]")?.addEventListener("change", (event) => {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    executionProfiles.select(value || undefined);
+    persistExecutionProfiles();
+    render();
+  });
+  appRoot.querySelector<HTMLSelectElement>('[data-form="execution-profile"] select[name="environmentId"]')
+    ?.addEventListener("change", (event) => {
+      const select = event.currentTarget as HTMLSelectElement;
+      const form = select.form;
+      const executable = form?.elements.namedItem("executable") as HTMLInputElement | null;
+      const executableDisplay = form?.querySelector<HTMLInputElement>("[data-profile-executable-display]");
+      const description = form?.querySelector<HTMLElement>("[data-profile-environment-description]");
+      const option = state.executionProfileExecutableOptions.find(
+        (candidate) => candidate.environmentId === select.value,
+      );
+      if (select.value && option) {
+        if (executable) executable.value = option.value;
+        if (executableDisplay) {
+          executableDisplay.value = environmentExecutableDisplay(option);
+          executableDisplay.readOnly = true;
+        }
+        if (description) description.textContent = option.description ?? option.label;
+        if (form) executionProfileDraft = executionProfileFromForm(form);
+        return;
+      }
+      if (executable?.value === "${environmentExecutable}") executable.value = "";
+      if (executableDisplay) {
+        executableDisplay.value = executable?.value ?? "";
+        executableDisplay.readOnly = false;
+      }
+      if (description) description.textContent = "O perfil executará sem ambiente vinculado.";
+      if (form) executionProfileDraft = executionProfileFromForm(form);
+    });
+  const executionProfileForm = appRoot.querySelector<HTMLFormElement>('[data-form="execution-profile"]');
+  executionProfileForm?.querySelector<HTMLInputElement>("[data-profile-executable-display]")
+    ?.addEventListener("input", (event) => {
+      const display = event.currentTarget as HTMLInputElement;
+      const executable = display.form?.elements.namedItem("executable") as HTMLInputElement | null;
+      if (executable && !display.readOnly) executable.value = display.value;
+    });
+  executionProfileForm?.querySelector<HTMLSelectElement>('select[name="workingDirectoryMode"]')
+    ?.addEventListener("change", (event) => {
+      const mode = (event.currentTarget as HTMLSelectElement).value;
+      const custom = executionProfileForm.querySelector<HTMLElement>("[data-profile-custom-working-directory]");
+      if (custom) custom.hidden = mode !== "custom";
+    });
+  executionProfileForm?.addEventListener("input", () => {
+    executionProfileDraft = executionProfileFromForm(executionProfileForm);
+  });
+  executionProfileForm?.addEventListener("change", () => {
+    executionProfileDraft = executionProfileFromForm(executionProfileForm);
+  });
+  executionProfileForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const profile = executionProfileFromForm(event.currentTarget as HTMLFormElement);
+    try {
+      executionProfiles.upsert(profile);
+      executionProfiles.select(profile.id);
+      persistExecutionProfiles();
+      executionProfileDraft = undefined;
+      state.executionProfilesOpen = false;
+      state.executionProfileEditingId = undefined;
+      showNotice(`Perfil '${profile.name}' salvo.`);
+    } catch (error) {
+      showError(error);
+    }
+  });
   appRoot.querySelector<HTMLFormElement>('[data-form="environment-create-venv"]')?.addEventListener("submit", (event) => {
     event.preventDefault();
     const name = new FormData(event.currentTarget as HTMLFormElement).get("name");
@@ -2238,34 +2638,6 @@ function bindInteractions(): void {
       typeof name === "string" ? name : "",
       typeof executable === "string" ? executable : "",
     ).catch(showError);
-  });
-  appRoot.querySelector<HTMLInputElement>("[data-environment-browser-filter]")?.addEventListener("input", (event) => {
-    const input = event.currentTarget as HTMLInputElement;
-    state.environmentBrowserFilter = input.value;
-    const normalizedFilter = input.value.trim().toLocaleLowerCase();
-    let visibleCount = 0;
-    appRoot.querySelectorAll<HTMLElement>(".environment-browser__entry").forEach((entry) => {
-      const visible = !normalizedFilter || (entry.dataset.browserName ?? "").includes(normalizedFilter);
-      entry.hidden = !visible;
-      if (visible) visibleCount += 1;
-    });
-    const resultCount = appRoot.querySelector<HTMLElement>("[data-environment-browser-result-count]");
-    if (resultCount) resultCount.textContent = `${visibleCount} ${visibleCount === 1 ? "item" : "itens"}`;
-    const empty = appRoot.querySelector<HTMLElement>("[data-environment-browser-empty]");
-    if (empty) empty.hidden = visibleCount > 0;
-    const clearButton = appRoot.querySelector<HTMLButtonElement>("[data-environment-browser-filter-clear]");
-    if (clearButton) clearButton.disabled = !input.value;
-  });
-  appRoot.querySelector<HTMLButtonElement>("[data-environment-browser-filter-clear]")?.addEventListener("click", () => {
-    const input = appRoot.querySelector<HTMLInputElement>("[data-environment-browser-filter]");
-    if (!input) return;
-    input.value = "";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.focus();
-  });
-  appRoot.querySelector<HTMLInputElement>("[data-environment-browser-hidden]")?.addEventListener("change", (event) => {
-    state.environmentBrowserIncludeHidden = (event.currentTarget as HTMLInputElement).checked;
-    void browseEnvironmentDirectory(state.environmentBrowser?.path).catch(showError);
   });
   appRoot.querySelector<HTMLFormElement>('[data-form="environment-packages"]')?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2317,49 +2689,11 @@ commands.register("environment.addVenv", async () => {
   state.sidebarView = "environments";
   state.sidebarVisible = true;
   state.environmentForm = "addVenv";
-  state.environmentBrowser = undefined;
-  state.environmentBrowserOpen = false;
-  state.environmentBrowserMode = "directory";
-  state.environmentBrowserFilter = "";
-  state.environmentBrowserIncludeHidden = false;
-  state.environmentBrowserSelectedPath = undefined;
   state.environmentSelectedPath = undefined;
   render();
 });
-commands.register("environment.addProcess", async () => {
-  state.sidebarView = "environments";
-  state.sidebarVisible = true;
-  state.environmentForm = "addProcess";
-  state.environmentBrowser = undefined;
-  state.environmentBrowserOpen = false;
-  state.environmentBrowserMode = "file";
-  state.environmentBrowserFilter = "";
-  state.environmentBrowserIncludeHidden = false;
-  state.environmentBrowserSelectedPath = undefined;
-  state.environmentSelectedPath = undefined;
-  render();
-});
-commands.register("environment.browser.open", () => {
-  state.environmentBrowserMode = "directory";
-  state.environmentBrowserFilter = "";
-  state.environmentBrowserSelectedPath = undefined;
-  return browseEnvironmentDirectory(readEnvironmentBrowserPaths().directory);
-});
-commands.register("environment.browser.openFile", () => {
-  state.environmentBrowserMode = "file";
-  state.environmentBrowserFilter = "";
-  state.environmentBrowserSelectedPath = undefined;
-  return browseEnvironmentDirectory(readEnvironmentBrowserPaths().file);
-});
-commands.register("environment.browser.close", () => {
-  state.environmentBrowserOpen = false;
-  state.environmentBrowserSelectedPath = undefined;
-  render();
-});
-commands.register("environment.browse", browseEnvironmentDirectory);
-commands.register("environment.selectFile", selectEnvironmentFile);
-commands.register("environment.selectDirectory", selectEnvironmentDirectory);
-commands.register("environment.browser.confirm", confirmEnvironmentBrowserSelection);
+commands.register("environment.browser.open", () => openEnvironmentFileBrowser("directory"));
+commands.register("environment.browser.openFile", () => openEnvironmentFileBrowser("file"));
 commands.register("environment.packages", installEnvironmentPackages);
 commands.register("environment.remove", removeSelectedEnvironment);
 commands.register("environment.select", selectEnvironment);
@@ -2373,11 +2707,88 @@ commands.register("environment.runProfile", () => {
 });
 commands.register("environment.form.cancel", () => {
   state.environmentForm = undefined;
-  state.environmentBrowser = undefined;
-  state.environmentBrowserOpen = false;
   state.environmentSelectedPath = undefined;
   render();
 });
+commands.register("execution.profiles.open", () => {
+  state.executionProfilesOpen = true;
+  state.executionProfileEditingId = executionProfiles.selectedId();
+  executionProfileDraft = state.executionProfileEditingId
+    ? executionProfiles.get(state.executionProfileEditingId)
+    : emptyExecutionProfile();
+  void refreshExecutionProfileContributions().then(render).catch(showError);
+  render();
+});
+commands.register("execution.profiles.close", () => {
+  executionProfileDraft = undefined;
+  state.executionProfilesOpen = false;
+  state.executionProfileEditingId = undefined;
+  render();
+});
+commands.register("execution.profile.new", () => {
+  state.executionProfileEditingId = undefined;
+  executionProfileDraft = emptyExecutionProfile();
+  render();
+});
+commands.register("execution.profile.edit", (rawId: unknown) => {
+  if (typeof rawId !== "string") throw new Error("Perfil inválido.");
+  const profile = executionProfiles.get(rawId);
+  if (!profile) throw new Error("Perfil inválido.");
+  state.executionProfileEditingId = rawId;
+  executionProfileDraft = profile;
+  render();
+});
+commands.register("execution.profile.select", (rawId: unknown) => {
+  if (typeof rawId !== "string") throw new Error("Perfil inválido.");
+  executionProfiles.select(rawId);
+  persistExecutionProfiles();
+  render();
+});
+commands.register("execution.profile.remove", (rawId: unknown) => {
+  if (typeof rawId !== "string") throw new Error("Perfil inválido.");
+  executionProfiles.remove(rawId);
+  persistExecutionProfiles();
+  if (state.executionProfileEditingId === rawId) {
+    state.executionProfileEditingId = undefined;
+    executionProfileDraft = emptyExecutionProfile();
+  }
+  render();
+});
+commands.register("execution.profile.useExecutable", (rawValue: unknown) => {
+  if (typeof rawValue !== "string") return;
+  const form = appRoot.querySelector<HTMLFormElement>('[data-form="execution-profile"]');
+  const executable = form?.elements.namedItem("executable") as HTMLInputElement | null;
+  const display = form?.querySelector<HTMLInputElement>("[data-profile-executable-display]");
+  if (executable) executable.value = rawValue;
+  if (display) display.value = rawValue;
+});
+commands.register("fileBrowser.close", () => fileBrowser.close());
+commands.register("fileBrowser.activate", (path: unknown) => typeof path === "string" ? fileBrowser.activate(path) : undefined);
+commands.register("fileBrowser.parent", () => fileBrowser.navigate(fileBrowser.snapshot().listing?.parentPath));
+commands.register("fileBrowser.confirm", () => fileBrowser.confirm());
+commands.register("fileBrowser.clearFilter", () => {
+  const input = appRoot.querySelector<HTMLInputElement>("[data-file-browser-filter]");
+  if (input) input.value = "";
+  updateFileBrowserFilter("");
+  input?.focus();
+});
+commands.register("execution.profile.pickCommandFile", openProfileCommandFileBrowser);
+commands.register("execution.profile.insertVariable", (rawName: unknown) => {
+  if (typeof rawName !== "string") return;
+  const form = appRoot.querySelector<HTMLFormElement>('[data-form="execution-profile"]');
+  const active = document.activeElement;
+  const target = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+    ? active
+    : form?.elements.namedItem("parameters") as HTMLTextAreaElement | null;
+  if (!target) return;
+  const token = `\${${rawName}}`;
+  const start = target.selectionStart ?? target.value.length;
+  const end = target.selectionEnd ?? start;
+  target.setRangeText(token, start, end, "end");
+  target.focus();
+});
+commands.register("execution.profile.run", runSelectedExecutionProfile);
+commands.register("execution.stop", stopExecutionProfile);
 commands.register("execution.run", runWithSelectedEnvironment);
 commands.register("file.close", closeFile);
 commands.register("file.activate", activateFile);
@@ -2434,18 +2845,17 @@ events.on<{ name: string }>("workspace.opened", ({ name }) => log(`workspace.ope
 events.on<{ name: string }>("file.opened", ({ name }) => log(`file.opened: ${name}`));
 events.on<{ name: string }>("file.saved", ({ name }) => log(`file.saved: ${name}`));
 events.on<PluginRecord>("plugin.installed", (plugin) => log(`plugin.installed: ${plugin.manifest.id}@${plugin.manifest.version}`));
+events.on("execution.profile.contribution.registered", async () => {
+  await refreshExecutionProfileContributions();
+  if (state.executionProfilesOpen) render();
+});
 
 capabilities.register("core.commands", commands);
 capabilities.register("core.events", events);
 capabilities.register("core.plugins", plugins);
 
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && state.environmentBrowserOpen) {
-    event.preventDefault();
-    state.environmentBrowserOpen = false;
-    render();
-    return;
-  }
+  if (event.key === "Escape" && fileBrowser.snapshot().open) { event.preventDefault(); fileBrowser.close(); return; }
   if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "s") {
     event.preventDefault(); void commands.execute("file.saveAs").catch(showError); return;
   }

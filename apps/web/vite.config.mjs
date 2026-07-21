@@ -2,6 +2,7 @@ import { createReadStream, existsSync, readFileSync, readdirSync, statSync } fro
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { defineConfig } from "vite";
+import { createExecutionBackend } from "./execution-backend.mjs";
 
 const configDirectory = dirname(fileURLToPath(import.meta.url));
 const pluginsRoot = resolve(configDirectory, "../../plugins");
@@ -15,6 +16,7 @@ const contentTypes = {
 
 function developmentPluginServer() {
   const backendHandlers = new Map();
+  const executionBackend = createExecutionBackend({ workspaceRoot: resolve(configDirectory, "../..") });
 
   async function resolveBackend(pluginId) {
     if (backendHandlers.has(pluginId)) return backendHandlers.get(pluginId);
@@ -40,6 +42,12 @@ function developmentPluginServer() {
 
   const middleware = (request, response, next) => {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
+
+    if (requestUrl.pathname.startsWith("/core-api/")) {
+      const relativePath = requestUrl.pathname.slice("/core-api".length);
+      void executionBackend(request, response, relativePath);
+      return;
+    }
 
     if (requestUrl.pathname.startsWith("/plugin-api/")) {
       const segments = requestUrl.pathname.slice("/plugin-api/".length).split("/");

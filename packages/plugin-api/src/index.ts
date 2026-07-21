@@ -122,6 +122,98 @@ export interface ScriptExecutionResult {
   readonly durationMs: number;
 }
 
+export type ExecutionProfileEnvironmentBinding =
+  | { readonly mode: "none" }
+  | { readonly mode: "fixed"; readonly environmentId: string };
+
+export interface ExecutionProfileStep {
+  readonly id: string;
+  readonly name: string;
+  readonly executable: string;
+  readonly command: string;
+  readonly parameters: readonly string[];
+  readonly workingDirectory?: string;
+  readonly environmentVariables?: Readonly<Record<string, string>>;
+  readonly continueOnError?: boolean;
+}
+
+export interface ExecutionProfile {
+  readonly id: string;
+  readonly name: string;
+  readonly environment: ExecutionProfileEnvironmentBinding;
+  readonly steps: readonly ExecutionProfileStep[];
+  readonly saveBeforeRun?: boolean;
+}
+
+export interface ExecutionProfileVariableContext {
+  readonly workspaceRoot?: string;
+  readonly activeFile?: string;
+  readonly activeFileDirectory?: string;
+  readonly activeFileName?: string;
+  readonly environmentExecutable?: string;
+  readonly environmentPath?: string;
+}
+
+export interface ResolvedExecutionProfileStep {
+  readonly id: string;
+  readonly name: string;
+  readonly executable: string;
+  readonly arguments: readonly string[];
+  readonly workingDirectory?: string;
+  readonly environmentVariables?: Readonly<Record<string, string>>;
+  readonly continueOnError: boolean;
+}
+
+export interface ProcessExecutionRequest {
+  readonly executable: string;
+  readonly arguments: readonly string[];
+  readonly workingDirectory?: string;
+  readonly environmentVariables?: Readonly<Record<string, string>>;
+}
+
+export interface ExecutionProfileContributionContext {
+  readonly workspaceName?: string;
+  readonly activeFileName?: string;
+  readonly activeFilePath?: string;
+}
+
+export interface ExecutionProfileExecutableOption {
+  readonly id: string;
+  readonly label: string;
+  readonly value: string;
+  readonly description?: string;
+  readonly environmentId?: string;
+}
+
+export interface ExecutionProfileVariableContribution {
+  readonly name: string;
+  readonly label: string;
+  readonly description?: string;
+}
+
+export interface ExecutionProfilePresetContribution {
+  readonly id: string;
+  readonly label: string;
+  readonly description?: string;
+  create(context: ExecutionProfileContributionContext): ExecutionProfile;
+}
+
+export interface ExecutionProfileContributionProvider {
+  readonly id: string;
+  readonly name: string;
+  executableOptions?(
+    context: ExecutionProfileContributionContext,
+  ): Promise<readonly ExecutionProfileExecutableOption[]> | readonly ExecutionProfileExecutableOption[];
+  variables?(
+    context: ExecutionProfileContributionContext,
+  ): Promise<readonly ExecutionProfileVariableContribution[]> | readonly ExecutionProfileVariableContribution[];
+  presets?(
+    context: ExecutionProfileContributionContext,
+  ): Promise<readonly ExecutionProfilePresetContribution[]> | readonly ExecutionProfilePresetContribution[];
+}
+
+export const EXECUTION_PROFILE_CONTRIBUTION_CAPABILITY = "execution.profile.contribution";
+
 export interface LanguageProvider {
   readonly id: string;
   readonly name: string;
