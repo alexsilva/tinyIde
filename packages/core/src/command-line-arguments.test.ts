@@ -37,4 +37,11 @@ describe("command-line arguments", () => {
       "aspas não fechadas",
     );
   });
+
+  it("supports single quotes, escaped whitespace and a trailing escape", () => {
+    expect(parseCommandLineArguments("'a b' c\\ d tail\\")).toEqual(["a b", "c d", "tail\\"]);
+    expect(parseCommandLineArguments('"a\\"b"')).toEqual(['a"b']);
+    expect(parseCommandLineArguments("   ")).toEqual([]);
+    expect(parseCommandLineArguments("a   b")).toEqual(["a", "b"]);
+  });
 });

@@ -63,14 +63,26 @@ export class FileBrowserController {
   private loading = false;
   private openState = false;
   private requestVersion = 0;
+  private visibleEntriesCache: readonly FileBrowserEntry[] = [];
+  private visibleEntriesCacheListing: FileBrowserListing | undefined;
+  private visibleEntriesCacheFilter = "";
 
   constructor(private readonly onChange: () => void) {}
 
   snapshot(): FileBrowserSnapshot {
     const normalizedFilter = this.filter.trim().toLocaleLowerCase();
-    const visibleEntries = (this.listing?.entries ?? []).filter(
-      (entry) => !normalizedFilter || entry.name.toLocaleLowerCase().includes(normalizedFilter),
-    );
+    if (
+      this.visibleEntriesCacheListing !== this.listing
+      || this.visibleEntriesCacheFilter !== normalizedFilter
+    ) {
+      this.visibleEntriesCache = normalizedFilter
+        ? (this.listing?.entries ?? []).filter(
+            (entry) => entry.name.toLocaleLowerCase().includes(normalizedFilter),
+          )
+        : (this.listing?.entries ?? []);
+      this.visibleEntriesCacheListing = this.listing;
+      this.visibleEntriesCacheFilter = normalizedFilter;
+    }
     return {
       open: this.openState,
       loading: this.loading,
@@ -79,7 +91,7 @@ export class FileBrowserController {
       allowHiddenToggle: this.options?.allowHiddenToggle === true,
       ...(this.selectedPath ? { selectedPath: this.selectedPath } : {}),
       ...(this.listing ? { listing: this.listing } : {}),
-      visibleEntries,
+      visibleEntries: this.visibleEntriesCache,
       ...(this.options ? { options: this.options } : {}),
     };
   }
@@ -125,6 +137,7 @@ export class FileBrowserController {
 
   setFilter(filter: string): void {
     this.filter = filter;
+    this.onChange();
   }
 
   async setIncludeHidden(includeHidden: boolean): Promise<void> {
@@ -142,8 +155,7 @@ export class FileBrowserController {
   }
 
   private async load(path?: string): Promise<void> {
-    const options = this.options;
-    if (!options) return;
+    const options = this.options!;
     const version = ++this.requestVersion;
     this.loading = true;
     this.onChange();
@@ -152,11 +164,11 @@ export class FileBrowserController {
         ...(path ? { path } : {}),
         includeHidden: this.includeHidden,
       });
-      if (version !== this.requestVersion || options !== this.options) return;
+      if (version !== this.requestVersion) return;
       this.listing = listing;
       this.selectedPath = undefined;
     } finally {
-      if (version === this.requestVersion && options === this.options) {
+      if (version === this.requestVersion) {
         this.loading = false;
         this.onChange();
       }

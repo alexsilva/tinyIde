@@ -29,4 +29,16 @@ describe("inferWorkspaceRoot", () => {
       pathHints: ["/mnt/Program/PycharmProjects/tinyIde"],
     })).toBeUndefined();
   });
+
+  it("uses the first usable hint without a workspace name", () => {
+    expect(inferWorkspaceRoot({ workspaceName: " ", pathHints: [undefined, " C:\\dev\\project\\ "] })).toBe("C:/dev/project");
+    expect(inferWorkspaceRoot({ pathHints: [undefined, "  "] })).toBeUndefined();
+  });
+
+  it("handles root and ignores templates or empty normalized paths", () => {
+    expect(inferWorkspaceRoot({ workspaceName: "", pathHints: ["/"] })).toBe("/");
+    expect(inferWorkspaceRoot({ workspaceName: "project", pathHints: ["${workspaceRoot}/project", "   "] })).toBeUndefined();
+    expect(inferWorkspaceRoot({ workspaceName: "project", pathHints: ["/project"] })).toBe("/project");
+    expect(inferWorkspaceRoot({ workspaceName: "project", pathHints: [undefined, "", "/other"] })).toBeUndefined();
+  });
 });

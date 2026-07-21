@@ -23,8 +23,7 @@ export function inferWorkspaceRoot(input: WorkspaceRootResolutionInput): string 
     const segments = normalized.split("/");
     for (let index = segments.length - 1; index >= 0; index -= 1) {
       if (segments[index] !== workspaceName) continue;
-      const resolved = segments.slice(0, index + 1).join("/");
-      return resolved || "/";
+      return segments.slice(0, index + 1).join("/");
     }
   }
 

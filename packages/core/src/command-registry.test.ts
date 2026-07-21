@@ -30,4 +30,21 @@ describe("CommandRegistry", () => {
 
     await expect(registry.execute("sample.command")).rejects.toThrow("Unknown command");
   });
+
+  it("normalizes ids, lists commands and ignores repeated disposal", () => {
+    const registry = new CommandRegistry();
+    const disposable = registry.register(" sample.z ", () => undefined);
+    registry.register("sample.a", () => undefined);
+
+    expect(registry.has("sample.z")).toBe(true);
+    expect(registry.list()).toEqual(["sample.a", "sample.z"]);
+    disposable.dispose();
+    disposable.dispose();
+    expect(registry.has("sample.z")).toBe(false);
+  });
+
+  it("rejects empty command ids", () => {
+    const registry = new CommandRegistry();
+    expect(() => registry.register("  ", () => undefined)).toThrow("Command id cannot be empty.");
+  });
 });

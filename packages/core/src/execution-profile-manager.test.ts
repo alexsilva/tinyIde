@@ -42,6 +42,27 @@ describe("ExecutionProfileManager", () => {
     expect(listedStep).toBeDefined();
     (listedStep?.parameters as string[]).push("mutated");
     expect(manager.get(profile.id)?.steps[0]?.parameters).toHaveLength(2);
+    const { environmentVariables: _environmentVariables, ...stepWithoutEnvironmentVariables } = profile.steps[0]!;
+    const withoutEnvironmentVariables = new ExecutionProfileManager([{
+      ...profile,
+      steps: [stepWithoutEnvironmentVariables],
+    }]);
+    expect(withoutEnvironmentVariables.list()[0]?.steps[0]?.environmentVariables).toBeUndefined();
+  });
+
+  it("handles selection and removal edge cases", () => {
+    const manager = new ExecutionProfileManager([profile], "missing");
+    expect(manager.selectedId()).toBeUndefined();
+    expect(manager.remove("missing")).toBe(false);
+    expect(() => manager.select("missing")).toThrow("Perfil não encontrado");
+    manager.select(profile.id);
+    expect(manager.selectedId()).toBe(profile.id);
+    manager.select(undefined);
+    expect(manager.selected()).toBeUndefined();
+    expect(() => manager.upsert({ ...profile, id: " " })).toThrow("identificador");
+    const selected = new ExecutionProfileManager([profile], profile.id);
+    expect(selected.selectedId()).toBe(profile.id);
+    expect(selected.get("missing")).toBeUndefined();
   });
 });
 
@@ -91,5 +112,36 @@ describe("execution profile resolution", () => {
       "localhost:8022",
       "value with spaces",
     ]);
+  });
+
+  it("validates profile and step fields and optional branches", () => {
+    expect(() => resolveExecutionProfile({ ...profile, name: " " }, {})).toThrow("perfil precisa de um nome");
+    expect(() => resolveExecutionProfile({ ...profile, steps: [] }, {})).toThrow("ao menos uma etapa");
+    expect(() => resolveExecutionProfile({ ...profile, steps: [{ ...profile.steps[0]!, id: " " }] }, {})).toThrow("identificador");
+    expect(() => resolveExecutionProfile({ ...profile, steps: [{ ...profile.steps[0]!, name: " " }] }, {})).toThrow("precisa de um nome");
+    expect(() => resolveExecutionProfile({ ...profile, steps: [{ ...profile.steps[0]!, executable: " " }] }, {})).toThrow("executável");
+
+    const {
+      workingDirectory: _workingDirectory,
+      environmentVariables: _optionalEnvironmentVariables,
+      ...minimalStep
+    } = profile.steps[0]!;
+    const resolved = resolveExecutionProfile({
+      ...profile,
+      steps: [{
+        ...minimalStep,
+        executable: "python",
+        command: " ",
+        parameters: [],
+        continueOnError: true,
+      }],
+    }, {});
+    expect(resolved[0]).toEqual({
+      id: "run",
+      name: "Executar processo",
+      executable: "python",
+      arguments: [],
+      continueOnError: true,
+    });
   });
 });

@@ -27,4 +27,23 @@ describe("EventBus", () => {
 
     expect(listener).not.toHaveBeenCalled();
   });
+
+  it("awaits listeners sequentially and preserves the emission snapshot", async () => {
+    const events = new EventBus();
+    const order: string[] = [];
+    let secondRegistration: { dispose(): void };
+    events.on("sample", async () => {
+      order.push("first:start");
+      secondRegistration.dispose();
+      await Promise.resolve();
+      order.push("first:end");
+    });
+    secondRegistration = events.on("sample", () => {
+      order.push("second");
+    });
+
+    await events.emit("sample", undefined);
+    expect(order).toEqual(["first:start", "first:end", "second"]);
+    await events.emit("missing", undefined);
+  });
 });
