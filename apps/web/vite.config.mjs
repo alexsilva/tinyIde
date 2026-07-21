@@ -18,6 +18,7 @@ const contentTypes = {
 function developmentPluginServer() {
   const backendHandlers = new Map();
   const hostRoot = resolve(configDirectory, "../..");
+  const workspaceSearchRoot = resolve(process.env.TINYIDE_WORKSPACES_ROOT ?? dirname(hostRoot));
   let activeWorkspaceRoot = hostRoot;
   const executionBackend = createExecutionBackend({ workspaceRoot: () => activeWorkspaceRoot });
 
@@ -27,15 +28,15 @@ function developmentPluginServer() {
     return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
   }
 
-  function isInsideHostRoot(candidate) {
-    const relativePath = relative(hostRoot, candidate);
+  function isInsideWorkspaceSearchRoot(candidate) {
+    const relativePath = relative(workspaceSearchRoot, candidate);
     return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
   }
 
   function findWorkspaceByName(name) {
     if (basename(hostRoot) === name) return hostRoot;
     const ignored = new Set([".git", ".venv", "node_modules", "dist", "coverage"]);
-    const queue = [{ path: hostRoot, depth: 0 }];
+    const queue = [{ path: workspaceSearchRoot, depth: 0 }];
     const matches = [];
     while (queue.length) {
       const current = queue.shift();
@@ -43,16 +44,19 @@ function developmentPluginServer() {
       for (const entry of readdirSync(current.path, { withFileTypes: true })) {
         if (!entry.isDirectory() || ignored.has(entry.name)) continue;
         const directoryPath = join(current.path, entry.name);
-        if (entry.name === name) matches.push(directoryPath);
-        if (matches.length > 1) break;
+        if (entry.name === name) matches.push({ path: directoryPath, depth: current.depth + 1 });
         queue.push({ path: directoryPath, depth: current.depth + 1 });
       }
-      if (matches.length > 1) break;
     }
-    if (matches.length > 1) {
-      throw new Error(`Há mais de um diretório chamado '${name}' dentro da raiz do host.`);
+    if (matches.length) {
+      const minimumDepth = Math.min(...matches.map((match) => match.depth));
+      const nearestMatches = matches.filter((match) => match.depth === minimumDepth);
+      if (nearestMatches.length > 1) {
+        throw new Error(`Há mais de um diretório chamado '${name}' no mesmo nível da raiz de workspaces.`);
+      }
+      return nearestMatches[0].path;
     }
-    return matches[0];
+    return undefined;
   }
 
   function resolveWorkspaceSelection(payload) {
@@ -62,15 +66,15 @@ function developmentPluginServer() {
     }
     if (typeof payload.path === "string" && payload.path.trim()) {
       const candidate = resolve(payload.path.trim());
-      if (!isInsideHostRoot(candidate) || !existsSync(candidate) || !statSync(candidate).isDirectory()) {
-        throw new Error("O workspace salvo não está disponível dentro da raiz do host.");
+      if (!isInsideWorkspaceSearchRoot(candidate) || !existsSync(candidate) || !statSync(candidate).isDirectory()) {
+        throw new Error("O workspace salvo não está disponível dentro da raiz configurada para workspaces.");
       }
       if (basename(candidate) !== name) throw new Error("O caminho salvo não corresponde ao workspace selecionado.");
       return candidate;
     }
     const candidate = findWorkspaceByName(name);
     if (!candidate) {
-      throw new Error(`Não foi possível vincular o diretório '${name}' à raiz do host '${hostRoot}'.`);
+      throw new Error(`Não foi possível vincular o diretório '${name}' à raiz de workspaces '${workspaceSearchRoot}'.`);
     }
     return candidate;
   }
