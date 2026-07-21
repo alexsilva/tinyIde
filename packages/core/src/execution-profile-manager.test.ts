@@ -70,4 +70,26 @@ describe("execution profile resolution", () => {
       "Variável de execução não disponível",
     );
   });
+
+  it("trims command boundaries without changing parameter contents", () => {
+    const resolved = resolveExecutionProfile({
+      ...profile,
+      steps: [{
+        ...profile.steps[0]!,
+        command: "  backend/manage.py  ",
+        parameters: ["runserver", "localhost:8022", "value with spaces"],
+      }],
+    }, {
+      workspaceRoot: "/project",
+      activeFile: "/project/backend/manage.py",
+      environmentExecutable: "/project/.venv/bin/python",
+    });
+
+    expect(resolved[0]?.arguments).toEqual([
+      "backend/manage.py",
+      "runserver",
+      "localhost:8022",
+      "value with spaces",
+    ]);
+  });
 });

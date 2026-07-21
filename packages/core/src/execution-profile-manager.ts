@@ -57,15 +57,15 @@ export function resolveExecutionProfile(
     return {
       id: step.id,
       name: step.name,
-      executable: expandExecutionVariables(step.executable, context),
+      executable: expandExecutionVariables(step.executable.trim(), context),
       arguments: [
         ...(step.command.trim()
-          ? [expandExecutionVariables(step.command, context)]
+          ? [expandExecutionVariables(step.command.trim(), context)]
           : []),
         ...step.parameters.map((parameter) => expandExecutionVariables(parameter, context)),
       ],
       ...(step.workingDirectory
-        ? { workingDirectory: expandExecutionVariables(step.workingDirectory, context) }
+        ? { workingDirectory: expandExecutionVariables(step.workingDirectory.trim(), context) }
         : {}),
       ...(environmentVariables ? { environmentVariables } : {}),
       continueOnError: step.continueOnError === true,

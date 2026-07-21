@@ -20,6 +20,8 @@ export interface BrowserDirectoryHandle {
   readonly kind: "directory";
   readonly name: string;
   values(): AsyncIterableIterator<BrowserFileHandle | BrowserDirectoryHandle>;
+  getFileHandle(name: string, options?: { readonly create?: boolean }): Promise<BrowserFileHandle>;
+  getDirectoryHandle(name: string, options?: { readonly create?: boolean }): Promise<BrowserDirectoryHandle>;
   queryPermission?(descriptor: BrowserPermissionDescriptor): Promise<PermissionState>;
   requestPermission?(descriptor: BrowserPermissionDescriptor): Promise<PermissionState>;
 }
@@ -28,7 +30,7 @@ export interface WorkspaceEntry {
   readonly name: string;
   readonly path: string;
   readonly kind: "file" | "directory";
-  readonly handle: BrowserFileHandle | BrowserDirectoryHandle;
+  readonly handle?: BrowserFileHandle | BrowserDirectoryHandle;
   readonly children?: readonly WorkspaceEntry[];
 }
 
@@ -39,6 +41,10 @@ export interface OpenDocument {
   readonly handle?: BrowserFileHandle;
   readonly content: string;
   readonly savedContent: string;
+  readonly selectionStart: number;
+  readonly selectionEnd: number;
+  readonly scrollTop: number;
+  readonly scrollLeft: number;
 }
 
 declare global {
@@ -90,6 +96,10 @@ export async function readFileDocument(
     handle,
     content,
     savedContent: content,
+    selectionStart: 0,
+    selectionEnd: 0,
+    scrollTop: 0,
+    scrollLeft: 0,
   };
 }
 

@@ -224,6 +224,16 @@ export interface LanguageProvider {
 
 export const LANGUAGE_PROVIDER_CAPABILITY = "language.provider";
 
+export interface ScriptExecutionContribution {
+  readonly id: string;
+  readonly name: string;
+  readonly extensions: readonly string[];
+  readonly executable?: string;
+  readonly arguments?: readonly string[];
+}
+
+export const SCRIPT_EXECUTION_CAPABILITY = "execution.script";
+
 export type ExecutionEnvironmentType = "process" | "venv";
 
 export type ExecutionEnvironmentStatus = "ready" | "creating" | "error";
@@ -254,6 +264,12 @@ export interface ExecutionEnvironmentAddProcessRequest {
 export interface ExecutionEnvironmentAddVenvRequest {
   readonly name?: string;
   readonly path: string;
+}
+
+export interface ExecutionEnvironmentUpdateRequest {
+  readonly name: string;
+  readonly path?: string;
+  readonly executable?: string;
 }
 
 export interface ExecutionEnvironmentDirectoryEntry {
@@ -301,6 +317,7 @@ export interface ExecutionEnvironmentProvider {
   createVenv(request: ExecutionEnvironmentCreateVenvRequest): Promise<ExecutionEnvironment>;
   addProcess(request: ExecutionEnvironmentAddProcessRequest): Promise<ExecutionEnvironment>;
   addVenv(request: ExecutionEnvironmentAddVenvRequest): Promise<ExecutionEnvironment>;
+  update?(environmentId: string, request: ExecutionEnvironmentUpdateRequest): Promise<ExecutionEnvironment>;
   browse?(request?: ExecutionEnvironmentBrowseRequest): Promise<ExecutionEnvironmentDirectoryListing>;
   validatePythonExecutable?(path: string): Promise<{ readonly executable: string; readonly version: string }>;
   remove(environmentId: string): Promise<void>;
