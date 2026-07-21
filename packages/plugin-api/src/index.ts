@@ -132,42 +132,65 @@ export interface LanguageProvider {
 
 export const LANGUAGE_PROVIDER_CAPABILITY = "language.provider";
 
-export interface Runtime {
+export type ExecutionEnvironmentType = "process" | "venv";
+
+export type ExecutionEnvironmentStatus = "ready" | "creating" | "error";
+
+export interface ExecutionEnvironment {
   readonly id: string;
   readonly name: string;
-  readonly status: "ready" | "creating" | "error";
+  readonly type: ExecutionEnvironmentType;
+  readonly status: ExecutionEnvironmentStatus;
   readonly executable?: string;
   readonly path?: string;
-  readonly managed?: boolean;
   readonly version?: string;
   readonly packages?: readonly string[];
   readonly error?: string;
 }
 
-export interface RuntimeCreateRequest {
+export interface ExecutionEnvironmentCreateVenvRequest {
   readonly name: string;
+  readonly pythonExecutable: string;
   readonly path?: string;
 }
 
-export interface RuntimeImportRequest {
-  readonly path: string;
-  readonly name?: string;
+export interface ExecutionEnvironmentAddProcessRequest {
+  readonly name: string;
+  readonly executable: string;
 }
 
-export interface RuntimeDirectoryEntry {
+export interface ExecutionEnvironmentAddVenvRequest {
+  readonly name?: string;
+  readonly path: string;
+}
+
+export interface ExecutionEnvironmentDirectoryEntry {
   readonly name: string;
   readonly path: string;
-  readonly isRuntime: boolean;
+  readonly kind: "directory" | "file";
+  readonly hidden: boolean;
+  readonly isEnvironment: boolean;
+  readonly executable: boolean;
 }
 
-export interface RuntimeDirectoryListing {
+export interface ExecutionEnvironmentDirectoryListing {
   readonly path: string;
   readonly parentPath?: string;
-  readonly isRuntime: boolean;
-  readonly entries: readonly RuntimeDirectoryEntry[];
+  readonly mode: "directory" | "file";
+  readonly includeHidden: boolean;
+  readonly filter: string;
+  readonly isEnvironment: boolean;
+  readonly entries: readonly ExecutionEnvironmentDirectoryEntry[];
 }
 
-export interface RuntimeExecutionRequest {
+export interface ExecutionEnvironmentBrowseRequest {
+  readonly path?: string;
+  readonly mode?: "directory" | "file";
+  readonly includeHidden?: boolean;
+  readonly filter?: string;
+}
+
+export interface ExecutionEnvironmentRunRequest {
   readonly mode?: "source" | "script" | "module";
   readonly source?: string;
   readonly fileName?: string;
@@ -178,28 +201,25 @@ export interface RuntimeExecutionRequest {
   readonly environmentVariables?: Readonly<Record<string, string>>;
 }
 
-export interface RuntimeProvider {
+export interface ExecutionEnvironmentProvider {
   readonly id: string;
   readonly name: string;
   readonly extensions: readonly string[];
-  list(): Promise<readonly Runtime[]>;
+  list(): Promise<readonly ExecutionEnvironment[]>;
+  createVenv(request: ExecutionEnvironmentCreateVenvRequest): Promise<ExecutionEnvironment>;
+  addProcess(request: ExecutionEnvironmentAddProcessRequest): Promise<ExecutionEnvironment>;
+  addVenv(request: ExecutionEnvironmentAddVenvRequest): Promise<ExecutionEnvironment>;
+  browse?(request?: ExecutionEnvironmentBrowseRequest): Promise<ExecutionEnvironmentDirectoryListing>;
+  validatePythonExecutable?(path: string): Promise<{ readonly executable: string; readonly version: string }>;
+  remove(environmentId: string): Promise<void>;
+  installPackages(environmentId: string, packages: readonly string[]): Promise<ExecutionEnvironment>;
   run(
-    runtimeId: string,
-    request: RuntimeExecutionRequest,
+    environmentId: string,
+    request: ExecutionEnvironmentRunRequest,
   ): Promise<ScriptExecutionResult>;
 }
 
-export interface RuntimeManager {
-  create?(request: RuntimeCreateRequest): Promise<Runtime>;
-  importExisting?(request: RuntimeImportRequest): Promise<Runtime>;
-  browseDirectories?(path?: string): Promise<RuntimeDirectoryListing>;
-  remove?(runtimeId: string): Promise<void>;
-  installPackages?(runtimeId: string, packages: readonly string[]): Promise<Runtime>;
-}
-
-export const RUNTIME_PROVIDER_CAPABILITY = "runtime.provider";
-
-export const RUNTIME_MANAGER_CAPABILITY = "runtime.manager";
+export const EXECUTION_ENVIRONMENT_CAPABILITY = "execution.environment";
 
 export interface PluginHost {
   activate(plugin: PluginRecord, context: PluginContext): Promise<void>;
