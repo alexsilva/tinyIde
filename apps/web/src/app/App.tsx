@@ -17,7 +17,6 @@ import {
   Folder,
   FolderOpen,
   HardDrive,
-  MoreHorizontal,
   Package,
   Play,
   Plug,
@@ -47,6 +46,9 @@ import type {
   ExecutionProfileExecutableOption,
   LanguageLintSettings,
   LanguageProvider,
+  ResourceContext,
+  ResourceContextMenuItem,
+  ResourceContextMenuProvider,
   TextDiagnostic,
 } from "@tinyide/plugin-api";
 import {
@@ -95,6 +97,17 @@ const LINT_SETTINGS_KEY = "tinyide.react.lintSettings.v1";
 type SidebarView = PersistedSidebarView;
 
 type StoredProfiles = WorkspaceExecutionProfiles;
+
+type ContextMenuTarget =
+  | { readonly kind: "entry"; readonly entry: WorkspaceEntry }
+  | { readonly kind: "document"; readonly document: OpenDocument };
+
+interface ContextMenuState {
+  readonly target: ContextMenuTarget;
+  readonly x: number;
+  readonly y: number;
+  readonly items: readonly ResourceContextMenuItem[];
+}
 
 function lintSettingsStorageKey(workspaceName: string, providerId: string): string {
   return `${LINT_SETTINGS_KEY}:${encodeURIComponent(workspaceName)}:${encodeURIComponent(providerId)}`;
@@ -229,6 +242,7 @@ function EntryTree({
   highlightedPath,
   onToggle,
   onOpen,
+  onContextMenu,
 }: {
   readonly entries: readonly WorkspaceEntry[];
   readonly expanded: ReadonlySet<string>;
@@ -236,6 +250,7 @@ function EntryTree({
   readonly highlightedPath: string | undefined;
   readonly onToggle: (entry: WorkspaceEntry) => void;
   readonly onOpen: (entry: WorkspaceEntry) => void;
+  readonly onContextMenu: (entry: WorkspaceEntry, x: number, y: number) => void;
 }) {
   const visibleEntries = showHidden
     ? entries
@@ -255,6 +270,10 @@ function EntryTree({
               onDoubleClick={() => {
                 if (entry.kind === "file") onOpen(entry);
               }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                onContextMenu(entry, event.clientX, event.clientY);
+              }}
             >
               {entry.kind === "directory" ? (
                 expanded.has(entry.path) ? <ChevronDown size={14} /> : <ChevronRight size={14} />
@@ -270,24 +289,6 @@ function EntryTree({
               )}
               <span className="tree-entry__name">{entry.name}</span>
             </button>
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger asChild>
-                <button className="tree-entry-menu" type="button" aria-label={`Ações de ${entry.name}`}>
-                  <MoreHorizontal size={14} />
-                </button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content className="menu-content" align="start" sideOffset={4}>
-                  <DropdownMenu.Item className="menu-item" onSelect={() => entry.kind === "file" ? onOpen(entry) : onToggle(entry)}>
-                    {entry.kind === "file" ? <File size={14} /> : <FolderOpen size={14} />}
-                    {entry.kind === "file" ? "Abrir" : expanded.has(entry.path) ? "Recolher" : "Expandir"}
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item className="menu-item" onSelect={() => void navigator.clipboard?.writeText(entry.path)}>
-                    <Code2 size={14} /> Copiar caminho
-                  </DropdownMenu.Item>
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Root>
           </div>
           {entry.kind === "directory" && expanded.has(entry.path) && entry.children ? (
             <div className="tree-children">
@@ -298,6 +299,7 @@ function EntryTree({
                 highlightedPath={highlightedPath}
                 onToggle={onToggle}
                 onOpen={onOpen}
+                onContextMenu={onContextMenu}
               />
             </div>
           ) : null}
@@ -760,6 +762,7 @@ export function App() {
   const [explorerCreation, setExplorerCreation] = useState<"file" | "directory">();
   const [explorerCreationName, setExplorerCreationName] = useState("");
   const [highlightedExplorerPath, setHighlightedExplorerPath] = useState<string>();
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>();
   const restoredRef = useRef(false);
   const snapshotTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -771,7 +774,6 @@ export function App() {
 
   const activeDocument = documents.find((document) => document.id === activeDocumentId);
   const activeLanguageProvider = languageProviderFor(activeDocument);
-  const activeScriptExecution = scriptExecutionFor(activeDocument);
   const selectedProfile = profilesState.profiles.find((profile) => profile.id === profilesState.selectedId);
 
   const replaceWorkspaceSettings = useCallback((settings: WorkspaceSettings) => {
@@ -1081,6 +1083,130 @@ export function App() {
     setActiveDocumentId(document.id);
   };
 
+  const resourceContext = (entry: WorkspaceEntry): ResourceContext => ({
+    kind: entry.kind,
+    name: entry.name,
+    path: entry.path,
+    ...(workspaceName !== "Sem workspace" ? { workspaceName } : {}),
+    ...(workspaceRoot ? { workspaceRoot } : {}),
+  });
+
+  const openResourceMenu = async (entry: WorkspaceEntry, x: number, y: number) => {
+    const baseItems: ResourceContextMenuItem[] = [
+      {
+        id: "core.open",
+        label: entry.kind === "file" ? "Abrir" : expanded.has(entry.path) ? "Recolher" : "Expandir",
+        command: "core.resource.open",
+        group: "navigation",
+        order: 0,
+        icon: entry.kind === "file" ? "file" : "folder",
+      },
+      {
+        id: "core.copyPath",
+        label: "Copiar caminho",
+        command: "core.resource.copyPath",
+        group: "clipboard",
+        order: 100,
+        icon: "copy",
+      },
+    ];
+    const resource = resourceContext(entry);
+    const providers = platform.capabilities.getAll<ResourceContextMenuProvider>("resource.contextMenu");
+    const contributed = (await Promise.all(providers.map((provider) => provider.provideItems(resource)))).flat();
+    const groupOrder = new Map([
+      ["navigation", 0],
+      ["execution", 100],
+      ["clipboard", 200],
+    ]);
+    const items = [...baseItems, ...contributed]
+      .filter((item) => item.enabled !== false)
+      .sort((left, right) => (groupOrder.get(left.group ?? "") ?? 1000) - (groupOrder.get(right.group ?? "") ?? 1000)
+        || (left.order ?? 0) - (right.order ?? 0));
+    setContextMenu({ target: { kind: "entry", entry }, x, y, items });
+  };
+
+  const documentResourceContext = (document: OpenDocument): ResourceContext => ({
+    kind: "file",
+    name: document.name,
+    path: document.path ?? document.name,
+    ...(workspaceName !== "Sem workspace" ? { workspaceName } : {}),
+    ...(workspaceRoot ? { workspaceRoot } : {}),
+  });
+
+  const openDocumentMenu = async (document: OpenDocument, x: number, y: number) => {
+    const documentIndex = documents.findIndex((candidate) => candidate.id === document.id);
+    const baseItems: ResourceContextMenuItem[] = [
+      {
+        id: "core.tab.activate",
+        label: "Ativar aba",
+        command: "core.tab.activate",
+        group: "navigation",
+        order: 0,
+        icon: "file",
+        enabled: activeDocumentId !== document.id,
+      },
+      {
+        id: "core.tab.save",
+        label: "Salvar",
+        command: "core.tab.save",
+        group: "file",
+        order: 0,
+        icon: "save",
+        enabled: document.content !== document.savedContent,
+      },
+      {
+        id: "core.tab.close",
+        label: "Fechar",
+        command: "core.tab.close",
+        group: "close",
+        order: 0,
+        icon: "close",
+      },
+      {
+        id: "core.tab.closeOthers",
+        label: "Fechar outras abas",
+        command: "core.tab.closeOthers",
+        group: "close",
+        order: 10,
+        icon: "close",
+        enabled: documents.length > 1,
+      },
+      {
+        id: "core.tab.closeRight",
+        label: "Fechar abas à direita",
+        command: "core.tab.closeRight",
+        group: "close",
+        order: 20,
+        icon: "close",
+        enabled: documentIndex >= 0 && documentIndex < documents.length - 1,
+      },
+      {
+        id: "core.tab.copyPath",
+        label: "Copiar caminho",
+        command: "core.tab.copyPath",
+        group: "clipboard",
+        order: 0,
+        icon: "copy",
+        enabled: Boolean(document.path),
+      },
+    ];
+    const resource = documentResourceContext(document);
+    const providers = platform.capabilities.getAll<ResourceContextMenuProvider>("resource.contextMenu");
+    const contributed = (await Promise.all(providers.map((provider) => provider.provideItems(resource)))).flat();
+    const groupOrder = new Map([
+      ["navigation", 0],
+      ["file", 50],
+      ["execution", 100],
+      ["close", 150],
+      ["clipboard", 200],
+    ]);
+    const items = [...baseItems, ...contributed]
+      .filter((item) => item.enabled !== false)
+      .sort((left, right) => (groupOrder.get(left.group ?? "") ?? 1000) - (groupOrder.get(right.group ?? "") ?? 1000)
+        || (left.order ?? 0) - (right.order ?? 0));
+    setContextMenu({ target: { kind: "document", document }, x, y, items });
+  };
+
   const toggleEntry = async (entry: WorkspaceEntry) => {
     if (entry.kind !== "directory") return;
     if (expanded.has(entry.path)) {
@@ -1140,18 +1266,23 @@ export function App() {
     URL.revokeObjectURL(url);
   };
 
-  const saveDocument = async (forceSaveAs = false) => {
-    if (!activeDocument) return;
-    let handle = forceSaveAs ? undefined : activeDocument.handle;
+  const saveOpenDocument = async (document: OpenDocument, forceSaveAs = false) => {
+    let handle = forceSaveAs ? undefined : document.handle;
     if (!handle) {
       if (!window.showSaveFilePicker) {
-        downloadDocument(activeDocument);
-        return;
+        downloadDocument(document);
+        return document;
       }
-      handle = await window.showSaveFilePicker({ suggestedName: activeDocument.name });
+      handle = await window.showSaveFilePicker({ suggestedName: document.name });
     }
-    const saved = await writeFileDocument(activeDocument, handle);
-    setDocuments((current) => current.map((document) => document.id === activeDocument.id ? saved : document));
+    const saved = await writeFileDocument(document, handle);
+    setDocuments((current) => current.map((item) => item.id === document.id ? saved : item));
+    return saved;
+  };
+
+  const saveDocument = async (forceSaveAs = false) => {
+    if (!activeDocument) return;
+    await saveOpenDocument(activeDocument, forceSaveAs);
   };
 
   const newDocument = () => {
@@ -1222,9 +1353,15 @@ export function App() {
     }
   };
 
-  const runActiveScript = async () => {
-    if (!activeDocument || !activeScriptExecution) throw new Error("Nenhum executor de script disponível para o arquivo atual.");
-    if (activeDocument.content !== activeDocument.savedContent) await saveDocument();
+  const runDocumentScript = async (document: OpenDocument) => {
+    const contribution = scriptExecutionFor(document);
+    if (!contribution) throw new Error(`Nenhum plugin oferece execução para '${document.name}'.`);
+    let executableDocument = document;
+    if (document.content !== document.savedContent) {
+      if (!document.handle) throw new Error("Salve o arquivo no workspace antes de executar o script.");
+      executableDocument = await writeFileDocument(document, document.handle);
+      setDocuments((current) => current.map((item) => item.id === document.id ? executableDocument : item));
+    }
     const selectedEnvironment = selectedEnvironmentId
       ? environments.find((environment) => environment.id === selectedEnvironmentId)
       : undefined;
@@ -1233,8 +1370,8 @@ export function App() {
     setPanelTab("output");
     try {
       await runScript({
-        contribution: activeScriptExecution,
-        document: activeDocument,
+        contribution,
+        document: executableDocument,
         ...(selectedEnvironment ? { environment: selectedEnvironment } : {}),
         callbacks: {
           onProcessStarted: setActiveProcessId,
@@ -1246,6 +1383,90 @@ export function App() {
       setBusy(false);
       setActiveProcessId(undefined);
     }
+  };
+
+  const closeDocument = (documentId: string) => {
+    const index = documents.findIndex((document) => document.id === documentId);
+    if (index < 0) return;
+    const next = documents.filter((document) => document.id !== documentId);
+    setDocuments(next);
+    if (activeDocumentId === documentId) {
+      setActiveDocumentId(next[index]?.id ?? next[index - 1]?.id);
+    }
+  };
+
+  const executeContextMenuItem = async (item: ResourceContextMenuItem, target: ContextMenuTarget) => {
+    setContextMenu(undefined);
+    if (target.kind === "entry") {
+      const { entry } = target;
+      if (item.command === "core.resource.open") {
+        await (entry.kind === "file" ? openEntry(entry) : toggleEntry(entry));
+        return;
+      }
+      if (item.command === "core.resource.copyPath") {
+        await navigator.clipboard?.writeText(entry.path);
+        return;
+      }
+      if (item.command === "core.resource.runScript") {
+        if (entry.kind !== "file") throw new Error("O recurso selecionado não é um arquivo executável.");
+        const openDocument = documents.find((candidate) => candidate.path === entry.path);
+        const document = openDocument
+          ?? (entry.handle
+            ? await readFileDocument(entry.handle as BrowserFileHandle, entry.path)
+            : {
+                id: entry.path,
+                name: entry.name,
+                path: entry.path,
+                content: "",
+                savedContent: "",
+                selectionStart: 0,
+                selectionEnd: 0,
+                scrollTop: 0,
+                scrollLeft: 0,
+              });
+        await runDocumentScript(document);
+        return;
+      }
+      await platform.commands.execute(item.command, resourceContext(entry));
+      return;
+    }
+
+    const { document } = target;
+    if (item.command === "core.tab.activate") {
+      setActiveDocumentId(document.id);
+      return;
+    }
+    if (item.command === "core.tab.save") {
+      await saveOpenDocument(document);
+      return;
+    }
+    if (item.command === "core.tab.close") {
+      closeDocument(document.id);
+      return;
+    }
+    if (item.command === "core.tab.closeOthers") {
+      setDocuments([document]);
+      setActiveDocumentId(document.id);
+      return;
+    }
+    if (item.command === "core.tab.closeRight") {
+      const index = documents.findIndex((candidate) => candidate.id === document.id);
+      const next = documents.slice(0, index + 1);
+      setDocuments(next);
+      if (activeDocumentId && !next.some((candidate) => candidate.id === activeDocumentId)) {
+        setActiveDocumentId(document.id);
+      }
+      return;
+    }
+    if (item.command === "core.tab.copyPath") {
+      if (document.path) await navigator.clipboard?.writeText(document.path);
+      return;
+    }
+    if (item.command === "core.resource.runScript") {
+      await runDocumentScript(document);
+      return;
+    }
+    await platform.commands.execute(item.command, documentResourceContext(document));
   };
 
   const stopExecution = async () => {
@@ -1492,31 +1713,6 @@ export function App() {
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger asChild>
-              <button className="menu-button" type="button">
-                Executar <ChevronDown size={13} />
-              </button>
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content className="menu-content" align="start" sideOffset={6}>
-                <DropdownMenu.Item
-                  className="menu-item"
-                  disabled={!activeScriptExecution || busy}
-                  onSelect={() => invoke(runActiveScript)}
-                >
-                  <Play size={15} /> Executar script atual
-                </DropdownMenu.Item>
-                <DropdownMenu.Item
-                  className="menu-item"
-                  disabled={!selectedProfile || busy}
-                  onSelect={() => invoke(runSelectedProfile)}
-                >
-                  <Terminal size={15} /> Executar perfil selecionado
-                </DropdownMenu.Item>
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Root>
           <div className="window-title">{workspaceName}</div>
           <div className="titlebar-actions">
             <span className="version-label">v0.4.0</span>
@@ -1595,6 +1791,7 @@ export function App() {
                       highlightedPath={highlightedExplorerPath}
                       onToggle={(entry) => invoke(() => toggleEntry(entry))}
                       onOpen={(entry) => invoke(() => openEntry(entry))}
+                      onContextMenu={(entry, x, y) => invoke(() => openResourceMenu(entry, x, y))}
                     />
                   ) : (
                     <div className="empty-sidebar">
@@ -1718,7 +1915,15 @@ export function App() {
                 <Tabs.Root className="document-tabs" value={activeDocumentId ?? ""} onValueChange={setActiveDocumentId}>
                   <Tabs.List className="tabs-list">
                     {documents.map((document) => (
-                      <Tabs.Trigger className="tab-trigger" key={document.id} value={document.id}>
+                      <Tabs.Trigger
+                        className="tab-trigger"
+                        key={document.id}
+                        value={document.id}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          invoke(() => openDocumentMenu(document, event.clientX, event.clientY));
+                        }}
+                      >
                         <File size={14} />
                         <span>{document.name}</span>
                         {document.content !== document.savedContent ? <span className="dirty-dot">●</span> : null}
@@ -1728,8 +1933,7 @@ export function App() {
                           className="tab-close"
                           onClick={(event) => {
                             event.stopPropagation();
-                            setDocuments((current) => current.filter((item) => item.id !== document.id));
-                            if (activeDocumentId === document.id) setActiveDocumentId(documents.find((item) => item.id !== document.id)?.id);
+                            closeDocument(document.id);
                           }}
                         ><X size={13} /></span>
                       </Tabs.Trigger>
@@ -1942,6 +2146,50 @@ export function App() {
             </Dialog.Content>
           </Dialog.Portal>
         </Dialog.Root>
+
+        {contextMenu ? (
+          <>
+            <button
+              className="resource-context-menu-backdrop"
+              type="button"
+              aria-label="Fechar menu de contexto"
+              onClick={() => setContextMenu(undefined)}
+              onContextMenu={(event) => { event.preventDefault(); setContextMenu(undefined); }}
+            />
+            <div
+              className="menu-content resource-context-menu"
+              role="menu"
+              aria-label={`Ações de ${contextMenu.target.kind === "entry" ? contextMenu.target.entry.name : contextMenu.target.document.name}`}
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+            >
+              {contextMenu.items.map((item, index) => {
+                const previous = contextMenu.items[index - 1];
+                const separated = previous && previous.group !== item.group;
+                const icon = item.icon === "play" ? <Play size={14} />
+                  : item.icon === "folder" ? <FolderOpen size={14} />
+                    : item.icon === "copy" ? <Code2 size={14} />
+                      : item.icon === "terminal" ? <Terminal size={14} />
+                        : item.icon === "save" ? <Save size={14} />
+                          : item.icon === "close" ? <X size={14} />
+                            : <File size={14} />;
+                return (
+                  <div key={item.id}>
+                    {separated ? <div className="menu-separator" /> : null}
+                    <button
+                      className="menu-item resource-context-menu__item"
+                      type="button"
+                      role="menuitem"
+                      disabled={busy}
+                      onClick={() => invoke(() => executeContextMenuItem(item, contextMenu.target))}
+                    >
+                      {icon}<span>{item.label}</span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : null}
 
         {error ? (
           <div className="error-toast" role="alert">

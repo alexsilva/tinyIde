@@ -251,6 +251,35 @@ export interface ScriptExecutionContribution {
 
 export const SCRIPT_EXECUTION_CAPABILITY = "execution.script";
 
+export interface ResourceContext {
+  readonly kind: "file" | "directory";
+  readonly name: string;
+  readonly path: string;
+  readonly workspaceName?: string;
+  readonly workspaceRoot?: string;
+}
+
+export type ResourceContextMenuIcon = "file" | "folder" | "play" | "copy" | "terminal" | "save" | "close";
+
+export interface ResourceContextMenuItem {
+  readonly id: string;
+  readonly label: string;
+  readonly command: string;
+  readonly group?: string;
+  readonly order?: number;
+  readonly icon?: ResourceContextMenuIcon;
+  readonly enabled?: boolean;
+}
+
+export interface ResourceContextMenuProvider {
+  readonly id: string;
+  provideItems(
+    resource: ResourceContext,
+  ): Promise<readonly ResourceContextMenuItem[]> | readonly ResourceContextMenuItem[];
+}
+
+export const RESOURCE_CONTEXT_MENU_CAPABILITY = "resource.contextMenu";
+
 export type ExecutionEnvironmentType = "process" | "venv";
 
 export type ExecutionEnvironmentStatus = "ready" | "creating" | "error";
