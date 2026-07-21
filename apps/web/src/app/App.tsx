@@ -7,6 +7,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CircleAlert,
   Code2,
   Cpu,
   Eye,
@@ -327,25 +328,65 @@ function HighlightedSource({ source, provider }: { readonly source: string; read
   return <>{fragments}</>;
 }
 
-function DiagnosticLayer({ diagnostics }: { readonly diagnostics: readonly TextDiagnostic[] }) {
+function DiagnosticLayer({
+  diagnostics,
+  source,
+  hoveredLine,
+}: {
+  readonly diagnostics: readonly TextDiagnostic[];
+  readonly source: string;
+  readonly hoveredLine: number | undefined;
+}) {
+  const sourceLines = source.split(/\r?\n/);
+  const diagnosticsByLine = new Map<number, TextDiagnostic[]>();
+  diagnostics.forEach((diagnostic) => {
+    const current = diagnosticsByLine.get(diagnostic.line) ?? [];
+    current.push(diagnostic);
+    diagnosticsByLine.set(diagnostic.line, current);
+  });
+
   return (
-    <div className="diagnostic-layer" aria-hidden="true">
-      {diagnostics.map((diagnostic, index) => {
-        const endColumn = diagnostic.endLine === diagnostic.line
-          ? diagnostic.endColumn ?? diagnostic.column + 1
-          : diagnostic.column + 1;
-        const width = Math.max(1, endColumn - diagnostic.column);
+    <div className="diagnostic-layer">
+      {[...diagnosticsByLine.entries()].map(([line, lineDiagnostics]) => {
+        const severity = lineDiagnostics.some((diagnostic) => diagnostic.severity === "error")
+          ? "error"
+          : lineDiagnostics.some((diagnostic) => diagnostic.severity === "warning")
+            ? "warning"
+            : "information";
+        const lineLength = sourceLines[line - 1]?.length ?? 0;
         return (
-          <span
-            className={`diagnostic-marker diagnostic-marker--${diagnostic.severity}`}
-            key={`${diagnostic.line}:${diagnostic.column}:${diagnostic.code ?? index}`}
+          <div
+            className={`diagnostic-line diagnostic-line--${severity}${hoveredLine === line ? " is-hovered" : ""}`}
+            key={line}
             style={{
-              "--diagnostic-line": diagnostic.line,
-              "--diagnostic-column": diagnostic.column,
-              "--diagnostic-width": width,
+              "--diagnostic-line": line,
+              "--diagnostic-line-length": lineLength,
             } as React.CSSProperties}
-            title={diagnostic.message}
-          />
+            aria-hidden={hoveredLine === line ? undefined : true}
+          >
+            <Tooltip.Root>
+              <Tooltip.Trigger asChild>
+                <button
+                  className="diagnostic-line__details"
+                  type="button"
+                  aria-label={`Detalhes dos problemas na linha ${line}`}
+                >
+                  <CircleAlert size={14} />
+                </button>
+              </Tooltip.Trigger>
+              <Tooltip.Portal>
+                <Tooltip.Content className="tooltip diagnostic-tooltip" side="right" sideOffset={7}>
+                  {lineDiagnostics.map((diagnostic, index) => (
+                    <span key={`${diagnostic.column}:${diagnostic.code ?? index}`}>
+                      <strong>{diagnostic.line}:{diagnostic.column}</strong>
+                      {diagnostic.message}
+                    </span>
+                  ))}
+                  <Tooltip.Arrow className="tooltip-arrow" />
+                </Tooltip.Content>
+              </Tooltip.Portal>
+            </Tooltip.Root>
+          </div>
         );
       })}
     </div>
@@ -739,6 +780,7 @@ export function App() {
   const [activeDocumentId, setActiveDocumentId] = useState<string | undefined>(initialSession.activeDocumentId);
   const [output, setOutput] = useState<string[]>(["tinyIde React shell inicializado."]);
   const [diagnostics, setDiagnostics] = useState<readonly TextDiagnostic[]>([]);
+  const [hoveredDiagnosticLine, setHoveredDiagnosticLine] = useState<number>();
   const [environments, setEnvironments] = useState<readonly ExecutionEnvironment[]>([]);
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | undefined>();
   const [environmentBusy, setEnvironmentBusy] = useState(false);
@@ -1996,26 +2038,31 @@ export function App() {
                   </div>
                 </div>
                 <div className="editor-stack">
-                  {diagnostics.length ? (
-                    <div className="diagnostics-strip">
-                      {diagnostics.map((diagnostic, index) => (
-                        <button type="button" key={`${diagnostic.line}:${diagnostic.column}:${index}`}>
-                          <strong>{diagnostic.severity}</strong> {diagnostic.line}:{diagnostic.column} {diagnostic.message}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
                   {activeLanguageProvider && activeDocument ? (
                     <div
                       ref={highlightedEditorScrollRef}
                       className="highlight-editor"
+                      onMouseMove={(event) => {
+                        const bounds = event.currentTarget.getBoundingClientRect();
+                        const contentY = event.clientY - bounds.top + event.currentTarget.scrollTop - 18;
+                        const line = Math.floor(contentY / 21.45) + 1;
+                        const nextLine = diagnostics.some((diagnostic) => diagnostic.line === line)
+                          ? line
+                          : undefined;
+                        setHoveredDiagnosticLine((current) => current === nextLine ? current : nextLine);
+                      }}
+                      onMouseLeave={() => setHoveredDiagnosticLine(undefined)}
                       onScroll={(event) => {
                         if (editorRef.current) captureEditorState(editorRef.current, event.currentTarget);
                       }}
                     >
                       <div className="highlight-editor__content">
                         <pre className="syntax-layer"><HighlightedSource source={activeDocument.content} provider={activeLanguageProvider} /></pre>
-                        <DiagnosticLayer diagnostics={diagnostics} />
+                        <DiagnosticLayer
+                          diagnostics={diagnostics}
+                          source={activeDocument.content}
+                          hoveredLine={hoveredDiagnosticLine}
+                        />
                         <textarea
                           ref={editorRef}
                           className="code-editor code-editor--highlighted"
