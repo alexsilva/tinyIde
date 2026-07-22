@@ -259,6 +259,21 @@ export interface ResourceContext {
   readonly workspaceRoot?: string;
 }
 
+export interface ResourceIcon {
+  readonly id: string;
+  readonly label: string;
+  readonly foreground?: string;
+  readonly background?: string;
+  readonly title?: string;
+}
+
+export interface ResourceIconProvider {
+  readonly id: string;
+  provideIcon(resource: ResourceContext): ResourceIcon | undefined;
+}
+
+export const RESOURCE_ICON_CAPABILITY = "resource.icon";
+
 export type ResourceContextMenuIcon = "file" | "folder" | "play" | "copy" | "terminal" | "save" | "close";
 
 export interface ResourceContextMenuItem {
@@ -328,6 +343,7 @@ export interface TerminalSessionCreateOptions {
   readonly environmentVariables?: Readonly<Record<string, string>>;
   readonly unsetEnvironmentVariables?: readonly string[];
   readonly prependPathEntries?: readonly string[];
+  readonly promptPrefix?: string;
 }
 
 export interface TerminalSessionHookContext {
@@ -346,6 +362,7 @@ export interface TerminalSessionHookContribution {
   readonly environmentVariables?: Readonly<Record<string, string>>;
   readonly unsetEnvironmentVariables?: readonly string[];
   readonly prependPathEntries?: readonly string[];
+  readonly promptPrefix?: string;
   readonly indicators?: readonly TerminalSessionIndicator[];
 }
 

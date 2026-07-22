@@ -19,7 +19,10 @@ import {
   Files,
   Folder,
   FolderOpen,
+  FolderRoot,
   HardDrive,
+  Info,
+  MoreHorizontal,
   Package,
   Play,
   Plug,
@@ -91,6 +94,7 @@ import {
   runScript,
   prepareTerminalSessionOptions,
   pluginSettingsProviders,
+  resourceIconFor,
   scriptExecutionFor,
   setHostWorkspace,
   stopHostProcess,
@@ -264,17 +268,25 @@ function EntryTree({
   expanded,
   showHidden,
   highlightedPath,
+  selectedPath,
   onToggle,
+  onSelect,
   onOpen,
   onContextMenu,
+  workspaceName,
+  workspaceRoot,
 }: {
   readonly entries: readonly WorkspaceEntry[];
   readonly expanded: ReadonlySet<string>;
   readonly showHidden: boolean;
   readonly highlightedPath: string | undefined;
+  readonly selectedPath: string | undefined;
   readonly onToggle: (entry: WorkspaceEntry) => void;
+  readonly onSelect: (entry: WorkspaceEntry) => void;
   readonly onOpen: (entry: WorkspaceEntry) => void;
   readonly onContextMenu: (entry: WorkspaceEntry, x: number, y: number) => void;
+  readonly workspaceName: string;
+  readonly workspaceRoot?: string;
 }) {
   const visibleEntries = showHidden
     ? entries
@@ -282,17 +294,32 @@ function EntryTree({
 
   return (
     <div className="tree">
-      {visibleEntries.map((entry) => (
-        <div key={entry.path}>
+      {visibleEntries.map((entry) => {
+        const contributedIcon = entry.kind === "file"
+          ? resourceIconFor({
+              kind: "file",
+              name: entry.name,
+              path: entry.path,
+              ...(workspaceName !== "Sem workspace" ? { workspaceName } : {}),
+              ...(workspaceRoot ? { workspaceRoot } : {}),
+            })
+          : undefined;
+        return <div key={entry.path}>
           <div className="tree-entry-row">
             <button
               type="button"
-              className={`tree-entry tree-entry--${entry.kind}${highlightedPath === entry.path ? " is-new" : ""}`}
+              className={`tree-entry tree-entry--${entry.kind}${highlightedPath === entry.path ? " is-new" : ""}${selectedPath === entry.path ? " is-selected" : ""}`}
               onClick={() => {
-                if (entry.kind === "directory") onToggle(entry);
-              }}
-              onDoubleClick={() => {
-                if (entry.kind === "file") onOpen(entry);
+                if (entry.kind === "directory") {
+                  onSelect(entry);
+                  onToggle(entry);
+                  return;
+                }
+                if (selectedPath === entry.path) {
+                  onOpen(entry);
+                  return;
+                }
+                onSelect(entry);
               }}
               onContextMenu={(event) => {
                 event.preventDefault();
@@ -308,6 +335,15 @@ function EntryTree({
                 expanded.has(entry.path)
                   ? <FolderOpen className="tree-entry__icon tree-entry__icon--directory" size={15} />
                   : <Folder className="tree-entry__icon tree-entry__icon--directory" size={15} />
+              ) : contributedIcon ? (
+                <span
+                  className="resource-icon"
+                  title={contributedIcon.title}
+                  style={{
+                    color: contributedIcon.foreground ?? "currentColor",
+                    background: contributedIcon.background ?? "transparent",
+                  }}
+                >{contributedIcon.label}</span>
               ) : (
                 <File className="tree-entry__icon tree-entry__icon--file" size={15} />
               )}
@@ -321,14 +357,18 @@ function EntryTree({
                 expanded={expanded}
                 showHidden={showHidden}
                 highlightedPath={highlightedPath}
+                selectedPath={selectedPath}
                 onToggle={onToggle}
+                onSelect={onSelect}
                 onOpen={onOpen}
                 onContextMenu={onContextMenu}
+                workspaceName={workspaceName}
+                {...(workspaceRoot ? { workspaceRoot } : {})}
               />
             </div>
           ) : null}
-        </div>
-      ))}
+        </div>;
+      })}
     </div>
   );
 }
@@ -575,6 +615,7 @@ function ProfileDialog({
                       Nome do perfil
                       <input
                         value={editing.name}
+                        placeholder="Ex.: Servidor de desenvolvimento"
                         onChange={(event) => updateEditing((profile) => ({ ...profile, name: event.target.value }))}
                       />
                     </label>
@@ -619,6 +660,7 @@ function ProfileDialog({
                         value={editingEnvironmentId
                           ? environments.find((environment) => environment.id === editingEnvironmentId)?.executable ?? ""
                           : step.executable}
+                        placeholder="Ex.: node, python, bash ou caminho completo"
                         readOnly={Boolean(editingEnvironmentId)}
                         onChange={(event) => updateEditing((profile) => ({
                           ...profile,
@@ -650,7 +692,7 @@ function ProfileDialog({
                       <div className="path-row">
                         <input
                           value={step.command}
-                          placeholder="comando-ou-arquivo"
+                          placeholder="Ex.: caminho/do/arquivo ou subcomando"
                           onChange={(event) => updateEditing((profile) => ({
                             ...profile,
                             steps: profile.steps.map((item, index) => index === 0 ? { ...item, command: event.target.value } : item),
@@ -672,7 +714,7 @@ function ProfileDialog({
                       <textarea
                         rows={5}
                         value={parameterDrafts[editing.id] ?? formatCommandLineArguments(step.parameters)}
-                        placeholder="argumento-1 argumento-2"
+                        placeholder="Ex.: --port 8000 --verbose"
                         onChange={(event) => {
                           setParameterDrafts((current) => ({ ...current, [editing.id]: event.target.value }));
                           setParameterError(undefined);
@@ -684,7 +726,7 @@ function ProfileDialog({
                       Diretório de trabalho
                       <input
                         value={step.workingDirectory ?? ""}
-                        placeholder="${workspaceRoot}"
+                        placeholder="Ex.: ${workspaceRoot} ou caminho absoluto"
                         onChange={(event) => updateEditing((profile) => ({
                           ...profile,
                           steps: profile.steps.map((item, index) => index === 0
@@ -698,7 +740,7 @@ function ProfileDialog({
                       <textarea
                         rows={4}
                         value={environmentVariablesText(step.environmentVariables)}
-                        placeholder="DEBUG=1"
+                        placeholder="Ex.: DEBUG=1"
                         onChange={(event) => {
                           try {
                             const environmentVariables = parseEnvironmentVariables(event.target.value);
@@ -921,6 +963,7 @@ export function App() {
   const [profilesState, setProfilesState] = useState<StoredProfiles>({ profiles: [] });
   const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettings>(EMPTY_WORKSPACE_SETTINGS);
   const [profilesOpen, setProfilesOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [lintSettingsOpen, setLintSettingsOpen] = useState(false);
   const [lintEnabledRuleIds, setLintEnabledRuleIds] = useState<readonly string[]>([]);
   const [pluginRemovalId, setPluginRemovalId] = useState<string>();
@@ -933,6 +976,7 @@ export function App() {
   const [explorerCreation, setExplorerCreation] = useState<"file" | "directory">();
   const [explorerCreationName, setExplorerCreationName] = useState("");
   const [highlightedExplorerPath, setHighlightedExplorerPath] = useState<string>();
+  const [selectedExplorerPath, setSelectedExplorerPath] = useState<string>();
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
   const restoredRef = useRef(false);
   const snapshotTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -1603,6 +1647,7 @@ export function App() {
 
     setBusy(true);
     setPanelVisible(true);
+    setPanelTab("output");
     try {
       await runExecutionProfile({
         profile: selectedProfile,
@@ -1985,7 +2030,7 @@ export function App() {
     <Tooltip.Provider delayDuration={350}>
       <div className="ide-shell">
         <header className="titlebar">
-          <div className="app-brand"><Code2 size={17} /><strong>tinyIde</strong></div>
+          <div className="app-brand"><img src="/icon.png" alt="" /><strong>tinyIde</strong></div>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button className="menu-button" type="button">
@@ -2013,9 +2058,34 @@ export function App() {
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <button className="menu-button" type="button">
+                Help <ChevronDown size={13} />
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content className="menu-content" align="start" sideOffset={6}>
+                <DropdownMenu.Item className="menu-item" onSelect={() => setAboutOpen(true)}>
+                  <Info size={15} /> Sobre o tinyIde
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
           <div className="window-title">{workspaceName}</div>
           <div className="titlebar-actions">
-            <span className="version-label">v0.4.0</span>
+            <select
+              aria-label="Perfil de execução"
+              value={profilesState.selectedId ?? ""}
+              onChange={(event) => updateProfiles(profilesState.profiles, event.target.value || undefined)}
+            >
+              <option value="">Selecionar perfil</option>
+              {profilesState.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+            </select>
+            <button className="icon-button small" type="button" aria-label="Gerenciar perfis" onClick={() => setProfilesOpen(true)}><Settings2 size={14} /></button>
+            {busy
+              ? <button className="button danger compact" type="button" onClick={() => invoke(stopExecution)}><Square size={13} /> Parar</button>
+              : <button className="button primary compact" type="button" disabled={!selectedProfile} onClick={() => invoke(runSelectedProfile)}><Play size={13} /> Executar</button>}
           </div>
         </header>
 
@@ -2055,25 +2125,36 @@ export function App() {
             <aside className="sidebar">
               <div className="sidebar-heading">
                 <span>{sidebarView === "explorer" ? "EXPLORER" : sidebarView === "plugins" ? "PLUGINS" : "AMBIENTES"}</span>
-                <button className="icon-button small" type="button" onClick={() => setSidebarVisible(false)} aria-label="Fechar sidebar"><X size={14} /></button>
+                <div className="sidebar-heading-actions">
+                  {sidebarView === "explorer" ? (
+                    <DropdownMenu.Root>
+                      <DropdownMenu.Trigger asChild>
+                        <button className="icon-button small" type="button" aria-label="Ações do Explorer"><MoreHorizontal size={15} /></button>
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Portal>
+                        <DropdownMenu.Content className="menu-content" align="end" sideOffset={6}>
+                          <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => { setExplorerCreation("file"); setExplorerCreationName(""); }}>
+                            <FilePlus2 size={15} /> Novo arquivo
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => { setExplorerCreation("directory"); setExplorerCreationName(""); }}>
+                            <FolderOpen size={15} /> Nova pasta
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Separator className="menu-separator" />
+                          <DropdownMenu.Item className="menu-item" onSelect={() => setExplorerShowHidden((visible) => !visible)}>
+                            {explorerShowHidden ? <EyeOff size={15} /> : <Eye size={15} />}
+                            {explorerShowHidden ? "Ocultar arquivos ocultos" : "Mostrar arquivos ocultos"}
+                          </DropdownMenu.Item>
+                        </DropdownMenu.Content>
+                      </DropdownMenu.Portal>
+                    </DropdownMenu.Root>
+                  ) : null}
+                  <button className="icon-button small" type="button" onClick={() => setSidebarVisible(false)} aria-label="Fechar sidebar"><X size={14} /></button>
+                </div>
               </div>
 
               {sidebarView === "explorer" ? (
                 <div className="sidebar-content explorer-content">
                   <div className="explorer-actions-sticky">
-                    <div className="toolbar-row">
-                    <button className="button secondary compact explorer-action-button" type="button" aria-label="Criar arquivo" title="Criar arquivo" disabled={!workspaceHandle} onClick={() => { setExplorerCreation("file"); setExplorerCreationName(""); }}><FilePlus2 size={14} /><span>Arquivo</span></button>
-                    <button className="button secondary compact explorer-action-button" type="button" aria-label="Criar pasta" title="Criar pasta" disabled={!workspaceHandle} onClick={() => { setExplorerCreation("directory"); setExplorerCreationName(""); }}><FolderOpen size={14} /><span>Pasta</span></button>
-                    <button
-                      className={`icon-button small${explorerShowHidden ? " is-active" : ""}`}
-                      type="button"
-                      aria-label={explorerShowHidden ? "Ocultar arquivos ocultos" : "Mostrar arquivos ocultos"}
-                      title={explorerShowHidden ? "Ocultar arquivos ocultos" : "Mostrar arquivos ocultos"}
-                      onClick={() => setExplorerShowHidden((visible) => !visible)}
-                    >
-                      {explorerShowHidden ? <EyeOff size={14} /> : <Eye size={14} />}
-                    </button>
-                    </div>
                     {explorerCreation ? (
                       <form className="explorer-inline-create" onSubmit={(event) => { event.preventDefault(); invoke(createWorkspaceEntry); }}>
                       {explorerCreation === "directory" ? <Folder size={14} /> : <File size={14} />}
@@ -2081,7 +2162,7 @@ export function App() {
                         autoFocus
                         value={explorerCreationName}
                         aria-label={explorerCreation === "directory" ? "Nome da nova pasta" : "Nome do novo arquivo"}
-                        placeholder={explorerCreation === "directory" ? "nova-pasta" : "arquivo.py"}
+                        placeholder={explorerCreation === "directory" ? "Nome da pasta" : "Nome do arquivo"}
                         onChange={(event) => setExplorerCreationName(event.target.value)}
                         onKeyDown={(event) => {
                           if (event.key === "Escape") {
@@ -2095,16 +2176,20 @@ export function App() {
                       </form>
                     ) : null}
                   </div>
-                  {workspaceName !== "Sem workspace" ? <div className="workspace-name"><ChevronDown size={14} /> {workspaceName}</div> : null}
+                  {workspaceName !== "Sem workspace" ? <div className="workspace-name"><FolderRoot size={14} /> {workspaceName}</div> : null}
                   {entries.length ? (
                     <EntryTree
                       entries={entries}
                       expanded={expanded}
                       showHidden={explorerShowHidden}
                       highlightedPath={highlightedExplorerPath}
+                      selectedPath={selectedExplorerPath}
                       onToggle={(entry) => invoke(() => toggleEntry(entry))}
+                      onSelect={(entry) => setSelectedExplorerPath(entry.path)}
                       onOpen={(entry) => invoke(() => openEntry(entry))}
                       onContextMenu={(entry, x, y) => invoke(() => openResourceMenu(entry, x, y))}
+                      workspaceName={workspaceName}
+                      {...(workspaceRoot ? { workspaceRoot } : {})}
                     />
                   ) : (
                     <div className="empty-sidebar">
@@ -2268,21 +2353,9 @@ export function App() {
                 <div className="editor-toolbar">
                   <div className="breadcrumb">{activeDocument?.path ?? activeDocument?.name}</div>
                   <div className="editor-actions">
-                    <select
-                      aria-label="Perfil de execução"
-                      value={profilesState.selectedId ?? ""}
-                      onChange={(event) => updateProfiles(profilesState.profiles, event.target.value || undefined)}
-                    >
-                      <option value="">Selecionar perfil</option>
-                      {profilesState.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
-                    </select>
-                    <button className="icon-button small" type="button" aria-label="Gerenciar perfis" onClick={() => setProfilesOpen(true)}><Settings2 size={14} /></button>
                     {activeLanguageProvider?.lintRules?.length ? (
                       <button className="icon-button small" type="button" aria-label="Configurar lint" title="Configurar lint" onClick={() => setLintSettingsOpen(true)}><Code2 size={14} /></button>
                     ) : null}
-                    {busy
-                      ? <button className="button danger compact" type="button" onClick={() => invoke(stopExecution)}><Square size={13} /> Parar</button>
-                      : <button className="button primary compact" type="button" disabled={!selectedProfile} onClick={() => invoke(runSelectedProfile)}><Play size={13} /> Executar</button>}
                     <button className="icon-button small" type="button" aria-label="Salvar arquivo" title="Salvar arquivo" disabled={!activeDocument} onClick={() => invoke(saveDocument)}><Save size={14} /></button>
                   </div>
                 </div>
@@ -2362,9 +2435,6 @@ export function App() {
                     {activeInteractiveSessionProvider && terminalSessionOpen ? (
                       <div className={`panel-tab-group${panelTab === "terminal" ? " active" : ""}`}>
                         <button className="panel-tab" type="button" onClick={() => setPanelTab("terminal")}>TERMINAL</button>
-                        {terminalIndicators.map((indicator) => (
-                          <span className="terminal-indicator" key={indicator.id} title={indicator.description}>{indicator.label}</span>
-                        ))}
                         <button
                           className="panel-tab-close"
                           type="button"
@@ -2420,6 +2490,29 @@ export function App() {
           onBrowseCommand={() => pickHostPath("file")}
           onChange={updateProfiles}
         />
+
+        <Dialog.Root open={aboutOpen} onOpenChange={setAboutOpen}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="dialog-overlay" />
+            <Dialog.Content className="dialog-content dialog-content--small">
+              <div className="dialog-heading">
+                <div>
+                  <Dialog.Title>Sobre o tinyIde</Dialog.Title>
+                  <Dialog.Description>Editor web extensível orientado a plugins.</Dialog.Description>
+                </div>
+                <Dialog.Close asChild>
+                  <button className="icon-button" type="button" aria-label="Fechar"><X size={16} /></button>
+                </Dialog.Close>
+              </div>
+              <div className="about-content">
+                <img className="about-logo" src="/icon.png" alt="Ícone do tinyIde" />
+                <strong>tinyIde</strong>
+                <span>Versão 0.4.0</span>
+                <p>O núcleo permanece um editor de texto básico. Recursos de IDE são fornecidos por plugins independentes.</p>
+              </div>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
 
         <Dialog.Root open={Boolean(activePluginSettingsProvider)} onOpenChange={(open) => {
           if (!open) setPluginSettingsOpenId(undefined);

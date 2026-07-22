@@ -11,6 +11,9 @@ import type {
   ProcessExecutionRequest,
   PluginSettingsMap,
   PluginSettingsProvider,
+  ResourceContext,
+  ResourceIcon,
+  ResourceIconProvider,
   ScriptExecutionContribution,
   InteractiveSessionCreateOptions,
   InteractiveSessionHookContribution,
@@ -69,6 +72,13 @@ export function scriptExecutionFor(document: OpenDocument | undefined): ScriptEx
     .find((provider) => provider.extensions.some((extension) => lowerName.endsWith(extension)));
 }
 
+export function resourceIconFor(resource: ResourceContext): ResourceIcon | undefined {
+  return platform.capabilities
+    .getAll<ResourceIconProvider>("resource.icon")
+    .map((provider) => provider.provideIcon(resource))
+    .find((icon): icon is ResourceIcon => Boolean(icon));
+}
+
 export function environmentProvider(): ExecutionEnvironmentProvider | undefined {
   return platform.capabilities.getAll<ExecutionEnvironmentProvider>("execution.environment")[0];
 }
@@ -84,18 +94,21 @@ export function mergeTerminalSessionContributions(
   const unsetEnvironmentVariables = new Set<string>();
   const prependPathEntries: string[] = [];
   const indicators: InteractiveSessionIndicator[] = [];
+  let promptPrefix: string | undefined;
   for (const contribution of contributions) {
     if (!contribution) continue;
     for (const name of contribution.unsetEnvironmentVariables ?? []) unsetEnvironmentVariables.add(name);
     Object.assign(environmentVariables, contribution.environmentVariables ?? {});
     prependPathEntries.push(...(contribution.prependPathEntries ?? []));
     indicators.push(...(contribution.indicators ?? []));
+    if (contribution.promptPrefix) promptPrefix = contribution.promptPrefix;
   }
   return {
     options: {
       ...(Object.keys(environmentVariables).length ? { environmentVariables } : {}),
       ...(unsetEnvironmentVariables.size ? { unsetEnvironmentVariables: [...unsetEnvironmentVariables] } : {}),
       ...(prependPathEntries.length ? { prependPathEntries } : {}),
+      ...(promptPrefix ? { promptPrefix } : {}),
     },
     indicators,
   };
