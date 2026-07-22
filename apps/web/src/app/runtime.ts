@@ -9,7 +9,14 @@ import type {
   LanguageProvider,
   LanguageLintSettings,
   ProcessExecutionRequest,
+  PluginSettingsMap,
+  PluginSettingsProvider,
   ScriptExecutionContribution,
+  TerminalSessionCreateOptions,
+  TerminalSessionHookContribution,
+  TerminalSessionHookProvider,
+  TerminalSessionIndicator,
+  TerminalProvider,
   TextDiagnostic,
 } from "@tinyide/plugin-api";
 import type { OpenDocument } from "../browser-filesystem";
@@ -41,6 +48,11 @@ export interface RunProfileCallbacks {
   readonly onOutput: (lines: readonly string[]) => void;
 }
 
+export interface PreparedTerminalSession {
+  readonly options: TerminalSessionCreateOptions;
+  readonly indicators: readonly TerminalSessionIndicator[];
+}
+
 export function languageProviderFor(document: OpenDocument | undefined): LanguageProvider | undefined {
   if (!document) return undefined;
   const lowerName = document.name.toLocaleLowerCase();
@@ -59,6 +71,52 @@ export function scriptExecutionFor(document: OpenDocument | undefined): ScriptEx
 
 export function environmentProvider(): ExecutionEnvironmentProvider | undefined {
   return platform.capabilities.getAll<ExecutionEnvironmentProvider>("execution.environment")[0];
+}
+
+export function terminalProvider(): TerminalProvider | undefined {
+  return platform.capabilities.getAll<TerminalProvider>("terminal.provider")[0];
+}
+
+export function mergeTerminalSessionContributions(
+  contributions: readonly (TerminalSessionHookContribution | undefined)[],
+): PreparedTerminalSession {
+  const environmentVariables: Record<string, string> = {};
+  const unsetEnvironmentVariables = new Set<string>();
+  const prependPathEntries: string[] = [];
+  const indicators: TerminalSessionIndicator[] = [];
+  for (const contribution of contributions) {
+    if (!contribution) continue;
+    for (const name of contribution.unsetEnvironmentVariables ?? []) unsetEnvironmentVariables.add(name);
+    Object.assign(environmentVariables, contribution.environmentVariables ?? {});
+    prependPathEntries.push(...(contribution.prependPathEntries ?? []));
+    indicators.push(...(contribution.indicators ?? []));
+  }
+  return {
+    options: {
+      ...(Object.keys(environmentVariables).length ? { environmentVariables } : {}),
+      ...(unsetEnvironmentVariables.size ? { unsetEnvironmentVariables: [...unsetEnvironmentVariables] } : {}),
+      ...(prependPathEntries.length ? { prependPathEntries } : {}),
+    },
+    indicators,
+  };
+}
+
+export async function prepareTerminalSessionOptions(input: {
+  readonly workspaceRoot?: string;
+  readonly selectedEnvironmentId?: string;
+  readonly pluginSettings?: PluginSettingsMap;
+}): Promise<PreparedTerminalSession> {
+  const hooks = platform.capabilities.getAll<TerminalSessionHookProvider>("terminal.session.hook");
+  const contributions = await Promise.all(hooks.map((hook) => hook.prepare({
+    ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),
+    ...(input.selectedEnvironmentId ? { selectedEnvironmentId: input.selectedEnvironmentId } : {}),
+    settings: input.pluginSettings?.[hook.pluginId] ?? {},
+  })));
+  return mergeTerminalSessionContributions(contributions);
+}
+
+export function pluginSettingsProviders(): readonly PluginSettingsProvider[] {
+  return platform.capabilities.getAll<PluginSettingsProvider>("plugin.settings");
 }
 
 export function environmentProviderFor(document: OpenDocument | undefined): ExecutionEnvironmentProvider | undefined {

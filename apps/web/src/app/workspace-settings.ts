@@ -1,6 +1,7 @@
 import type {
   ExecutionProfile,
   LanguageLintSettings,
+  PluginSettingsMap,
 } from "@tinyide/plugin-api";
 
 export interface WorkspaceExecutionProfiles {
@@ -21,7 +22,7 @@ export interface WorkspaceSettings {
   /** Environment selected for this project. Environment definitions are plugin-owned under .tinyide. */
   readonly environment?: WorkspaceEnvironmentSettings;
   /** Reserved namespace for project-local plugin settings. */
-  readonly plugins?: Readonly<Record<string, unknown>>;
+  readonly plugins?: PluginSettingsMap;
 }
 
 export const EMPTY_WORKSPACE_SETTINGS: WorkspaceSettings = { version: 1 };

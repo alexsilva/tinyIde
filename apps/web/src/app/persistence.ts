@@ -21,7 +21,7 @@ export interface LayoutState {
   readonly sidebarView: PersistedSidebarView;
   readonly panelVisible: boolean;
   readonly panelHeight: number;
-  readonly panelTab: "output" | "problems";
+  readonly panelTab: "output" | "problems" | "terminal";
 }
 
 export interface SessionState extends LayoutState {
@@ -97,7 +97,9 @@ export function readSession(): SessionState {
       sidebarView,
       panelVisible: parsed.panelVisible !== false,
       panelHeight: clamp(Number(parsed.panelHeight) || DEFAULT_LAYOUT.panelHeight, 96, 640),
-      panelTab: parsed.panelTab === "problems" ? "problems" : "output",
+      panelTab: parsed.panelTab === "problems" || parsed.panelTab === "terminal"
+        ? parsed.panelTab
+        : "output",
       workspaceName: typeof parsed.workspaceName === "string" ? parsed.workspaceName : "Sem workspace",
       ...(typeof parsed.workspaceRoot === "string" ? { workspaceRoot: parsed.workspaceRoot } : {}),
       ...(typeof parsed.activeDocumentId === "string" ? { activeDocumentId: parsed.activeDocumentId } : {}),

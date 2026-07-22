@@ -280,6 +280,96 @@ export interface ResourceContextMenuProvider {
 
 export const RESOURCE_CONTEXT_MENU_CAPABILITY = "resource.contextMenu";
 
+export type PluginSettingValue = boolean | string | number;
+
+export type PluginSettingValues = Readonly<Record<string, PluginSettingValue>>;
+
+export type PluginSettingsMap = Readonly<Record<string, PluginSettingValues>>;
+
+export interface PluginBooleanSettingDefinition {
+  readonly id: string;
+  readonly type: "boolean";
+  readonly label: string;
+  readonly description?: string;
+  readonly defaultValue: boolean;
+}
+
+export type PluginSettingDefinition = PluginBooleanSettingDefinition;
+
+export interface PluginSettingsProvider {
+  readonly id: string;
+  readonly pluginId: string;
+  readonly title: string;
+  readonly description?: string;
+  readonly settings: readonly PluginSettingDefinition[];
+}
+
+export const PLUGIN_SETTINGS_CAPABILITY = "plugin.settings";
+
+export interface TerminalSessionInfo {
+  readonly id: string;
+  readonly status: "running" | "exited";
+  readonly workspaceRoot: string;
+  readonly shell: string;
+  readonly platform: string;
+}
+
+export interface TerminalSessionOutput {
+  readonly id: string;
+  readonly data: string;
+  readonly offset: number;
+  readonly status: "running" | "exited";
+  readonly exitCode?: number;
+}
+
+export interface TerminalSessionCreateOptions {
+  readonly cols?: number;
+  readonly rows?: number;
+  readonly environmentVariables?: Readonly<Record<string, string>>;
+  readonly unsetEnvironmentVariables?: readonly string[];
+  readonly prependPathEntries?: readonly string[];
+}
+
+export interface TerminalSessionHookContext {
+  readonly workspaceRoot?: string;
+  readonly selectedEnvironmentId?: string;
+  readonly settings: PluginSettingValues;
+}
+
+export interface TerminalSessionIndicator {
+  readonly id: string;
+  readonly label: string;
+  readonly description?: string;
+}
+
+export interface TerminalSessionHookContribution {
+  readonly environmentVariables?: Readonly<Record<string, string>>;
+  readonly unsetEnvironmentVariables?: readonly string[];
+  readonly prependPathEntries?: readonly string[];
+  readonly indicators?: readonly TerminalSessionIndicator[];
+}
+
+export interface TerminalSessionHookProvider {
+  readonly id: string;
+  readonly pluginId: string;
+  prepare(
+    context: TerminalSessionHookContext,
+  ): Promise<TerminalSessionHookContribution | undefined> | TerminalSessionHookContribution | undefined;
+}
+
+export interface TerminalProvider {
+  readonly id: string;
+  readonly label: string;
+  create(options?: TerminalSessionCreateOptions): Promise<TerminalSessionInfo>;
+  read(sessionId: string, offset?: number): Promise<TerminalSessionOutput>;
+  write(sessionId: string, data: string): Promise<void>;
+  resize(sessionId: string, cols: number, rows: number): Promise<void>;
+  close(sessionId: string): Promise<void>;
+}
+
+export const TERMINAL_PROVIDER_CAPABILITY = "terminal.provider";
+export const TERMINAL_SESSION_HOOK_CAPABILITY = "terminal.session.hook";
+
 export type ExecutionEnvironmentType = "process" | "venv";
 
 export type ExecutionEnvironmentStatus = "ready" | "creating" | "error";

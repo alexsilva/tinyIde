@@ -2,6 +2,8 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as Tooltip from "@radix-ui/react-tooltip";
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal as XTerm } from "@xterm/xterm";
 import {
   Box,
   Check,
@@ -47,9 +49,13 @@ import type {
   ExecutionProfileExecutableOption,
   LanguageLintSettings,
   LanguageProvider,
+  PluginSettingValues,
+  PluginSettingsProvider,
   ResourceContext,
   ResourceContextMenuItem,
   ResourceContextMenuProvider,
+  TerminalProvider,
+  TerminalSessionIndicator,
   TextDiagnostic,
 } from "@tinyide/plugin-api";
 import {
@@ -83,10 +89,17 @@ import {
   readHostContext,
   runExecutionProfile,
   runScript,
+  prepareTerminalSessionOptions,
+  pluginSettingsProviders,
   scriptExecutionFor,
   setHostWorkspace,
   stopHostProcess,
+  terminalProvider,
 } from "./runtime";
+import {
+  resolvePluginSettingValues,
+  updatePluginSettingValue,
+} from "./plugin-settings";
 import {
   EMPTY_WORKSPACE_SETTINGS,
   readWorkspaceSettings,
@@ -768,6 +781,107 @@ function ProfileDialog({
   );
 }
 
+function TerminalPanel({
+  provider,
+  workspaceRoot,
+  selectedEnvironmentId,
+  pluginSettings,
+  onIndicatorsChange,
+}: {
+  readonly provider: TerminalProvider;
+  readonly workspaceRoot?: string;
+  readonly selectedEnvironmentId?: string;
+  readonly pluginSettings?: WorkspaceSettings["plugins"];
+  readonly onIndicatorsChange: (indicators: readonly TerminalSessionIndicator[]) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const terminal = new XTerm({
+      cursorBlink: true,
+      fontFamily: '"JetBrains Mono", "Fira Code", Consolas, monospace',
+      fontSize: 12,
+      scrollback: 10_000,
+      theme: {
+        background: "#0e1116",
+        foreground: "#d4d8df",
+        cursor: "#f2f4f8",
+        selectionBackground: "#35548a",
+      },
+    });
+    const fitAddon = new FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminal.open(container);
+    let sessionId: string | undefined;
+    let offset = 0;
+    let timer: number | undefined;
+    let disposed = false;
+
+    const fit = () => {
+      fitAddon.fit();
+      if (sessionId) void provider.resize(sessionId, terminal.cols, terminal.rows).catch(() => undefined);
+    };
+    const observer = new ResizeObserver(fit);
+    observer.observe(container);
+    fit();
+
+    const input = terminal.onData((data) => {
+      if (sessionId) void provider.write(sessionId, data).catch((cause) => {
+        terminal.writeln(`\r\n[terminal] ${cause instanceof Error ? cause.message : String(cause)}`);
+      });
+    });
+
+    const poll = async () => {
+      if (!sessionId || disposed) return;
+      try {
+        const snapshot = await provider.read(sessionId, offset);
+        offset = snapshot.offset;
+        if (snapshot.data) terminal.write(snapshot.data);
+        if (snapshot.status === "running") timer = window.setTimeout(() => void poll(), 60);
+        else terminal.writeln(`\r\n[processo encerrado: ${snapshot.exitCode ?? -1}]`);
+      } catch (cause) {
+        terminal.writeln(`\r\n[terminal] ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
+    };
+
+    void prepareTerminalSessionOptions({
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+      ...(selectedEnvironmentId ? { selectedEnvironmentId } : {}),
+      ...(pluginSettings ? { pluginSettings } : {}),
+    })
+      .then((prepared) => {
+        onIndicatorsChange(prepared.indicators);
+        return provider.create({
+          ...prepared.options,
+          cols: terminal.cols,
+          rows: terminal.rows,
+        });
+      })
+      .then((session) => {
+        if (disposed) return provider.close(session.id);
+        sessionId = session.id;
+        terminal.focus();
+        void poll();
+      })
+      .catch((cause) => terminal.writeln(`[terminal] ${cause instanceof Error ? cause.message : String(cause)}`));
+
+    return () => {
+      disposed = true;
+      observer.disconnect();
+      input.dispose();
+      if (timer) window.clearTimeout(timer);
+      if (sessionId) void provider.close(sessionId).catch(() => undefined);
+      onIndicatorsChange([]);
+      terminal.dispose();
+    };
+  }, [provider]);
+
+  return <div className="terminal-surface" ref={containerRef} aria-label="Terminal do workspace" />;
+}
+
 export function App() {
   const initialSession = useMemo(() => readSession(), []);
   const [platformSnapshot, setPlatformSnapshot] = useState(() => platform.snapshot());
@@ -776,7 +890,8 @@ export function App() {
   const [sidebarWidth, setSidebarWidth] = useState(initialSession.sidebarWidth);
   const [panelVisible, setPanelVisible] = useState(initialSession.panelVisible);
   const [panelHeight, setPanelHeight] = useState(initialSession.panelHeight);
-  const [panelTab, setPanelTab] = useState<"output" | "problems">(initialSession.panelTab);
+  const [panelTab, setPanelTab] = useState<"output" | "problems" | "terminal">(initialSession.panelTab);
+  const [terminalSessionOpen, setTerminalSessionOpen] = useState(initialSession.panelTab === "terminal");
   const [workspaceHandle, setWorkspaceHandle] = useState<BrowserDirectoryHandle>();
   const [workspaceName, setWorkspaceName] = useState(initialSession.workspaceName);
   const [workspaceRoot, setWorkspaceRoot] = useState<string | undefined>(initialSession.workspaceRoot);
@@ -809,6 +924,10 @@ export function App() {
   const [lintSettingsOpen, setLintSettingsOpen] = useState(false);
   const [lintEnabledRuleIds, setLintEnabledRuleIds] = useState<readonly string[]>([]);
   const [pluginRemovalId, setPluginRemovalId] = useState<string>();
+  const [pluginSettingsOpenId, setPluginSettingsOpenId] = useState<string>();
+  const [pluginSettingsDraft, setPluginSettingsDraft] = useState<PluginSettingValues>({});
+  const [terminalIndicators, setTerminalIndicators] = useState<readonly TerminalSessionIndicator[]>([]);
+  const [terminalSessionRevision, setTerminalSessionRevision] = useState(0);
   const [error, setError] = useState<string>();
   const [workspaceAccess, setWorkspaceAccess] = useState<"ready" | "permission-required" | "missing">("ready");
   const [explorerCreation, setExplorerCreation] = useState<"file" | "directory">();
@@ -828,7 +947,10 @@ export function App() {
 
   const activeDocument = documents.find((document) => document.id === activeDocumentId);
   const activeLanguageProvider = languageProviderFor(activeDocument);
+  const activeTerminalProvider = terminalProvider();
   const selectedProfile = profilesState.profiles.find((profile) => profile.id === profilesState.selectedId);
+  const settingsProviders = pluginSettingsProviders();
+  const activePluginSettingsProvider = settingsProviders.find((provider) => provider.pluginId === pluginSettingsOpenId);
 
   const replaceWorkspaceSettings = useCallback((settings: WorkspaceSettings) => {
     workspaceSettingsRef.current = settings;
@@ -1833,6 +1955,32 @@ export function App() {
     ? environments.find((environment) => environment.id === editingEnvironmentId)
     : undefined;
 
+  const openPluginSettings = (provider: PluginSettingsProvider) => {
+    setPluginSettingsOpenId(provider.pluginId);
+    setPluginSettingsDraft(resolvePluginSettingValues(provider, workspaceSettings.plugins?.[provider.pluginId]));
+  };
+
+  const applyPluginSetting = async (settingId: string, value: boolean) => {
+    if (!activePluginSettingsProvider) return;
+    const values = updatePluginSettingValue(
+      resolvePluginSettingValues(activePluginSettingsProvider, pluginSettingsDraft),
+      settingId,
+      value,
+    );
+    setPluginSettingsDraft(values);
+    await updateWorkspaceSettings((current) => ({
+      ...current,
+      plugins: {
+        ...current.plugins,
+        [activePluginSettingsProvider.pluginId]: values,
+      },
+    }));
+    if (terminalSessionOpen) {
+      setTerminalIndicators([]);
+      setTerminalSessionRevision((revision) => revision + 1);
+    }
+  };
+
   return (
     <Tooltip.Provider delayDuration={350}>
       <div className="ide-shell">
@@ -1888,6 +2036,19 @@ export function App() {
             <IconButton label="Painel inferior" active={panelVisible} onClick={() => setPanelVisible((visible) => !visible)}>
               <Terminal size={20} />
             </IconButton>
+            {activeTerminalProvider ? (
+              <IconButton
+                label="Terminal"
+                active={panelVisible && panelTab === "terminal"}
+                onClick={() => {
+                  setTerminalSessionOpen(true);
+                  setPanelTab("terminal");
+                  setPanelVisible(true);
+                }}
+              >
+                <Code2 size={20} />
+              </IconButton>
+            ) : null}
           </aside>
 
           {sidebarVisible ? (
@@ -1979,6 +2140,18 @@ export function App() {
                         <small>{plugin.manifest.id} · {plugin.manifest.version}</small>
                         <div className="plugin-actions">
                           <button className="button secondary compact" type="button" onClick={() => invoke(() => platform.setEnabled(plugin.manifest.id, !enabled))}>{enabled ? "Desativar" : "Ativar"}</button>
+                          {settingsProviders.some((provider) => provider.pluginId === plugin.manifest.id) ? (
+                            <button
+                              className="button secondary compact"
+                              type="button"
+                              onClick={() => {
+                                const provider = settingsProviders.find((candidate) => candidate.pluginId === plugin.manifest.id);
+                                if (provider) openPluginSettings(provider);
+                              }}
+                            >
+                              <Settings2 size={13} /> Configurar
+                            </button>
+                          ) : null}
                         </div>
                       </article>
                     );
@@ -2179,14 +2352,50 @@ export function App() {
               </div>
             )}
 
-            {panelVisible ? (
-              <section className="output-panel" style={{ height: panelHeight }}>
+            {panelVisible || terminalSessionOpen ? (
+              <section className={`output-panel${panelVisible ? "" : " output-panel--hidden"}`} style={{ height: panelHeight }}>
                 <div className="resize-handle resize-handle--panel" role="separator" aria-label="Redimensionar painel inferior" onPointerDown={beginPanelResize} onDoubleClick={() => setPanelHeight(DEFAULT_LAYOUT.panelHeight)} />
                 <div className="panel-heading">
-                  <div className="panel-tabs"><button className={`panel-tab${panelTab === "output" ? " active" : ""}`} type="button" onClick={() => setPanelTab("output")}>SAÍDA</button><button className={`panel-tab${panelTab === "problems" ? " active" : ""}`} type="button" onClick={() => setPanelTab("problems")}>PROBLEMAS <span>{diagnostics.length}</span></button></div>
+                  <div className="panel-tabs">
+                    <button className={`panel-tab${panelTab === "output" ? " active" : ""}`} type="button" onClick={() => setPanelTab("output")}>SAÍDA</button>
+                    <button className={`panel-tab${panelTab === "problems" ? " active" : ""}`} type="button" onClick={() => setPanelTab("problems")}>PROBLEMAS <span>{diagnostics.length}</span></button>
+                    {activeTerminalProvider && terminalSessionOpen ? (
+                      <div className={`panel-tab-group${panelTab === "terminal" ? " active" : ""}`}>
+                        <button className="panel-tab" type="button" onClick={() => setPanelTab("terminal")}>TERMINAL</button>
+                        {terminalIndicators.map((indicator) => (
+                          <span className="terminal-indicator" key={indicator.id} title={indicator.description}>{indicator.label}</span>
+                        ))}
+                        <button
+                          className="panel-tab-close"
+                          type="button"
+                          aria-label="Encerrar terminal"
+                          title="Encerrar terminal"
+                          onClick={() => {
+                            setTerminalSessionOpen(false);
+                            setPanelTab("output");
+                          }}
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                   <button className="icon-button small" type="button" aria-label="Fechar painel" onClick={() => setPanelVisible(false)}><X size={14} /></button>
                 </div>
-                {panelTab === "output" ? <pre>{output.join("\n")}</pre> : <div className="problems-list">{diagnostics.length ? diagnostics.map((diagnostic, index) => <button type="button" key={`${diagnostic.line}:${index}`}><strong>{diagnostic.severity}</strong><span>{diagnostic.line}:{diagnostic.column}</span><span>{diagnostic.message}</span></button>) : <p>Nenhum problema detectado.</p>}</div>}
+                <pre hidden={panelTab !== "output"}>{output.join("\n")}</pre>
+                <div className="problems-list" hidden={panelTab !== "problems"}>{diagnostics.length ? diagnostics.map((diagnostic, index) => <button type="button" key={`${diagnostic.line}:${index}`}><strong>{diagnostic.severity}</strong><span>{diagnostic.line}:{diagnostic.column}</span><span>{diagnostic.message}</span></button>) : <p>Nenhum problema detectado.</p>}</div>
+                {activeTerminalProvider && terminalSessionOpen ? (
+                  <div className="terminal-panel-host" hidden={panelTab !== "terminal"}>
+                    <TerminalPanel
+                      key={terminalSessionRevision}
+                      provider={activeTerminalProvider}
+                      {...(workspaceRoot ? { workspaceRoot } : {})}
+                      {...(selectedEnvironmentId ? { selectedEnvironmentId } : {})}
+                      {...(workspaceSettings.plugins ? { pluginSettings: workspaceSettings.plugins } : {})}
+                      onIndicatorsChange={setTerminalIndicators}
+                    />
+                  </div>
+                ) : null}
               </section>
             ) : null}
           </main>
@@ -2211,6 +2420,44 @@ export function App() {
           onBrowseCommand={() => pickHostPath("file")}
           onChange={updateProfiles}
         />
+
+        <Dialog.Root open={Boolean(activePluginSettingsProvider)} onOpenChange={(open) => {
+          if (!open) setPluginSettingsOpenId(undefined);
+        }}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="dialog-overlay" />
+            <Dialog.Content className="plugin-settings-dialog">
+              <div className="dialog-heading">
+                <div>
+                  <span className="eyebrow">PLUGIN</span>
+                  <Dialog.Title>{activePluginSettingsProvider?.title ?? "Configurações"}</Dialog.Title>
+                  <Dialog.Description>
+                    {activePluginSettingsProvider?.description ?? "Configurações específicas deste plugin para o workspace."}
+                  </Dialog.Description>
+                </div>
+                <Dialog.Close asChild><button className="icon-button" type="button" aria-label="Fechar"><X size={16} /></button></Dialog.Close>
+              </div>
+              <div className="plugin-setting-list">
+                {(activePluginSettingsProvider?.settings ?? []).map((setting) => (
+                  <label className="plugin-setting" key={setting.id}>
+                    <input
+                      type="checkbox"
+                      checked={pluginSettingsDraft[setting.id] !== false}
+                      onChange={(event) => invoke(() => applyPluginSetting(setting.id, event.target.checked))}
+                    />
+                    <span>
+                      <strong>{setting.label}</strong>
+                      {setting.description ? <small>{setting.description}</small> : null}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div className="dialog-actions plugin-settings-actions">
+                <button className="button primary" type="button" onClick={() => setPluginSettingsOpenId(undefined)}>Concluir</button>
+              </div>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
 
         <Dialog.Root open={lintSettingsOpen} onOpenChange={setLintSettingsOpen}>
           <Dialog.Portal>

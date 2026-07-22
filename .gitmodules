@@ -4,3 +4,6 @@
 [submodule "plugins/python-venv"]
 	path = plugins/python-venv
 	url = ./.repos/tinyide-python-venv
+[submodule "plugins/terminal"]
+	path = plugins/terminal
+	url = ./.repos/tinyide-terminal
