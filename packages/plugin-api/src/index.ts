@@ -370,7 +370,20 @@ export interface TerminalProvider {
 export const TERMINAL_PROVIDER_CAPABILITY = "terminal.provider";
 export const TERMINAL_SESSION_HOOK_CAPABILITY = "terminal.session.hook";
 
-export type ExecutionEnvironmentType = "process" | "venv";
+/** Generic interactive byte-stream session rendered by a workbench host. */
+export type InteractiveSessionInfo = TerminalSessionInfo;
+export type InteractiveSessionOutput = TerminalSessionOutput;
+export type InteractiveSessionCreateOptions = TerminalSessionCreateOptions;
+export type InteractiveSessionIndicator = TerminalSessionIndicator;
+export type InteractiveSessionHookContext = TerminalSessionHookContext;
+export type InteractiveSessionHookContribution = TerminalSessionHookContribution;
+export type InteractiveSessionHookProvider = TerminalSessionHookProvider;
+export type InteractiveSessionProvider = TerminalProvider;
+
+export const INTERACTIVE_SESSION_PROVIDER_CAPABILITY = "interactive.session";
+export const INTERACTIVE_SESSION_HOOK_CAPABILITY = "interactive.session.hook";
+
+export type ExecutionEnvironmentType = string;
 
 export type ExecutionEnvironmentStatus = "ready" | "creating" | "error";
 
@@ -386,18 +399,18 @@ export interface ExecutionEnvironment {
   readonly error?: string;
 }
 
-export interface ExecutionEnvironmentCreateVenvRequest {
+export interface ExecutionEnvironmentCreateRequest {
   readonly name: string;
-  readonly pythonExecutable: string;
+  readonly baseExecutable: string;
   readonly path?: string;
 }
 
-export interface ExecutionEnvironmentAddProcessRequest {
+export interface ExecutionEnvironmentAddExecutableRequest {
   readonly name: string;
   readonly executable: string;
 }
 
-export interface ExecutionEnvironmentAddVenvRequest {
+export interface ExecutionEnvironmentImportRequest {
   readonly name?: string;
   readonly path: string;
 }
@@ -450,14 +463,14 @@ export interface ExecutionEnvironmentProvider {
   readonly name: string;
   readonly extensions: readonly string[];
   list(): Promise<readonly ExecutionEnvironment[]>;
-  createVenv(request: ExecutionEnvironmentCreateVenvRequest): Promise<ExecutionEnvironment>;
-  addProcess(request: ExecutionEnvironmentAddProcessRequest): Promise<ExecutionEnvironment>;
-  addVenv(request: ExecutionEnvironmentAddVenvRequest): Promise<ExecutionEnvironment>;
+  create(request: ExecutionEnvironmentCreateRequest): Promise<ExecutionEnvironment>;
+  addExecutable(request: ExecutionEnvironmentAddExecutableRequest): Promise<ExecutionEnvironment>;
+  importEnvironment(request: ExecutionEnvironmentImportRequest): Promise<ExecutionEnvironment>;
   update?(environmentId: string, request: ExecutionEnvironmentUpdateRequest): Promise<ExecutionEnvironment>;
   browse?(request?: ExecutionEnvironmentBrowseRequest): Promise<ExecutionEnvironmentDirectoryListing>;
-  validatePythonExecutable?(path: string): Promise<{ readonly executable: string; readonly version: string }>;
+  validateExecutable?(path: string): Promise<{ readonly executable: string; readonly version?: string }>;
   remove(environmentId: string): Promise<void>;
-  installPackages(environmentId: string, packages: readonly string[]): Promise<ExecutionEnvironment>;
+  installDependencies(environmentId: string, dependencies: readonly string[]): Promise<ExecutionEnvironment>;
   run(
     environmentId: string,
     request: ExecutionEnvironmentRunRequest,

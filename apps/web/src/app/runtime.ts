@@ -12,11 +12,11 @@ import type {
   PluginSettingsMap,
   PluginSettingsProvider,
   ScriptExecutionContribution,
-  TerminalSessionCreateOptions,
-  TerminalSessionHookContribution,
-  TerminalSessionHookProvider,
-  TerminalSessionIndicator,
-  TerminalProvider,
+  InteractiveSessionCreateOptions,
+  InteractiveSessionHookContribution,
+  InteractiveSessionHookProvider,
+  InteractiveSessionIndicator,
+  InteractiveSessionProvider,
   TextDiagnostic,
 } from "@tinyide/plugin-api";
 import type { OpenDocument } from "../browser-filesystem";
@@ -49,8 +49,8 @@ export interface RunProfileCallbacks {
 }
 
 export interface PreparedTerminalSession {
-  readonly options: TerminalSessionCreateOptions;
-  readonly indicators: readonly TerminalSessionIndicator[];
+  readonly options: InteractiveSessionCreateOptions;
+  readonly indicators: readonly InteractiveSessionIndicator[];
 }
 
 export function languageProviderFor(document: OpenDocument | undefined): LanguageProvider | undefined {
@@ -73,17 +73,17 @@ export function environmentProvider(): ExecutionEnvironmentProvider | undefined 
   return platform.capabilities.getAll<ExecutionEnvironmentProvider>("execution.environment")[0];
 }
 
-export function terminalProvider(): TerminalProvider | undefined {
-  return platform.capabilities.getAll<TerminalProvider>("terminal.provider")[0];
+export function interactiveSessionProvider(): InteractiveSessionProvider | undefined {
+  return platform.capabilities.getAll<InteractiveSessionProvider>("interactive.session")[0];
 }
 
 export function mergeTerminalSessionContributions(
-  contributions: readonly (TerminalSessionHookContribution | undefined)[],
+  contributions: readonly (InteractiveSessionHookContribution | undefined)[],
 ): PreparedTerminalSession {
   const environmentVariables: Record<string, string> = {};
   const unsetEnvironmentVariables = new Set<string>();
   const prependPathEntries: string[] = [];
-  const indicators: TerminalSessionIndicator[] = [];
+  const indicators: InteractiveSessionIndicator[] = [];
   for (const contribution of contributions) {
     if (!contribution) continue;
     for (const name of contribution.unsetEnvironmentVariables ?? []) unsetEnvironmentVariables.add(name);
@@ -106,7 +106,7 @@ export async function prepareTerminalSessionOptions(input: {
   readonly selectedEnvironmentId?: string;
   readonly pluginSettings?: PluginSettingsMap;
 }): Promise<PreparedTerminalSession> {
-  const hooks = platform.capabilities.getAll<TerminalSessionHookProvider>("terminal.session.hook");
+  const hooks = platform.capabilities.getAll<InteractiveSessionHookProvider>("interactive.session.hook");
   const contributions = await Promise.all(hooks.map((hook) => hook.prepare({
     ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),
     ...(input.selectedEnvironmentId ? { selectedEnvironmentId: input.selectedEnvironmentId } : {}),

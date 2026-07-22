@@ -54,8 +54,8 @@ import type {
   ResourceContext,
   ResourceContextMenuItem,
   ResourceContextMenuProvider,
-  TerminalProvider,
-  TerminalSessionIndicator,
+  InteractiveSessionProvider,
+  InteractiveSessionIndicator,
   TextDiagnostic,
 } from "@tinyide/plugin-api";
 import {
@@ -94,7 +94,7 @@ import {
   scriptExecutionFor,
   setHostWorkspace,
   stopHostProcess,
-  terminalProvider,
+  interactiveSessionProvider,
 } from "./runtime";
 import {
   resolvePluginSettingValues,
@@ -170,7 +170,7 @@ function makeProfile(): ExecutionProfile {
       {
         id: "step-1",
         name: "Executar",
-        executable: "python",
+        executable: "",
         command: "",
         parameters: [],
         workingDirectory: "${workspaceRoot}",
@@ -781,18 +781,18 @@ function ProfileDialog({
   );
 }
 
-function TerminalPanel({
+function InteractiveSessionPanel({
   provider,
   workspaceRoot,
   selectedEnvironmentId,
   pluginSettings,
   onIndicatorsChange,
 }: {
-  readonly provider: TerminalProvider;
+  readonly provider: InteractiveSessionProvider;
   readonly workspaceRoot?: string;
   readonly selectedEnvironmentId?: string;
   readonly pluginSettings?: WorkspaceSettings["plugins"];
-  readonly onIndicatorsChange: (indicators: readonly TerminalSessionIndicator[]) => void;
+  readonly onIndicatorsChange: (indicators: readonly InteractiveSessionIndicator[]) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -906,7 +906,7 @@ export function App() {
   const [environments, setEnvironments] = useState<readonly ExecutionEnvironment[]>([]);
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | undefined>();
   const [environmentBusy, setEnvironmentBusy] = useState(false);
-  const [environmentForm, setEnvironmentForm] = useState<"addProcess" | "addVenv" | "createVenv" | "packages" | "edit">();
+  const [environmentForm, setEnvironmentForm] = useState<"addExecutable" | "importEnvironment" | "createEnvironment" | "dependencies" | "edit">();
   const [editingEnvironmentId, setEditingEnvironmentId] = useState<string>();
   const [environmentPath, setEnvironmentPath] = useState("");
   const [environmentBrowserMode, setEnvironmentBrowserMode] = useState<"directory" | "file">();
@@ -926,7 +926,7 @@ export function App() {
   const [pluginRemovalId, setPluginRemovalId] = useState<string>();
   const [pluginSettingsOpenId, setPluginSettingsOpenId] = useState<string>();
   const [pluginSettingsDraft, setPluginSettingsDraft] = useState<PluginSettingValues>({});
-  const [terminalIndicators, setTerminalIndicators] = useState<readonly TerminalSessionIndicator[]>([]);
+  const [terminalIndicators, setTerminalIndicators] = useState<readonly InteractiveSessionIndicator[]>([]);
   const [terminalSessionRevision, setTerminalSessionRevision] = useState(0);
   const [error, setError] = useState<string>();
   const [workspaceAccess, setWorkspaceAccess] = useState<"ready" | "permission-required" | "missing">("ready");
@@ -947,7 +947,7 @@ export function App() {
 
   const activeDocument = documents.find((document) => document.id === activeDocumentId);
   const activeLanguageProvider = languageProviderFor(activeDocument);
-  const activeTerminalProvider = terminalProvider();
+  const activeInteractiveSessionProvider = interactiveSessionProvider();
   const selectedProfile = profilesState.profiles.find((profile) => profile.id === profilesState.selectedId);
   const settingsProviders = pluginSettingsProviders();
   const activePluginSettingsProvider = settingsProviders.find((provider) => provider.pluginId === pluginSettingsOpenId);
@@ -1636,7 +1636,7 @@ export function App() {
         : undefined
     ) ?? environments.find((environment) => environment.status === "ready" && environment.executable);
     if (!selectedEnvironment?.executable || selectedEnvironment.status !== "ready") {
-      throw new Error("Configure um ambiente Python pronto antes de executar o script.");
+      throw new Error("Configure um ambiente de execução pronto antes de executar o arquivo.");
     }
     setBusy(true);
     setPanelVisible(true);
@@ -1815,8 +1815,8 @@ export function App() {
     if (!selection || !mode) return;
     const provider = environmentProvider();
     if (mode === "file" && environmentBrowserExecutableOnly) {
-      if (!provider?.validatePythonExecutable) throw new Error("O gerenciador não valida executáveis Python.");
-      await provider.validatePythonExecutable(selection);
+      if (!provider?.validateExecutable) throw new Error("O gerenciador não valida executáveis deste tipo.");
+      await provider.validateExecutable(selection);
     }
     setEnvironmentPath(selection);
     browserResolverRef.current?.(selection);
@@ -1840,27 +1840,27 @@ export function App() {
     const data = new FormData(event.currentTarget);
     setEnvironmentBusy(true);
     try {
-      if (environmentForm === "addProcess") {
+      if (environmentForm === "addExecutable") {
         const name = String(data.get("name") ?? "").trim();
-        if (!name || !environmentPath) throw new Error("Informe o nome e selecione o executável Python.");
-        const created = await provider.addProcess({ name, executable: environmentPath });
+        if (!name || !environmentPath) throw new Error("Informe o nome e selecione o executável.");
+        const created = await provider.addExecutable({ name, executable: environmentPath });
         await refreshEnvironments(created.id);
-      } else if (environmentForm === "addVenv") {
-        if (!environmentPath) throw new Error("Selecione a pasta do ambiente virtual.");
+      } else if (environmentForm === "importEnvironment") {
+        if (!environmentPath) throw new Error("Selecione a pasta do ambiente.");
         const name = String(data.get("name") ?? "").trim();
-        const created = await provider.addVenv({
+        const created = await provider.importEnvironment({
           path: environmentPath,
           ...(name ? { name } : {}),
         });
         await refreshEnvironments(created.id);
-      } else if (environmentForm === "createVenv") {
+      } else if (environmentForm === "createEnvironment") {
         const name = String(data.get("name") ?? "").trim();
-        const pythonExecutable = String(data.get("pythonExecutable") ?? "").trim();
+        const baseExecutable = String(data.get("baseExecutable") ?? "").trim();
         const path = String(data.get("path") ?? "").trim();
-        if (!name || !pythonExecutable) throw new Error("Informe o nome e o Python de origem.");
-        const created = await provider.createVenv({
+        if (!name || !baseExecutable) throw new Error("Informe o nome e o executável de origem.");
+        const created = await provider.create({
           name,
-          pythonExecutable,
+          baseExecutable,
           ...(path ? { path } : {}),
         });
         await refreshEnvironments(created.id);
@@ -1878,10 +1878,10 @@ export function App() {
           : { name, executable: location });
         await refreshEnvironments(updated.id);
       } else {
-        if (!selectedEnvironmentId) throw new Error("Selecione um ambiente virtual.");
-        const packages = String(data.get("packages") ?? "").trim().split(/\s+/).filter(Boolean);
-        if (!packages.length) throw new Error("Informe ao menos um pacote.");
-        await provider.installPackages(selectedEnvironmentId, packages);
+        if (!selectedEnvironmentId) throw new Error("Selecione um ambiente.");
+        const dependencies = String(data.get("dependencies") ?? "").trim().split(/\s+/).filter(Boolean);
+        if (!dependencies.length) throw new Error("Informe ao menos uma dependência.");
+        await provider.installDependencies(selectedEnvironmentId, dependencies);
         await refreshEnvironments();
       }
       setEnvironmentForm(undefined);
@@ -2036,7 +2036,7 @@ export function App() {
             <IconButton label="Painel inferior" active={panelVisible} onClick={() => setPanelVisible((visible) => !visible)}>
               <Terminal size={20} />
             </IconButton>
-            {activeTerminalProvider ? (
+            {activeInteractiveSessionProvider ? (
               <IconButton
                 label="Terminal"
                 active={panelVisible && panelTab === "terminal"}
@@ -2170,36 +2170,36 @@ export function App() {
                 <div className="sidebar-content environment-manager">
                   <div className="environment-manager__intro">
                     <div>
-                      <strong>Ambientes Python</strong>
-                      <p>Cadastre interpretadores e ambientes virtuais disponíveis.</p>
+                      <strong>{environmentProvider()?.name ?? "Ambientes de execução"}</strong>
+                      <p>Gerencie runtimes e ambientes fornecidos pelo plugin ativo.</p>
                     </div>
                     <button className="icon-button small" type="button" aria-label="Atualizar ambientes" onClick={() => invoke(refreshEnvironments)}><RefreshCw size={14} /></button>
                   </div>
                   <div className="environment-manager__toolbar">
-                    <button className="button secondary compact" type="button" onClick={() => { setEnvironmentForm("addProcess"); setEnvironmentPath(""); }}><Terminal size={14} /> Adicionar Python</button>
-                    <button className="button secondary compact" type="button" onClick={() => { setEnvironmentForm("addVenv"); setEnvironmentPath(""); }}><FolderOpen size={14} /> Adicionar venv</button>
-                    <button className="button primary compact" type="button" onClick={() => { setEnvironmentForm("createVenv"); setEnvironmentPath(""); }}><Plus size={14} /> Criar venv</button>
+                    <button className="button secondary compact" type="button" onClick={() => { setEnvironmentForm("addExecutable"); setEnvironmentPath(""); }}><Terminal size={14} /> Adicionar executável</button>
+                    <button className="button secondary compact" type="button" onClick={() => { setEnvironmentForm("importEnvironment"); setEnvironmentPath(""); }}><FolderOpen size={14} /> Importar ambiente</button>
+                    <button className="button primary compact" type="button" onClick={() => { setEnvironmentForm("createEnvironment"); setEnvironmentPath(""); }}><Plus size={14} /> Criar ambiente</button>
                   </div>
 
                   {environmentForm ? (
                     <form className="environment-form" onSubmit={(event) => invoke(() => submitEnvironmentForm(event))}>
-                      <strong>{environmentForm === "addProcess" ? "Adicionar Python" : environmentForm === "addVenv" ? "Adicionar venv existente" : environmentForm === "createVenv" ? "Criar ambiente virtual" : environmentForm === "edit" ? "Editar ambiente" : "Instalar pacotes"}</strong>
-                      {environmentForm === "addProcess" ? (
+                      <strong>{environmentForm === "addExecutable" ? "Adicionar executável" : environmentForm === "importEnvironment" ? "Importar ambiente existente" : environmentForm === "createEnvironment" ? "Criar ambiente" : environmentForm === "edit" ? "Editar ambiente" : "Instalar dependências"}</strong>
+                      {environmentForm === "addExecutable" ? (
                         <>
-                          <label>Nome<input name="name" placeholder="Python 3.12" /></label>
+                          <label>Nome<input name="name" placeholder="Runtime local" /></label>
                           <label>Executável<div className="path-row"><input readOnly value={environmentPath} placeholder="Nenhum executável selecionado" /><button className="button secondary compact" type="button" onClick={() => invoke(async () => { const path = await pickHostPath("file", true); if (path) setEnvironmentPath(path); })}>Procurar</button></div></label>
                         </>
                       ) : null}
-                      {environmentForm === "addVenv" ? (
+                      {environmentForm === "importEnvironment" ? (
                         <>
                           <label>Nome opcional<input name="name" /></label>
                           <label>Pasta<div className="path-row"><input readOnly value={environmentPath} placeholder="Nenhum venv selecionado" /><button className="button secondary compact" type="button" onClick={() => invoke(async () => { const path = await pickHostPath("directory"); if (path) setEnvironmentPath(path); })}>Procurar</button></div></label>
                         </>
                       ) : null}
-                      {environmentForm === "createVenv" ? (
+                      {environmentForm === "createEnvironment" ? (
                         <>
                           <label>Nome<input name="name" defaultValue=".venv" /></label>
-                          <label>Python de origem<select name="pythonExecutable" defaultValue={environments.find((environment) => environment.executable)?.executable ?? ""}><option value="">Selecione</option>{environments.filter((environment) => environment.executable).map((environment) => <option key={environment.id} value={environment.executable}>{environment.name}</option>)}</select></label>
+                          <label>Executável de origem<select name="baseExecutable" defaultValue={environments.find((environment) => environment.executable)?.executable ?? ""}><option value="">Selecione</option>{environments.filter((environment) => environment.executable).map((environment) => <option key={environment.id} value={environment.executable}>{environment.name}</option>)}</select></label>
                           <label>Diretório opcional<input name="path" /></label>
                         </>
                       ) : null}
@@ -2209,7 +2209,7 @@ export function App() {
                           <label>{editingEnvironment.type === "venv" ? "Pasta" : "Executável"}<div className="path-row"><input readOnly value={environmentPath} /><button className="button secondary compact" type="button" onClick={() => invoke(async () => { const path = await pickHostPath(editingEnvironment.type === "venv" ? "directory" : "file", editingEnvironment.type === "process"); if (path) setEnvironmentPath(path); })}>Procurar</button></div></label>
                         </>
                       ) : null}
-                      {environmentForm === "packages" ? <label>Pacotes<input name="packages" placeholder="django requests" /></label> : null}
+                      {environmentForm === "dependencies" ? <label>Dependências<input name="dependencies" placeholder="pacote-a pacote-b" /></label> : null}
                       <div className="dialog-actions"><button className="button secondary compact" type="button" onClick={() => setEnvironmentForm(undefined)}>Cancelar</button><button className="button primary compact" disabled={environmentBusy} type="submit">Confirmar</button></div>
                     </form>
                   ) : null}
@@ -2218,11 +2218,11 @@ export function App() {
                     {environments.map((environment) => (
                       <article className={`environment-card${selectedEnvironmentId === environment.id ? " is-active" : ""}`} key={environment.id}>
                         <button className="card-delete" type="button" aria-label={`Remover ${environment.name}`} title={`Remover ${environment.name}`} onClick={() => invoke(() => removeEnvironment(environment.id))}><X size={14} /></button>
-                        <div><strong>{environment.name}</strong><span>{environment.type === "venv" ? "Ambiente virtual" : "Executável Python"}{environment.version ? ` · ${environment.version}` : ""}</span><small>{environment.executable}</small></div>
+                        <div><strong>{environment.name}</strong><span>{environment.type === "venv" ? "Ambiente isolado" : "Executável"}{environment.version ? ` · ${environment.version}` : ""}</span><small>{environment.executable}</small></div>
                         <div className="environment-card__actions">
                           <button className="button secondary compact" disabled={selectedEnvironmentId === environment.id} type="button" onClick={() => selectEnvironment(environment.id)}>{selectedEnvironmentId === environment.id ? "Selecionado" : "Selecionar"}</button>
                           {environmentProvider()?.update ? <button className="button secondary compact" type="button" onClick={() => { setEditingEnvironmentId(environment.id); setEnvironmentPath(environment.type === "venv" ? environment.path ?? "" : environment.executable ?? ""); setEnvironmentForm("edit"); }}>Editar</button> : null}
-                          {environment.type === "venv" ? <button className="button secondary compact" type="button" onClick={() => { selectEnvironment(environment.id); setEnvironmentForm("packages"); }}>Pacotes</button> : null}
+                          {environment.type === "venv" ? <button className="button secondary compact" type="button" onClick={() => { selectEnvironment(environment.id); setEnvironmentForm("dependencies"); }}>Dependências</button> : null}
                         </div>
                       </article>
                     ))}
@@ -2359,7 +2359,7 @@ export function App() {
                   <div className="panel-tabs">
                     <button className={`panel-tab${panelTab === "output" ? " active" : ""}`} type="button" onClick={() => setPanelTab("output")}>SAÍDA</button>
                     <button className={`panel-tab${panelTab === "problems" ? " active" : ""}`} type="button" onClick={() => setPanelTab("problems")}>PROBLEMAS <span>{diagnostics.length}</span></button>
-                    {activeTerminalProvider && terminalSessionOpen ? (
+                    {activeInteractiveSessionProvider && terminalSessionOpen ? (
                       <div className={`panel-tab-group${panelTab === "terminal" ? " active" : ""}`}>
                         <button className="panel-tab" type="button" onClick={() => setPanelTab("terminal")}>TERMINAL</button>
                         {terminalIndicators.map((indicator) => (
@@ -2384,11 +2384,11 @@ export function App() {
                 </div>
                 <pre hidden={panelTab !== "output"}>{output.join("\n")}</pre>
                 <div className="problems-list" hidden={panelTab !== "problems"}>{diagnostics.length ? diagnostics.map((diagnostic, index) => <button type="button" key={`${diagnostic.line}:${index}`}><strong>{diagnostic.severity}</strong><span>{diagnostic.line}:{diagnostic.column}</span><span>{diagnostic.message}</span></button>) : <p>Nenhum problema detectado.</p>}</div>
-                {activeTerminalProvider && terminalSessionOpen ? (
+                {activeInteractiveSessionProvider && terminalSessionOpen ? (
                   <div className="terminal-panel-host" hidden={panelTab !== "terminal"}>
-                    <TerminalPanel
+                    <InteractiveSessionPanel
                       key={terminalSessionRevision}
-                      provider={activeTerminalProvider}
+                      provider={activeInteractiveSessionProvider}
                       {...(workspaceRoot ? { workspaceRoot } : {})}
                       {...(selectedEnvironmentId ? { selectedEnvironmentId } : {})}
                       {...(workspaceSettings.plugins ? { pluginSettings: workspaceSettings.plugins } : {})}
@@ -2407,7 +2407,7 @@ export function App() {
           <span className="status-spacer" />
           <span>{activeDocument?.content !== activeDocument?.savedContent ? "Modificado" : "Salvo"}</span>
           <span>UTF-8</span>
-          <span>{activeDocument?.name.endsWith(".py") ? "Python" : "Texto"}</span>
+          <span>{activeLanguageProvider?.name ?? "Texto"}</span>
         </footer>
 
         <ProfileDialog
@@ -2513,7 +2513,7 @@ export function App() {
             <Dialog.Overlay className="dialog-overlay" />
             <Dialog.Content className="file-browser-dialog">
               <div className="file-browser-heading">
-                <div><span className="eyebrow">SISTEMA DE ARQUIVOS</span><Dialog.Title>{environmentBrowserMode === "file" ? "Selecionar executável Python" : "Selecionar ambiente virtual"}</Dialog.Title><Dialog.Description>Navegue pelo host, selecione um item válido e confirme.</Dialog.Description></div>
+                <div><span className="eyebrow">SISTEMA DE ARQUIVOS</span><Dialog.Title>{environmentBrowserMode === "file" ? "Selecionar executável" : "Selecionar ambiente"}</Dialog.Title><Dialog.Description>Navegue pelo host, selecione um item válido e confirme.</Dialog.Description></div>
                 <Dialog.Close asChild><button className="icon-button" type="button" aria-label="Fechar"><X size={16} /></button></Dialog.Close>
               </div>
               <div className="file-browser-controls">
@@ -2539,7 +2539,7 @@ export function App() {
                         onClick={() => selectable ? setEnvironmentBrowserSelection(entry.path) : entry.kind === "directory" ? invoke(() => navigateEnvironmentBrowser(entry.path)) : undefined}
                       >
                         {entry.kind === "directory" ? <Folder size={17} /> : <File size={17} />}
-                        <span><strong>{entry.name}</strong><small>{selectable ? (environmentBrowserMode === "file" ? environmentBrowserExecutableOnly ? "Executável Python" : "Arquivo selecionável" : "Venv válido") : entry.kind === "directory" ? "Diretório" : "Arquivo"}</small></span>
+                        <span><strong>{entry.name}</strong><small>{selectable ? (environmentBrowserMode === "file" ? environmentBrowserExecutableOnly ? "Executável válido" : "Arquivo selecionável" : "Ambiente válido") : entry.kind === "directory" ? "Diretório" : "Arquivo"}</small></span>
                       </button>
                     );
                   })}
