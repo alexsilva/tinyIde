@@ -2,9 +2,21 @@
 
 ## Responsabilidade
 
-O core fornece capacidades universais de uma IDE. Ele organiza o estado da aplicação, expõe serviços e oferece contratos para extensões.
+O core fornece o editor de texto básico, organiza o estado essencial da aplicação e oferece contratos para extensões. Ele não fornece, sozinho, uma IDE completa.
 
-Nenhuma funcionalidade do núcleo deve depender de uma linguagem, framework ou ferramenta específica.
+Nenhuma funcionalidade do núcleo deve depender de uma linguagem, framework ou ferramenta específica. Sem plugins, não devem existir terminal, controle de versão, ambientes de execução, depuração, testes, bancos de dados ou agentes.
+
+## Estado mínimo sem plugins
+
+O produto base deve conseguir:
+
+- abrir um workspace;
+- listar, criar, abrir, editar e salvar arquivos de texto;
+- gerenciar abas e grupos de editor;
+- persistir o layout e o estado essencial do workspace;
+- descobrir, instalar, ativar, desativar e remover plugins.
+
+Qualquer elemento adicional deve existir porque uma contribuição foi registrada por um plugin.
 
 ## Interface da aplicação
 
@@ -23,6 +35,8 @@ O shell visual deve controlar:
 - persistência de estado visual.
 
 Plugins podem contribuir com elementos de interface por pontos de extensão declarados, mas não devem manipular diretamente o estado interno do shell.
+
+O shell conhece regiões genéricas, como barra lateral, editor, painel inferior, barra de status e caixas de diálogo. Ele não conhece painéis concretos como `Git`, `Terminal`, `Python Environments` ou `Database`.
 
 ## Editor
 
@@ -107,17 +121,15 @@ O core não deve conhecer comandos como `python`, `manage.py`, `npm` ou `cargo`.
 
 ## Terminal
 
-O terminal deve oferecer:
+O terminal é um plugin. O core pode expor contratos genéricos para processos, streams, regiões de painel e persistência, mas não deve importar um emulador de terminal, renderizar uma aba fixa de terminal ou conhecer perfis de shell.
 
-- criação de sessões;
-- entrada e saída interativas;
-- redimensionamento;
-- encerramento;
-- associação com processos;
-- reconexão opcional;
-- execução local ou remota.
+O plugin de terminal é responsável por:
 
-Plugins podem criar perfis ou sessões especializadas por meio da API pública.
+- contribuir com a ação e o painel visível;
+- renderizar o emulador;
+- criar, redimensionar, reconectar e encerrar sessões;
+- escolher perfis de shell;
+- integrar-se a outros plugins por capacidades públicas.
 
 ## Comandos
 
@@ -130,7 +142,6 @@ workspace.open
 workspace.close
 file.save
 editor.close
-terminal.create
 plugin.install
 plugin.disable
 ```

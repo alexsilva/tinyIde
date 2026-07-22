@@ -1,8 +1,10 @@
 # tinyIde
 
-IDE web extensível e agnóstica de linguagem.
+Editor web extensível que se transforma em uma IDE pela instalação de plugins.
 
-O repositório contém o núcleo da plataforma e sua documentação. Suporte a linguagens e frameworks, incluindo Python e Django, será distribuído por plugins instaláveis externos ao codebase principal.
+Sem plugins, o tinyIde deve permanecer um editor de texto básico: abre workspaces, navega por arquivos, edita e salva texto e gerencia extensões. Linguagens, terminal, controle de versão, execução, depuração, bancos de dados, agentes e integrações pertencem a plugins independentes.
+
+O repositório contém o núcleo da plataforma e sua documentação. Os plugins usados durante o desenvolvimento são repositórios independentes montados em `plugins/` como submódulos Git; eles não podem ser importados pelo core nem receber APIs privadas.
 
 ## Documentação
 
@@ -13,7 +15,7 @@ python -m mkdocs serve
 
 ## Protótipo
 
-O protótipo inicial contém:
+O núcleo atual contém:
 
 - shell web de IDE;
 - command registry;
@@ -23,7 +25,7 @@ O protótipo inicial contém:
 - validação e persistência de manifestos externos;
 - abertura de diretórios pela File System Access API do navegador.
 
-Python, Django e plugins de demonstração não são incorporados ao repositório principal.
+O objetivo arquitetural e a validação da implementação atual estão documentados em [Core mínimo e validação das premissas](docs/arquitetura/core-minimo.md).
 
 ```bash
 npm install

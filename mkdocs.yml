@@ -13,6 +13,7 @@ nav:
   - Visão do produto: visao-do-produto.md
   - Arquitetura:
       - Visão geral: arquitetura/index.md
+      - Core mínimo e validação: arquitetura/core-minimo.md
       - Núcleo da plataforma: arquitetura/core.md
       - Sistema de plugins: arquitetura/plugins.md
       - Segurança e isolamento: arquitetura/seguranca.md

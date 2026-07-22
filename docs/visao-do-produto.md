@@ -4,9 +4,9 @@
 
 Ambientes de desenvolvimento web frequentemente nascem acoplados a uma linguagem, a um framework ou a uma forma específica de execução. Esse acoplamento dificulta a evolução do produto, aumenta o custo de manutenção e transforma cada nova integração em uma alteração estrutural no núcleo da IDE.
 
-O tinyIde propõe uma separação explícita entre infraestrutura e especialização.
+O tinyIde propõe uma separação explícita entre infraestrutura e especialização. O nome do produto descreve essa decisão: sem plugins, o aplicativo deve ser pequeno em capacidades e funcionar somente como editor de texto.
 
-O núcleo deve conhecer conceitos como arquivo, comando, terminal, processo, diagnóstico e workspace. Ele não deve conhecer conceitos como `manage.py`, ambiente virtual Python, `npm`, `cargo`, migration Django ou servidor de linguagem específico.
+O núcleo deve conhecer conceitos como arquivo, documento, comando, região de interface, processo abstrato, diagnóstico e workspace. Ele não deve conhecer ferramentas concretas como terminal, Git, `manage.py`, ambiente virtual Python, `npm`, `cargo`, migration Django ou servidor de linguagem específico.
 
 ## Objetivo
 
@@ -32,11 +32,11 @@ O produto deve permitir que plugins adicionem:
 
 O core deve oferecer apenas capacidades genéricas:
 
-1. interface da IDE;
-2. editor e navegação;
+1. shell básico da aplicação;
+2. editor de texto e navegação de arquivos;
 3. gerenciamento de workspace;
 4. abstração de filesystem;
-5. terminal e processos;
+5. serviços abstratos necessários aos plugins, como processos;
 6. command registry;
 7. event bus;
 8. configuração e persistência;
@@ -51,6 +51,8 @@ O repositório principal não deve incluir implementações de suporte a tecnolo
 
 São exemplos de funcionalidades externas ao core:
 
+- terminal interativo e perfis de shell;
+- integração com Git e outros sistemas de controle de versão;
 - detecção de `pyproject.toml`;
 - interpretação de `requirements.txt`;
 - descoberta de interpretadores Python;
@@ -91,7 +93,7 @@ A arquitetura deve atender aos seguintes critérios.
 
 ### Remoção
 
-O tinyIde deve executar sem qualquer plugin de linguagem instalado.
+O tinyIde deve executar sem qualquer plugin instalado e continuar capaz de editar arquivos de texto.
 
 ### Independência
 
@@ -120,4 +122,8 @@ O plugin manager deve rejeitar extensões incompatíveis com a versão atual da 
 ### Desacoplamento
 
 Plugins devem interagir por contratos e capacidades, nunca por imports internos entre pacotes.
+
+### Simetria
+
+Plugins mantidos pelo próprio projeto devem usar a mesma API pública, o mesmo ciclo de vida e as mesmas permissões disponíveis para plugins de terceiros. Não existem plugins privilegiados por imports, condições especiais ou acesso direto ao estado do shell.
 

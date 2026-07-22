@@ -4,7 +4,7 @@
 
 O sistema de plugins transforma o tinyIde em uma plataforma extensível. Linguagens, frameworks, ferramentas e integrações são instalados conforme a necessidade do usuário ou do workspace.
 
-Plugins não fazem parte do codebase principal.
+Plugins não fazem parte do codebase principal. Durante o desenvolvimento, repositórios independentes podem ser montados em `plugins/` como submódulos Git, sem criar dependência de compilação ou imports no core.
 
 ## Componentes
 
@@ -23,6 +23,10 @@ Executa plugins em ambiente controlado, aplica permissões e captura falhas.
 ### Capability registry
 
 Permite que plugins publiquem e consumam capacidades sem imports diretos.
+
+### Extension hosts de interface
+
+Regiões genéricas do shell recebem contribuições de interface. Um plugin deve poder registrar e remover uma barra lateral, painel inferior, item de status, ação ou editor especializado sem que o core conheça sua finalidade.
 
 ## Manifesto
 
@@ -62,6 +66,8 @@ Todo plugin deve possuir um manifesto declarativo.
 ```
 
 O manifesto permite que o tinyIde avalie compatibilidade, permissões e contribuições antes de executar código do plugin.
+
+Plugins oficiais seguem exatamente o mesmo manifesto, contexto, permissões e ciclo de vida de plugins externos. Qualquer exceção específica por ID de plugin é uma violação arquitetural.
 
 ## API pública
 
@@ -123,6 +129,8 @@ instalação
 → execução
 → desativação
 ```
+
+Ao desativar ou remover um plugin, todas as contribuições, comandos, listeners, sessões e recursos registrados por ele devem ser descartados. A aplicação deve retornar ao estado anterior sem recarregar ou recompilar o core.
 
 ## Eventos de ativação
 
@@ -275,4 +283,16 @@ A API de plugins deve seguir versionamento semântico.
 Plugins declaram a faixa de compatibilidade no campo `engines.tinyide`.
 
 Mudanças incompatíveis na API pública devem ocorrer apenas em versões major da plataforma.
+
+## Teste de desacoplamento
+
+A implementação deve manter testes que comprovem:
+
+1. inicialização com zero plugins;
+2. ausência de imports do core para diretórios de plugins;
+3. instalação e remoção sem recompilar a aplicação;
+4. desaparecimento das contribuições após desativação;
+5. falha de ativação isolada do restante do editor;
+6. rejeição de permissões, versões e dependências inválidas;
+7. inexistência de tratamento especial para plugins oficiais.
 

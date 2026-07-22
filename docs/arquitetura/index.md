@@ -6,8 +6,8 @@ O tinyIde é dividido em quatro camadas principais:
 
 ```text
 ┌───────────────────────────────────────────────┐
-│ Interface web                                 │
-│ Editor, painéis, menus, terminal e navegação  │
+│ Shell web mínimo                              │
+│ Editor de texto, arquivos e hosts de extensão │
 ├───────────────────────────────────────────────┤
 │ Serviços genéricos do core                    │
 │ Workspace, comandos, eventos, processos       │
@@ -16,41 +16,27 @@ O tinyIde é dividido em quatro camadas principais:
 │ Plugin API, host, manager e permissões         │
 ├───────────────────────────────────────────────┤
 │ Plugins externos                              │
-│ Linguagens, frameworks, ferramentas e runtimes│
+│ Terminal, Git, linguagens, ferramentas e IA   │
 └───────────────────────────────────────────────┘
 ```
 
 O limite entre o core e os plugins é definido pela API pública da plataforma.
 
-## Organização sugerida do repositório principal
+## Organização atual do repositório principal
 
 ```text
 tinyide/
 ├── apps/
-│   ├── web/
-│   └── server/
+│   └── web/
 ├── packages/
 │   ├── core/
-│   ├── editor/
-│   ├── workspace/
-│   ├── filesystem/
-│   ├── terminal/
-│   ├── process-runtime/
-│   ├── command-registry/
-│   ├── event-bus/
-│   ├── configuration/
-│   ├── plugin-api/
-│   ├── plugin-host/
-│   ├── plugin-manager/
-│   ├── permissions/
-│   ├── storage/
-│   └── ui-kit/
+│   └── plugin-api/
+├── plugins/                 # submódulos/repositórios independentes para desenvolvimento
 ├── docs/
-├── tests/
-└── examples/
+└── site/
 ```
 
-O diretório `examples` pode conter plugins mínimos usados apenas para demonstrar a API pública.
+O diretório `plugins/` não torna as extensões parte do core. Cada entrada deve apontar para um repositório independente, possuir manifesto próprio e ser carregada apenas pelo runtime de plugins.
 
 Exemplos aceitáveis:
 
@@ -61,7 +47,7 @@ examples/
 └── sample-panel-plugin/
 ```
 
-Plugins reais de linguagem ou framework não devem existir nessa estrutura.
+Nenhum pacote de `apps/` ou `packages/` pode importar código desses diretórios.
 
 ## Regra de dependência
 
