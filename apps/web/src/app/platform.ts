@@ -17,11 +17,13 @@ import type {
   PluginRecord,
   PluginSettingsProvider,
   ResourceContextMenuProvider,
+  ResourceDecorationProvider,
   ResourceIconProvider,
   ScriptExecutionContribution,
   TextEditorLineDecorationProvider,
   WorkbenchApi,
   WorkbenchDialogContribution,
+  WorkbenchTextEditorReplaceContentRequest,
   WorkbenchTextHighlightRequest,
   WorkbenchTextHighlightResult,
   WorkbenchPanelHook,
@@ -60,6 +62,7 @@ interface WorkbenchBinding {
   openSidebar(id: string): void;
   openToolWindow(id: string): void;
   openDialog(dialog: WorkbenchDialogContribution): Disposable;
+  replaceEditorContent(request: WorkbenchTextEditorReplaceContentRequest): Promise<void>;
   highlightText(request: WorkbenchTextHighlightRequest): WorkbenchTextHighlightResult;
 }
 
@@ -70,6 +73,13 @@ class AppWorkbenchApi implements WorkbenchApi {
     open: (dialog: WorkbenchDialogContribution): Disposable => {
       if (!this.#binding) throw new Error("O workbench ainda não está disponível.");
       return this.#binding.openDialog(dialog);
+    },
+  };
+
+  readonly editor = {
+    replaceContent: async (request: WorkbenchTextEditorReplaceContentRequest): Promise<void> => {
+      if (!this.#binding) throw new Error("O workbench ainda não está disponível.");
+      await this.#binding.replaceEditorContent(request);
     },
   };
 
@@ -149,6 +159,7 @@ function pluginContext(platform: TinyIdePlatform, pluginId: string): PluginConte
     extensions: {
       registerLanguageProvider: (provider: LanguageProvider) => platform.capabilities.register("language.provider", provider),
       registerResourceIconProvider: (provider: ResourceIconProvider) => platform.capabilities.register("resource.icon", provider),
+      registerResourceDecorationProvider: (provider: ResourceDecorationProvider) => platform.capabilities.register("resource.decoration", provider),
       registerExecutionEnvironmentProvider: (provider: ExecutionEnvironmentProvider) => platform.capabilities.register("execution.environment", provider),
       registerExecutionProfileContributionProvider: (provider: ExecutionProfileContributionProvider) => platform.capabilities.register("execution.profile.contribution", provider),
       registerScriptExecution: (contribution: ScriptExecutionContribution) => platform.capabilities.register("execution.script", contribution),

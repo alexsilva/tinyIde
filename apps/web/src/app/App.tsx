@@ -38,6 +38,7 @@ import {
   Settings2,
   Square,
   Terminal,
+  Undo2,
   Upload,
   X,
 } from "lucide-react";
@@ -49,6 +50,10 @@ import {
   useState,
 } from "react";
 import { formatCommandLineArguments, parseCommandLineArguments } from "@tinyide/core";
+import {
+  TEXT_EDITOR_DOCUMENT_CHANGED_EVENT,
+  TEXT_EDITOR_DOCUMENT_SAVED_EVENT,
+} from "@tinyide/plugin-api";
 import type {
   ExecutionEnvironment,
   ExecutionEnvironmentDirectoryListing,
@@ -59,8 +64,11 @@ import type {
   LanguageProvider,
   PluginSettingValues,
   ResourceContext,
+  ResourceDecoration,
   ResourceContextMenuItem,
   ResourceContextMenuProvider,
+  TextEditorDocumentChangedEvent,
+  TextEditorDocumentSavedEvent,
   TextEditorLineDecoration,
   TextDiagnostic,
   WorkbenchDialogContribution,
@@ -137,6 +145,7 @@ import {
   runScript,
   pluginSettingsProviders,
   resourceIconFor,
+  resourceDecorationProviders,
   resourceEditorProviderFor,
   scriptExecutionFor,
   setHostWorkspace,
@@ -557,6 +566,7 @@ function EntryTree({
   revealedHiddenPaths,
   highlightedPath,
   selectedPath,
+  resourceDecorations,
   onToggle,
   onSelect,
   onOpen,
@@ -591,6 +601,7 @@ function EntryTree({
   readonly revealedHiddenPaths: ReadonlySet<string>;
   readonly highlightedPath: string | undefined;
   readonly selectedPath: string | undefined;
+  readonly resourceDecorations: ReadonlyMap<string, ResourceDecoration>;
   readonly onToggle: (entry: WorkspaceEntry) => void;
   readonly onSelect: (entry: WorkspaceEntry) => void;
   readonly onOpen: (entry: WorkspaceEntry) => void;
@@ -655,6 +666,7 @@ function EntryTree({
               ...(workspaceRoot ? { workspaceRoot } : {}),
             })
           : undefined;
+        const decoration = resourceDecorations.get(entry.path);
         return <div key={entry.path}>
           <div className="tree-entry-row">
             {renamePath === entry.path ? (
@@ -744,7 +756,12 @@ function EntryTree({
               ) : (
                 <File className="tree-entry__icon tree-entry__icon--file" size={15} />
               )}
-              <span className="tree-entry__name">{entry.name}</span>
+              <span
+                className="tree-entry__name"
+                title={decoration?.tooltip}
+                style={decoration?.foreground ? { color: decoration.foreground } : undefined}
+              >{entry.name}</span>
+              {decoration?.badge ? <span className="tree-entry__badge">{decoration.badge}</span> : null}
               </button>
             )}
           </div>
@@ -760,6 +777,7 @@ function EntryTree({
                   revealedHiddenPaths={revealedHiddenPaths}
                   highlightedPath={highlightedPath}
                   selectedPath={selectedPath}
+                  resourceDecorations={resourceDecorations}
                   onToggle={onToggle}
                   onSelect={onSelect}
                   onOpen={onOpen}
@@ -802,6 +820,7 @@ function EntryTree({
                   revealedHiddenPaths={revealedHiddenPaths}
                   highlightedPath={highlightedPath}
                   selectedPath={selectedPath}
+                  resourceDecorations={resourceDecorations}
                   onToggle={onToggle}
                   onSelect={onSelect}
                   onOpen={onOpen}
@@ -870,11 +889,13 @@ function HighlightedLine({ source, provider }: { readonly source: string; readon
 function EditorLineDiffPeek({
   decoration,
   provider,
+  top,
   onClose,
   onAction,
 }: {
   readonly decoration: TextEditorLineDecoration;
   readonly provider: LanguageProvider | undefined;
+  readonly top: number;
   readonly onClose: () => void;
   readonly onAction: (action: NonNullable<TextEditorLineDecoration["actions"]>[number]) => void;
 }) {
@@ -882,44 +903,58 @@ function EditorLineDiffPeek({
   if (!change) return null;
   const allLines = [...change.before, ...change.after].map((line) => line.line);
   const width = Math.max(2, String(Math.max(1, ...allLines)).length);
-  const renderSide = (label: string, kind: "before" | "after", lines: typeof change.before) => (
-    <section className={`editor-line-diff-peek__side is-${kind}`}>
-      <header>{label}</header>
-      <div className="editor-line-diff-peek__code">
-        {lines.length ? lines.map((line) => (
-          <div className="editor-line-diff-peek__row" key={`${kind}:${line.line}`}>
-            <span>{String(line.line).padStart(width, "0")}</span>
-            <pre><HighlightedLine source={line.content} provider={provider} /></pre>
-          </div>
-        )) : <div className="editor-line-diff-peek__empty">Sem conteúdo</div>}
-      </div>
-    </section>
-  );
+  const rows = [
+    ...change.before.map((line) => ({ ...line, kind: "before" as const, marker: "−" })),
+    ...change.after.map((line) => ({ ...line, kind: "after" as const, marker: "+" })),
+  ];
   return (
-    <section className="editor-line-diff-peek" aria-label={`Diferença da linha ${decoration.line}`}>
+    <section
+      className="editor-line-diff-peek"
+      aria-label={`Diferença da linha ${decoration.line}`}
+      style={{ "--editor-line-diff-top": `${top}px` } as React.CSSProperties}
+    >
       <div className="editor-line-diff-peek__heading">
         <div>
           <span className={`editor-line-diff-peek__status is-${decoration.kind}`} />
           <strong>{decoration.label ?? decoration.tooltip ?? `Alteração na linha ${decoration.line}`}</strong>
         </div>
         <div className="editor-line-diff-peek__actions">
-          {decoration.actions?.map((action) => (
-            <button
-              className="secondary-button small"
-              key={action.id}
-              type="button"
-              title={action.title}
-              onClick={() => onAction(action)}
-            >
-              {action.label}
-            </button>
-          ))}
-          <button className="icon-button small" type="button" aria-label="Fechar diff da linha" onClick={onClose}><X size={14} /></button>
+          {decoration.actions?.map((action) => {
+            const ActionIcon = action.id.includes("revert")
+              ? Undo2
+              : action.id.includes("diff")
+                ? Code2
+                : MoreVertical;
+            return (
+              <button
+                className="icon-button small editor-line-diff-peek__action"
+                key={action.id}
+                type="button"
+                title={action.title ?? action.label}
+                aria-label={action.label}
+                onClick={() => onAction(action)}
+              >
+                <ActionIcon size={14} />
+              </button>
+            );
+          })}
+          <button
+            className="icon-button small editor-line-diff-peek__action"
+            type="button"
+            title="Fechar"
+            aria-label="Fechar diff da linha"
+            onClick={onClose}
+          ><X size={14} /></button>
         </div>
       </div>
-      <div className="editor-line-diff-peek__comparison">
-        {renderSide("Antes", "before", change.before)}
-        {renderSide("Depois", "after", change.after)}
+      <div className="editor-line-diff-peek__code">
+        {rows.length ? rows.map((line, index) => (
+          <div className={`editor-line-diff-peek__row is-${line.kind}`} key={`${line.kind}:${line.line}:${index}`}>
+            <span className="editor-line-diff-peek__marker">{line.marker}</span>
+            <span className="editor-line-diff-peek__line-number">{String(line.line).padStart(width, "0")}</span>
+            <pre><HighlightedLine source={line.content} provider={provider} /></pre>
+          </div>
+        )) : <div className="editor-line-diff-peek__empty">Alteração sem conteúdo textual.</div>}
       </div>
     </section>
   );
@@ -1756,6 +1791,8 @@ export function App() {
   const [editorLineDecorations, setEditorLineDecorations] = useState<readonly TextEditorLineDecoration[]>([]);
   const [selectedEditorLineDecoration, setSelectedEditorLineDecoration] = useState<TextEditorLineDecoration>();
   const [editorDecorationRevision, setEditorDecorationRevision] = useState(0);
+  const [resourceDecorations, setResourceDecorations] = useState<ReadonlyMap<string, ResourceDecoration>>(new Map());
+  const [resourceDecorationRevision, setResourceDecorationRevision] = useState(0);
   const [restorationComplete, setRestorationComplete] = useState(false);
   const [error, setError] = useState<string>();
   const [workspaceAccess, setWorkspaceAccess] = useState<"ready" | "permission-required" | "missing">("ready");
@@ -1781,6 +1818,8 @@ export function App() {
   const highlightedEditorScrollRef = useRef<HTMLDivElement | null>(null);
   const editorLineRulerRef = useRef<HTMLPreElement | null>(null);
   const editorHistoriesRef = useRef<Map<string, EditorHistory>>(new Map());
+  const documentsRef = useRef<readonly OpenDocument[]>(documents);
+  documentsRef.current = documents;
   const workspaceSettingsRef = useRef<WorkspaceSettings>(EMPTY_WORKSPACE_SETTINGS);
   const workspaceSettingsWriteQueueRef = useRef<Promise<WorkspaceSettings>>(Promise.resolve(EMPTY_WORKSPACE_SETTINGS));
   const workbenchStateRef = useRef<WorkbenchStateSnapshot>({
@@ -1864,6 +1903,26 @@ export function App() {
     for (const listener of workbenchStateListenersRef.current) listener(snapshot);
   }, [workspaceName, workspaceRoot, sidebarView, sidebarVisible, panelTab, panelVisible, activeToolWindowId, toolWindowVisible, selectedEnvironmentId, workspaceSettings.plugins]);
 
+  useEffect(() => {
+    if (!restorationComplete) return;
+    for (const document of documentsRef.current) {
+      if (document.kind !== "text" || !document.path || document.content === document.savedContent) continue;
+      void platform.events.emit<TextEditorDocumentChangedEvent>(TEXT_EDITOR_DOCUMENT_CHANGED_EVENT, {
+        document: {
+          id: document.id,
+          name: document.name,
+          path: document.path,
+          ...(document.workspaceRoot ? { workspaceRoot: document.workspaceRoot } : {}),
+          content: document.content,
+          isDirty: true,
+        },
+        previousContent: document.savedContent,
+        reason: "edit",
+        isDirty: true,
+      });
+    }
+  }, [platformSnapshot.plugins, restorationComplete]);
+
   useEffect(() => platform.workbench.bind({
     openSidebar(id) {
       if (!workbenchSidebars.some((sidebar) => sidebar.id === id)) {
@@ -1888,6 +1947,34 @@ export function App() {
           setWorkbenchDialog((current) => current?.token === token ? undefined : current);
         },
       };
+    },
+    async replaceEditorContent(request) {
+      const currentDocument = documentsRef.current.find((document) => document.id === request.documentId);
+      if (!currentDocument || currentDocument.kind !== "text" || currentDocument.content === request.content) return;
+      const previousContent = currentDocument.content;
+      const changedDocument: OpenDocument = {
+        ...currentDocument,
+        content: request.content,
+        selectionStart: Math.min(request.selectionStart ?? currentDocument.selectionStart, request.content.length),
+        selectionEnd: Math.min(request.selectionEnd ?? currentDocument.selectionEnd, request.content.length),
+      };
+      const nextDocuments = documentsRef.current.map((document) => document.id === request.documentId ? changedDocument : document);
+      documentsRef.current = nextDocuments;
+      setDocuments(nextDocuments);
+      setDiagnostics([]);
+      await platform.events.emit<TextEditorDocumentChangedEvent>(TEXT_EDITOR_DOCUMENT_CHANGED_EVENT, {
+        document: {
+          id: changedDocument.id,
+          name: changedDocument.name,
+          ...(changedDocument.path ? { path: changedDocument.path } : {}),
+          ...(changedDocument.workspaceRoot ? { workspaceRoot: changedDocument.workspaceRoot } : {}),
+          content: changedDocument.content,
+          isDirty: changedDocument.content !== changedDocument.savedContent,
+        },
+        previousContent,
+        reason: "edit",
+        isDirty: changedDocument.content !== changedDocument.savedContent,
+      });
     },
     highlightText(request) {
       const lowerName = request.fileName.toLocaleLowerCase();
@@ -1917,6 +2004,65 @@ export function App() {
   }, [platformSnapshot.plugins]);
 
   useEffect(() => {
+    const subscriptions = resourceDecorationProviders()
+      .map((provider) => provider.onDidChange?.(() => setResourceDecorationRevision((current) => current + 1)))
+      .filter((subscription): subscription is { dispose(): void } => Boolean(subscription));
+    return () => subscriptions.forEach((subscription) => subscription.dispose());
+  }, [platformSnapshot.plugins]);
+
+  useEffect(() => {
+    const providers = resourceDecorationProviders();
+    if (!providers.length || workspaceName === "Sem workspace") {
+      setResourceDecorations(new Map());
+      return;
+    }
+    let cancelled = false;
+    const collect = (items: readonly WorkspaceEntry[]): WorkspaceEntry[] => items.flatMap((entry) => [
+      entry,
+      ...(entry.children ? collect(entry.children) : []),
+    ]);
+    const dirtyPaths = new Set(documents
+      .filter((document) => document.path && document.kind === "text" && document.content !== document.savedContent)
+      .map((document) => document.path as string));
+    const allEntries = collect(entries);
+    const resolveDecoration = async (entry: WorkspaceEntry) => {
+      const resource: ResourceContext = {
+        kind: entry.kind,
+        name: entry.name,
+        path: entry.path,
+        workspaceName,
+        ...(workspaceRoot ? { workspaceRoot } : {}),
+        ...(entry.kind === "file" ? { isDirty: dirtyPaths.has(entry.path) } : {}),
+      };
+      const decorations = (await Promise.all(providers.map(async (provider) => {
+        try { return await provider.provideDecoration(resource); }
+        catch { return undefined; }
+      }))).filter((value): value is ResourceDecoration => Boolean(value));
+      const decoration = decorations.sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0))[0];
+      return decoration ? [entry.path, decoration] as const : undefined;
+    };
+    const dirtyEntries = allEntries.filter((entry) => entry.kind === "file" && dirtyPaths.has(entry.path));
+    if (dirtyEntries.length) {
+      void Promise.all(dirtyEntries.map(resolveDecoration)).then((items) => {
+        if (cancelled) return;
+        setResourceDecorations((current) => {
+          const next = new Map(current);
+          dirtyEntries.forEach((entry) => next.delete(entry.path));
+          items.forEach((item) => {
+            if (item) next.set(item[0], item[1]);
+          });
+          return next;
+        });
+      });
+    }
+    void Promise.all(allEntries.map(resolveDecoration)).then((items) => {
+      if (cancelled) return;
+      setResourceDecorations(new Map(items.filter((item): item is readonly [string, ResourceDecoration] => Boolean(item))));
+    });
+    return () => { cancelled = true; };
+  }, [entries, documents, workspaceName, workspaceRoot, resourceDecorationRevision, platformSnapshot.plugins]);
+
+  useEffect(() => {
     if (activeDocument?.kind !== "text" || activeResourceEditorProvider || !activeDocument.path || !workspaceRoot) {
       setEditorLineDecorations([]);
       return;
@@ -1929,6 +2075,7 @@ export function App() {
         ...(activeDocument.path ? { path: activeDocument.path } : {}),
         workspaceRoot: activeDocument.workspaceRoot ?? workspaceRoot,
         content: activeDocument.content,
+        isDirty: activeDocument.content !== activeDocument.savedContent,
       };
       void Promise.all(textEditorLineDecorationProviders().map(async (provider) => {
         try {
@@ -2362,6 +2509,9 @@ export function App() {
     path: entry.path,
     ...(workspaceName !== "Sem workspace" ? { workspaceName } : {}),
     ...(workspaceRoot ? { workspaceRoot } : {}),
+    ...(entry.kind === "file" ? {
+      isDirty: documents.some((document) => document.path === entry.path && document.kind === "text" && document.content !== document.savedContent),
+    } : {}),
   });
 
   const rootResourceContext = (): ResourceContext => ({
@@ -2584,6 +2734,8 @@ export function App() {
 
   const updateDocument = (textarea: HTMLTextAreaElement) => {
     if (!activeDocumentId) return;
+    const previous = documents.find((document) => document.id === activeDocumentId);
+    if (!previous || previous.kind !== "text") return;
     const content = textarea.value;
     const selectionStart = textarea.selectionStart;
     const selectionEnd = textarea.selectionEnd;
@@ -2607,6 +2759,19 @@ export function App() {
         selectionEnd,
       };
     }));
+    const changedEvent: TextEditorDocumentChangedEvent = {
+      document: {
+        id: previous.id,
+        name: previous.name,
+        ...(previous.path ? { path: previous.path } : {}),
+        ...(previous.workspaceRoot ? { workspaceRoot: previous.workspaceRoot } : {}),
+        content,
+      },
+      previousContent: previous.content,
+      reason: "edit",
+      isDirty: content !== previous.savedContent,
+    };
+    void platform.events.emit(TEXT_EDITOR_DOCUMENT_CHANGED_EVENT, changedEvent);
     setDiagnostics([]);
   };
 
@@ -2638,6 +2803,19 @@ export function App() {
           selectionEnd: snapshot.selectionEnd,
         }
       : candidate));
+    const changedEvent: TextEditorDocumentChangedEvent = {
+      document: {
+        id: document.id,
+        name: document.name,
+        ...(document.path ? { path: document.path } : {}),
+        ...(document.workspaceRoot ? { workspaceRoot: document.workspaceRoot } : {}),
+        content: snapshot.content,
+      },
+      previousContent: document.content,
+      reason: direction,
+      isDirty: snapshot.content !== document.savedContent,
+    };
+    void platform.events.emit(TEXT_EDITOR_DOCUMENT_CHANGED_EVENT, changedEvent);
     setDiagnostics([]);
     requestAnimationFrame(() => {
       textarea.focus();
@@ -2711,6 +2889,16 @@ export function App() {
     }
     const saved = await writeFileDocument(document, handle);
     setDocuments((current) => current.map((item) => item.id === document.id ? saved : item));
+    const savedEvent: TextEditorDocumentSavedEvent = {
+      document: {
+        id: saved.id,
+        name: saved.name,
+        ...(saved.path ? { path: saved.path } : {}),
+        ...(saved.workspaceRoot ? { workspaceRoot: saved.workspaceRoot } : {}),
+        content: saved.content,
+      },
+    };
+    void platform.events.emit(TEXT_EDITOR_DOCUMENT_SAVED_EVENT, savedEvent);
     return saved;
   };
 
@@ -3752,6 +3940,7 @@ export function App() {
                       revealedHiddenPaths={explorerRevealedHiddenPaths}
                       highlightedPath={highlightedExplorerPath}
                       selectedPath={selectedExplorerPath}
+                      resourceDecorations={resourceDecorations}
                       onToggle={(entry) => invoke(() => toggleEntry(entry))}
                       onSelect={(entry) => setSelectedExplorerPath(entry.path)}
                       onOpen={(entry) => invoke(() => openEntry(entry))}
@@ -3974,29 +4163,6 @@ export function App() {
                     <UnsupportedBinaryEditor document={activeDocument} />
                   ) : (
                     <>
-                  {selectedEditorLineDecoration?.change ? (
-                    <EditorLineDiffPeek
-                      decoration={selectedEditorLineDecoration}
-                      provider={activeLanguageProvider}
-                      onClose={() => setSelectedEditorLineDecoration(undefined)}
-                      onAction={(action) => {
-                        if (!activeDocument) return;
-                        invoke(async () => {
-                          await platform.commands.execute(action.command, {
-                            document: {
-                              id: activeDocument.id,
-                              name: activeDocument.name,
-                              ...(activeDocument.path ? { path: activeDocument.path } : {}),
-                              ...(activeDocument.workspaceRoot ? { workspaceRoot: activeDocument.workspaceRoot } : {}),
-                              content: activeDocument.content,
-                            },
-                            decoration: selectedEditorLineDecoration,
-                            action,
-                          });
-                        });
-                      }}
-                    />
-                  ) : null}
                   <div className={`editor-canvas${showEditorGutter ? " has-editor-gutter" : ""}${editorSettings.lineNumbers ? " has-line-numbers" : ""}`}>
                     {showEditorGutter ? (
                       <div className={`editor-line-ruler${editorSettings.lineNumbers ? "" : " decorations-only"}`}>
@@ -4084,6 +4250,31 @@ export function App() {
                         }}
                       />
                     )}
+                    {selectedEditorLineDecoration?.change && activeDocument ? (
+                      <EditorLineDiffPeek
+                        decoration={selectedEditorLineDecoration}
+                        provider={activeLanguageProvider}
+                        top={18 + (selectedEditorLineDecoration.line - 1) * 21.45 - activeDocument.scrollTop + 21.45}
+                        onClose={() => setSelectedEditorLineDecoration(undefined)}
+                        onAction={(action) => {
+                          invoke(async () => {
+                            await platform.commands.execute(action.command, {
+                              document: {
+                                id: activeDocument.id,
+                                name: activeDocument.name,
+                                ...(activeDocument.path ? { path: activeDocument.path } : {}),
+                                ...(activeDocument.workspaceRoot ? { workspaceRoot: activeDocument.workspaceRoot } : {}),
+                                content: activeDocument.content,
+                                isDirty: activeDocument.content !== activeDocument.savedContent,
+                              },
+                              decoration: selectedEditorLineDecoration,
+                              action,
+                            });
+                            if (action.closeOnRun) setSelectedEditorLineDecoration(undefined);
+                          });
+                        }}
+                      />
+                    ) : null}
                   </div>
                     </>
                   )}

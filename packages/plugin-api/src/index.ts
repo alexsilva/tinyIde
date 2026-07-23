@@ -102,6 +102,7 @@ export interface PluginContext {
 export interface PluginExtensionApi {
   registerLanguageProvider(provider: LanguageProvider): Disposable;
   registerResourceIconProvider(provider: ResourceIconProvider): Disposable;
+  registerResourceDecorationProvider(provider: ResourceDecorationProvider): Disposable;
   registerExecutionEnvironmentProvider(provider: ExecutionEnvironmentProvider): Disposable;
   registerExecutionProfileContributionProvider(provider: ExecutionProfileContributionProvider): Disposable;
   registerScriptExecution(contribution: ScriptExecutionContribution): Disposable;
@@ -292,6 +293,8 @@ export interface ResourceContext {
   readonly path: string;
   readonly workspaceName?: string;
   readonly workspaceRoot?: string;
+  /** True when the file is currently modified in an open editor buffer. */
+  readonly isDirty?: boolean;
 }
 
 export interface ResourceIcon {
@@ -308,6 +311,25 @@ export interface ResourceIconProvider {
 }
 
 export const RESOURCE_ICON_CAPABILITY = "resource.icon";
+
+export interface ResourceDecoration {
+  /** CSS color applied to the resource label. */
+  readonly foreground?: string;
+  readonly badge?: string;
+  readonly tooltip?: string;
+  readonly priority?: number;
+}
+
+export interface ResourceDecorationProvider {
+  readonly id: string;
+  readonly pluginId: string;
+  provideDecoration(
+    resource: ResourceContext,
+  ): Promise<ResourceDecoration | undefined> | ResourceDecoration | undefined;
+  onDidChange?(listener: (paths?: readonly string[]) => void): Disposable;
+}
+
+export const RESOURCE_DECORATION_CAPABILITY = "resource.decoration";
 
 export type ResourceContextMenuIcon = "file" | "folder" | "play" | "copy" | "terminal" | "save" | "close" | "diff";
 
@@ -537,8 +559,20 @@ export interface WorkbenchTextApi {
   highlight(request: WorkbenchTextHighlightRequest): WorkbenchTextHighlightResult;
 }
 
+export interface WorkbenchTextEditorReplaceContentRequest {
+  readonly documentId: string;
+  readonly content: string;
+  readonly selectionStart?: number;
+  readonly selectionEnd?: number;
+}
+
+export interface WorkbenchTextEditorApi {
+  replaceContent(request: WorkbenchTextEditorReplaceContentRequest): Promise<void>;
+}
+
 export interface WorkbenchApi {
   readonly dialogs: WorkbenchDialogApi;
+  readonly editor: WorkbenchTextEditorApi;
   readonly text: WorkbenchTextApi;
   openSidebar(id: string): void;
   openToolWindow(id: string): void;
@@ -588,7 +622,24 @@ export interface TextEditorDocumentSnapshot {
   readonly path?: string;
   readonly workspaceRoot?: string;
   readonly content: string;
+  readonly isDirty?: boolean;
 }
+
+export type TextEditorDocumentChangeReason = "edit" | "undo" | "redo";
+
+export interface TextEditorDocumentChangedEvent {
+  readonly document: TextEditorDocumentSnapshot;
+  readonly previousContent: string;
+  readonly reason: TextEditorDocumentChangeReason;
+  readonly isDirty: boolean;
+}
+
+export interface TextEditorDocumentSavedEvent {
+  readonly document: TextEditorDocumentSnapshot;
+}
+
+export const TEXT_EDITOR_DOCUMENT_CHANGED_EVENT = "textEditor.document.changed";
+export const TEXT_EDITOR_DOCUMENT_SAVED_EVENT = "textEditor.document.saved";
 
 export interface TextEditorLineDecoration {
   /** One-based line number in the current document. */
@@ -607,6 +658,7 @@ export interface TextEditorLineDecorationAction {
   readonly label: string;
   readonly command: string;
   readonly title?: string;
+  readonly closeOnRun?: boolean;
 }
 
 export interface TextEditorLineDecorationActionContext {

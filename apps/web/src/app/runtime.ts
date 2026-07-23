@@ -11,6 +11,7 @@ import type {
   ProcessExecutionRequest,
   PluginSettingsProvider,
   ResourceContext,
+  ResourceDecorationProvider,
   ResourceIcon,
   ResourceIconProvider,
   ScriptExecutionContribution,
@@ -84,6 +85,10 @@ export function resourceIconFor(resource: ResourceContext): ResourceIcon | undef
     .getAll<ResourceIconProvider>("resource.icon")
     .map((provider) => provider.provideIcon(resource))
     .find((icon): icon is ResourceIcon => Boolean(icon));
+}
+
+export function resourceDecorationProviders(): readonly ResourceDecorationProvider[] {
+  return platform.capabilities.getAll<ResourceDecorationProvider>("resource.decoration");
 }
 
 export function environmentProvider(): ExecutionEnvironmentProvider | undefined {
