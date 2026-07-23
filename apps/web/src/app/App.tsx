@@ -3149,10 +3149,16 @@ export function App() {
   const moveExplorerEntry = async (sourcePath: string, targetDirectoryPath: string) => {
     if (!workspaceHandle) throw new Error("Restaure o acesso ao workspace antes de mover recursos.");
     const sourceEntry = findWorkspaceEntry(entries, sourcePath);
-    const targetEntry = findWorkspaceEntry(entries, targetDirectoryPath);
-    if (!sourceEntry || targetEntry?.kind !== "directory") return;
+    const targetIsWorkspaceRoot = targetDirectoryPath === "";
+    const targetEntry = targetIsWorkspaceRoot ? undefined : findWorkspaceEntry(entries, targetDirectoryPath);
+    if (!sourceEntry || (!targetIsWorkspaceRoot && targetEntry?.kind !== "directory")) return;
     const targetHandle = await resolveDirectoryHandle(workspaceHandle, targetDirectoryPath);
-    const targetChildren = targetEntry.children ?? await listDirectory(targetHandle, targetDirectoryPath);
+    let targetChildren: readonly WorkspaceEntry[];
+    if (targetIsWorkspaceRoot) {
+      targetChildren = entries;
+    } else {
+      targetChildren = targetEntry!.children ?? await listDirectory(targetHandle, targetDirectoryPath);
+    }
     if (targetChildren.some((entry) => entry.name === sourceEntry.name)) {
       throw new Error(`Já existe um item chamado “${sourceEntry.name}” em ${targetDirectoryPath}.`);
     }
@@ -3913,11 +3919,25 @@ export function App() {
                 <div className="sidebar-content explorer-content">
                   {workspaceName !== "Sem workspace" ? (
                     <div
-                      className={`workspace-name${selectedExplorerPath === "" ? " is-selected" : ""}`}
+                      className={`workspace-name${selectedExplorerPath === "" ? " is-selected" : ""}${dropTargetExplorerPath === "" ? " is-drop-target" : ""}`}
                       data-explorer-root
                       role="treeitem"
                       tabIndex={0}
                       aria-selected={selectedExplorerPath === ""}
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                        setDropTargetExplorerPath("");
+                      }}
+                      onDragLeave={(event) => {
+                        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetExplorerPath(undefined);
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        const sourcePath = event.dataTransfer.getData("application/x-tinyide-workspace-path");
+                        setDropTargetExplorerPath(undefined);
+                        if (sourcePath) invoke(() => moveExplorerEntry(sourcePath, ""));
+                      }}
                       onClick={(event) => {
                         if ((event.target as Element).closest("button")) return;
                         setSelectedExplorerPath("");
