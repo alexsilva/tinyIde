@@ -2148,7 +2148,7 @@ export function App() {
             <DropdownMenu.Portal>
               <DropdownMenu.Content className="menu-content" align="start" sideOffset={6}>
                 <DropdownMenu.Item className="menu-item" onSelect={() => setAboutOpen(true)}>
-                  <Info size={15} /> Sobre o tinyIde
+                  <Info size={15} /> Sobre
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
@@ -2235,8 +2235,8 @@ export function App() {
 
               {sidebarView === "explorer" ? (
                 <div className="sidebar-content explorer-content">
-                  <div className="explorer-actions-sticky">
-                    {explorerCreation ? (
+                  {explorerCreation ? (
+                    <div className="explorer-actions-sticky">
                       <form className={`explorer-inline-create${explorerCreationError ? " has-error" : ""}`} onSubmit={(event) => { event.preventDefault(); void createWorkspaceEntry(); }}>
                       {explorerCreation === "directory" ? <Folder size={14} /> : <File size={14} />}
                       <input
@@ -2259,8 +2259,8 @@ export function App() {
                       <button className="icon-button small" type="button" aria-label="Cancelar criação" onClick={() => { setExplorerCreation(undefined); setExplorerCreationName(""); setExplorerCreationError(undefined); }}><X size={14} /></button>
                       {explorerCreationError ? <span className="explorer-inline-error" id="explorer-creation-error" role="alert">{explorerCreationError}</span> : null}
                       </form>
-                    ) : null}
-                  </div>
+                    </div>
+                  ) : null}
                   {workspaceName !== "Sem workspace" ? <div className="workspace-name"><FolderRoot size={14} /> {workspaceName}</div> : null}
                   {entries.length ? (
                     <EntryTree
@@ -2582,7 +2582,7 @@ export function App() {
             <Dialog.Content className="dialog-content dialog-content--small">
               <div className="dialog-heading">
                 <div>
-                  <Dialog.Title>Sobre o tinyIde</Dialog.Title>
+                  <Dialog.Title>Sobre</Dialog.Title>
                   <Dialog.Description>Editor web extensível orientado a plugins.</Dialog.Description>
                 </div>
                 <Dialog.Close asChild>
@@ -2591,7 +2591,6 @@ export function App() {
               </div>
               <div className="about-content">
                 <img className="about-logo" src="/icon.png" alt="Ícone do tinyIde" />
-                <strong>tinyIde</strong>
                 <span>Versão 0.4.0</span>
                 <p>O núcleo permanece um editor de texto básico. Recursos de IDE são fornecidos por plugins independentes.</p>
               </div>
