@@ -111,11 +111,14 @@ import {
 } from "./persistence";
 import {
   environmentProvider,
+  hostProcessOutputLines,
   languageProviderFor,
   lintDocument,
   loadEnvironments,
   loadProfileContributions,
+  listHostProcesses,
   readHostContext,
+  readHostProcess,
   runExecutionProfile,
   runScript,
   pluginSettingsProviders,
@@ -1104,6 +1107,7 @@ export function App() {
   const [executableOptions, setExecutableOptions] = useState<readonly ExecutionProfileExecutableOption[]>([]);
   const [busy, setBusy] = useState(false);
   const [activeProcessId, setActiveProcessId] = useState<string>();
+  const [resumedProcessId, setResumedProcessId] = useState<string>();
   const [profilesState, setProfilesState] = useState<StoredProfiles>({ profiles: [] });
   const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettings>(EMPTY_WORKSPACE_SETTINGS);
   const [profilesOpen, setProfilesOpen] = useState(false);
@@ -1398,6 +1402,62 @@ export function App() {
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
       .finally(() => setRestorationComplete(true));
   }, []);
+
+  useEffect(() => {
+    if (!restorationComplete || !workspaceRoot) return;
+    let cancelled = false;
+    setResumedProcessId(undefined);
+    setActiveProcessId(undefined);
+    setBusy(false);
+    void listHostProcesses()
+      .then((processes) => {
+        if (cancelled) return;
+        const running = processes
+          .filter((process) => process.status === "running")
+          .sort((left, right) => right.startedAt - left.startedAt)[0];
+        if (!running) return;
+        setOutput([...hostProcessOutputLines(running)]);
+        setPanelVisible(true);
+        setPanelTab("output");
+        setBusy(true);
+        setActiveProcessId(running.id);
+        setResumedProcessId(running.id);
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [restorationComplete, workspaceRoot]);
+
+  useEffect(() => {
+    if (!resumedProcessId) return;
+    let cancelled = false;
+    const monitor = async () => {
+      try {
+        let process = await readHostProcess(resumedProcessId);
+        while (!cancelled) {
+          setOutput([...hostProcessOutputLines(process)]);
+          if (process.status !== "running") break;
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+          process = await readHostProcess(resumedProcessId);
+        }
+      } catch (cause) {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        if (!cancelled) {
+          setBusy(false);
+          setActiveProcessId((current) => current === resumedProcessId ? undefined : current);
+          setResumedProcessId((current) => current === resumedProcessId ? undefined : current);
+        }
+      }
+    };
+    void monitor();
+    return () => {
+      cancelled = true;
+    };
+  }, [resumedProcessId]);
 
   useEffect(() => {
     writeSession({

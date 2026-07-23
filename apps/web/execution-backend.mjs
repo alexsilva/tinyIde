@@ -55,6 +55,26 @@ function environmentRecord(value) {
   );
 }
 
+function processPresentation(value) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Apresentação do processo inválida.");
+  }
+  const kind = requiredString(value.kind, "presentation.kind");
+  if (kind !== "profile" && kind !== "script") {
+    throw new Error("Tipo de apresentação do processo inválido.");
+  }
+  const outputPrefix = stringArray(value.outputPrefix ?? [], "presentation.outputPrefix");
+  return {
+    kind,
+    sourceId: requiredString(value.sourceId, "presentation.sourceId"),
+    sourceName: requiredString(value.sourceName, "presentation.sourceName"),
+    ...(value.stepId === undefined ? {} : { stepId: requiredString(value.stepId, "presentation.stepId") }),
+    ...(value.stepName === undefined ? {} : { stepName: requiredString(value.stepName, "presentation.stepName") }),
+    outputPrefix,
+  };
+}
+
 function appendOutput(current, chunk) {
   const next = current + chunk.toString("utf8");
   return next.length > MAX_OUTPUT_CHARS ? next.slice(-MAX_OUTPUT_CHARS) : next;
@@ -63,10 +83,12 @@ function appendOutput(current, chunk) {
 function processSnapshot(record) {
   return {
     id: record.id,
+    workspaceRoot: record.workspaceRoot,
     status: record.status,
     executable: record.executable,
     arguments: record.arguments,
     workingDirectory: record.workingDirectory,
+    presentation: record.presentation,
     stdout: record.stdout,
     stderr: record.stderr,
     exitCode: record.exitCode,
@@ -145,6 +167,7 @@ export function createExecutionBackend({ workspaceRoot }) {
       ? resolve(workspaceRoot, requiredString(payload.workingDirectory, "workingDirectory"))
       : workspaceRoot;
     const environmentVariables = environmentRecord(payload.environmentVariables);
+    const presentation = processPresentation(payload.presentation);
     const id = randomUUID();
     const startedAt = Date.now();
     const child = spawn(executable, args, {
@@ -155,11 +178,13 @@ export function createExecutionBackend({ workspaceRoot }) {
     });
     const record = {
       id,
+      workspaceRoot,
       child,
       status: "running",
       executable,
       arguments: args,
       workingDirectory,
+      presentation,
       stdout: "",
       stderr: "",
       exitCode: undefined,
@@ -218,10 +243,19 @@ export function createExecutionBackend({ workspaceRoot }) {
         return;
       }
 
+      if (request.method === "GET" && relativePath === "/execution/processes") {
+        const snapshots = [...processes.values()]
+          .filter((record) => record.workspaceRoot === workspaceRoot)
+          .sort((left, right) => right.startedAt - left.startedAt)
+          .map(processSnapshot);
+        writeJson(response, 200, snapshots);
+        return;
+      }
+
       const match = /^\/execution\/processes\/([^/]+)$/.exec(relativePath);
       if (match) {
         const record = processes.get(decodeURIComponent(match[1]));
-        if (!record) {
+        if (!record || record.workspaceRoot !== workspaceRoot) {
           writeJson(response, 404, { error: "Processo não encontrado." });
           return;
         }

@@ -21,10 +21,12 @@ import { platform } from "./platform";
 
 export interface HostProcessSnapshot {
   readonly id: string;
+  readonly workspaceRoot: string;
   readonly status: "running" | "exited";
   readonly executable: string;
   readonly arguments: readonly string[];
   readonly workingDirectory: string;
+  readonly presentation?: HostProcessPresentation;
   readonly stdout: string;
   readonly stderr: string;
   readonly exitCode?: number;
@@ -32,6 +34,19 @@ export interface HostProcessSnapshot {
   readonly startedAt: number;
   readonly finishedAt?: number;
   readonly durationMs: number;
+}
+
+export interface HostProcessPresentation {
+  readonly kind: "profile" | "script";
+  readonly sourceId: string;
+  readonly sourceName: string;
+  readonly stepId?: string;
+  readonly stepName?: string;
+  readonly outputPrefix: readonly string[];
+}
+
+interface HostProcessStartRequest extends ProcessExecutionRequest {
+  readonly presentation?: HostProcessPresentation;
 }
 
 export interface ProfileContributions {
@@ -151,7 +166,7 @@ export async function setHostWorkspace(
   return { workspaceRoot: payload.workspaceRoot };
 }
 
-export async function startHostProcess(request: ProcessExecutionRequest): Promise<HostProcessSnapshot> {
+export async function startHostProcess(request: HostProcessStartRequest): Promise<HostProcessSnapshot> {
   const response = await fetch("/core-api/execution/processes", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -162,6 +177,16 @@ export async function startHostProcess(request: ProcessExecutionRequest): Promis
     throw new Error("error" in payload && payload.error ? payload.error : "Falha ao iniciar processo.");
   }
   return payload as HostProcessSnapshot;
+}
+
+export async function listHostProcesses(): Promise<readonly HostProcessSnapshot[]> {
+  const response = await fetch("/core-api/execution/processes", { cache: "no-store" });
+  const payload = await response.json() as readonly HostProcessSnapshot[] | { readonly error?: string };
+  if (!response.ok) {
+    const errorPayload = payload as { readonly error?: string };
+    throw new Error(errorPayload.error ?? "Falha ao listar processos.");
+  }
+  return payload as readonly HostProcessSnapshot[];
 }
 
 export async function readHostProcess(id: string): Promise<HostProcessSnapshot> {
@@ -182,6 +207,20 @@ export async function stopHostProcess(id: string): Promise<void> {
   if (!response.ok && response.status !== 404) {
     throw new Error("Falha ao interromper processo.");
   }
+}
+
+export function hostProcessOutputLines(process: HostProcessSnapshot): readonly string[] {
+  const fallbackPrefix = [
+    `[processo] ${process.executable}`,
+    `[diretório] ${process.workingDirectory}`,
+    `$ ${process.executable} ${process.arguments.join(" ")}`,
+  ];
+  return [
+    ...(process.presentation?.outputPrefix ?? fallbackPrefix),
+    process.stdout,
+    process.stderr,
+    process.status === "running" ? "[executando...]" : `[exit] ${process.exitCode ?? -1}`,
+  ].filter(Boolean);
 }
 
 function activeFileDirectory(path: string | undefined): string | undefined {
@@ -239,6 +278,14 @@ export async function runExecutionProfile(input: {
       arguments: step.arguments,
       workingDirectory,
       ...(step.environmentVariables ? { environmentVariables: step.environmentVariables } : {}),
+      presentation: {
+        kind: "profile",
+        sourceId: profile.id,
+        sourceName: profile.name,
+        stepId: step.id,
+        stepName: step.name,
+        outputPrefix: [`[perfil] ${profile.name}`, ...heading],
+      },
     });
     callbacks.onProcessStarted(process.id);
     while (process.status === "running") {
@@ -246,11 +293,8 @@ export async function runExecutionProfile(input: {
       process = await readHostProcess(process.id);
       callbacks.onOutput([
         ...completedOutput,
-        ...heading,
-        process.stdout,
-        process.stderr,
-        process.status === "running" ? "[executando...]" : `[exit] ${process.exitCode ?? -1}`,
-      ].filter(Boolean));
+        ...hostProcessOutputLines(process).slice(1),
+      ]);
     }
     callbacks.onProcessFinished();
     completedOutput.push(...heading, process.stdout, process.stderr, `[exit] ${process.exitCode ?? -1}`);
@@ -282,17 +326,18 @@ export async function runScript(input: {
     executable,
     arguments: [...(contribution.arguments ?? []), scriptPath],
     workingDirectory: activeFileDirectory(scriptPath) ?? host.workspaceRoot,
+    presentation: {
+      kind: "script",
+      sourceId: contribution.id,
+      sourceName: document.name,
+      outputPrefix: heading,
+    },
   });
   callbacks.onProcessStarted(process.id);
   while (process.status === "running") {
     await new Promise((resolve) => setTimeout(resolve, 250));
     process = await readHostProcess(process.id);
-    callbacks.onOutput([
-      ...heading,
-      process.stdout,
-      process.stderr,
-      process.status === "running" ? "[executando...]" : `[exit] ${process.exitCode ?? -1}`,
-    ].filter(Boolean));
+    callbacks.onOutput(hostProcessOutputLines(process));
   }
   callbacks.onProcessFinished();
   if (process.exitCode !== 0) throw new Error(`O script terminou com código ${process.exitCode}.`);
