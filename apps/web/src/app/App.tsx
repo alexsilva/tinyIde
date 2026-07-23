@@ -9,6 +9,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   CircleAlert,
   Code2,
   Cpu,
@@ -22,6 +23,7 @@ import {
   FolderRoot,
   HardDrive,
   Info,
+  LocateFixed,
   MoreVertical,
   Package,
   Play,
@@ -63,6 +65,7 @@ import type {
 } from "@tinyide/plugin-api";
 import {
   listDirectory,
+  moveWorkspaceEntry,
   readFileDocument,
   renameWorkspaceEntry,
   resolveDirectoryHandle,
@@ -75,14 +78,21 @@ import {
   type WorkspaceEntry,
 } from "../browser-filesystem";
 import {
+  collapseDeepestExplorerLevel,
+  expandNextExplorerLevel,
+  explorerAncestorDirectoryPaths,
+  explorerDirectoryEmptyState,
+  hiddenExplorerEntryCount,
   explorerTargetDirectoryPath,
   findWorkspaceEntry,
   flattenVisibleEntries,
   joinWorkspacePath,
+  nearestRemainingItemId,
   parentEntryPath,
   replaceWorkspacePathPrefix,
   workspacePathName,
   workspacePathParent,
+  workspacePathContainsHiddenSegment,
 } from "./explorer";
 import { platform } from "./platform";
 import {
@@ -279,12 +289,20 @@ function EntryTree({
   entries,
   expanded,
   showHidden,
+  revealHidden,
+  revealedHiddenPaths,
   highlightedPath,
   selectedPath,
   onToggle,
   onSelect,
   onOpen,
   onContextMenu,
+  onMove,
+  draggingPath,
+  dropTargetPath,
+  onDraggingPathChange,
+  onDropTargetPathChange,
+  onShowHiddenDirectory,
   renamePath,
   renameName,
   renameError,
@@ -297,12 +315,20 @@ function EntryTree({
   readonly entries: readonly WorkspaceEntry[];
   readonly expanded: ReadonlySet<string>;
   readonly showHidden: boolean;
+  readonly revealHidden: boolean;
+  readonly revealedHiddenPaths: ReadonlySet<string>;
   readonly highlightedPath: string | undefined;
   readonly selectedPath: string | undefined;
   readonly onToggle: (entry: WorkspaceEntry) => void;
   readonly onSelect: (entry: WorkspaceEntry) => void;
   readonly onOpen: (entry: WorkspaceEntry) => void;
   readonly onContextMenu: (entry: WorkspaceEntry, x: number, y: number) => void;
+  readonly onMove: (sourcePath: string, targetDirectoryPath: string) => void;
+  readonly draggingPath: string | undefined;
+  readonly dropTargetPath: string | undefined;
+  readonly onDraggingPathChange: (path: string | undefined) => void;
+  readonly onDropTargetPathChange: (path: string | undefined) => void;
+  readonly onShowHiddenDirectory: (path: string) => void;
   readonly renamePath: string | undefined;
   readonly renameName: string;
   readonly renameError: string | undefined;
@@ -312,7 +338,7 @@ function EntryTree({
   readonly workspaceName: string;
   readonly workspaceRoot?: string;
 }) {
-  const visibleEntries = showHidden
+  const visibleEntries = revealHidden
     ? entries
     : entries.filter((entry) => !entry.name.startsWith("."));
 
@@ -350,7 +376,34 @@ function EntryTree({
             ) : (
               <button
                 type="button"
-                className={`tree-entry tree-entry--${entry.kind}${highlightedPath === entry.path ? " is-new" : ""}${selectedPath === entry.path ? " is-selected" : ""}`}
+                data-explorer-path={entry.path}
+                draggable
+                className={`tree-entry tree-entry--${entry.kind}${highlightedPath === entry.path ? " is-new" : ""}${selectedPath === entry.path ? " is-selected" : ""}${draggingPath === entry.path ? " is-dragging" : ""}${dropTargetPath === entry.path ? " is-drop-target" : ""}`}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("application/x-tinyide-workspace-path", entry.path);
+                  onDraggingPathChange(entry.path);
+                }}
+                onDragEnd={() => {
+                  onDraggingPathChange(undefined);
+                  onDropTargetPathChange(undefined);
+                }}
+                onDragOver={(event) => {
+                  if (entry.kind !== "directory") return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  onDropTargetPathChange(entry.path);
+                }}
+                onDragLeave={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) onDropTargetPathChange(undefined);
+                }}
+                onDrop={(event) => {
+                  if (entry.kind !== "directory") return;
+                  event.preventDefault();
+                  const sourcePath = event.dataTransfer.getData("application/x-tinyide-workspace-path");
+                  onDropTargetPathChange(undefined);
+                  if (sourcePath) onMove(sourcePath, entry.path);
+                }}
                 onClick={() => {
                   if (entry.kind === "directory") {
                     onSelect(entry);
@@ -365,6 +418,7 @@ function EntryTree({
                 }}
                 onContextMenu={(event) => {
                   event.preventDefault();
+                  onSelect(entry);
                   onContextMenu(entry, event.clientX, event.clientY);
                 }}
               >
@@ -395,25 +449,41 @@ function EntryTree({
           </div>
           {entry.kind === "directory" && expanded.has(entry.path) && entry.children ? (
             <div className="tree-children">
-              <EntryTree
-                entries={entry.children}
-                expanded={expanded}
-                showHidden={showHidden}
-                highlightedPath={highlightedPath}
-                selectedPath={selectedPath}
-                onToggle={onToggle}
-                onSelect={onSelect}
-                onOpen={onOpen}
-                onContextMenu={onContextMenu}
-                renamePath={renamePath}
-                renameName={renameName}
-                renameError={renameError}
-                onRenameNameChange={onRenameNameChange}
-                onRenameSubmit={onRenameSubmit}
-                onRenameCancel={onRenameCancel}
-                workspaceName={workspaceName}
-                {...(workspaceRoot ? { workspaceRoot } : {})}
-              />
+              {explorerDirectoryEmptyState(entry.children, showHidden || revealedHiddenPaths.has(entry.path)) === "hidden-only" ? (
+                <button className="tree-empty-state tree-empty-state--action" type="button" onClick={() => onShowHiddenDirectory(entry.path)}>
+                  Contém {hiddenExplorerEntryCount(entry.children)} {hiddenExplorerEntryCount(entry.children) === 1 ? "arquivo oculto" : "arquivos ocultos"}. Exibir?
+                </button>
+              ) : explorerDirectoryEmptyState(entry.children, showHidden || revealedHiddenPaths.has(entry.path)) === "empty" ? (
+                <div className="tree-empty-state">Pasta vazia</div>
+              ) : (
+                <EntryTree
+                  entries={entry.children}
+                  expanded={expanded}
+                  showHidden={showHidden}
+                  revealHidden={showHidden || revealedHiddenPaths.has(entry.path)}
+                  revealedHiddenPaths={revealedHiddenPaths}
+                  highlightedPath={highlightedPath}
+                  selectedPath={selectedPath}
+                  onToggle={onToggle}
+                  onSelect={onSelect}
+                  onOpen={onOpen}
+                  onContextMenu={onContextMenu}
+                  onMove={onMove}
+                  draggingPath={draggingPath}
+                  dropTargetPath={dropTargetPath}
+                  onDraggingPathChange={onDraggingPathChange}
+                  onDropTargetPathChange={onDropTargetPathChange}
+                  onShowHiddenDirectory={onShowHiddenDirectory}
+                  renamePath={renamePath}
+                  renameName={renameName}
+                  renameError={renameError}
+                  onRenameNameChange={onRenameNameChange}
+                  onRenameSubmit={onRenameSubmit}
+                  onRenameCancel={onRenameCancel}
+                  workspaceName={workspaceName}
+                  {...(workspaceRoot ? { workspaceRoot } : {})}
+                />
+              )}
             </div>
           ) : null}
         </div>;
@@ -991,6 +1061,7 @@ export function App() {
   const [entries, setEntries] = useState<readonly WorkspaceEntry[]>([]);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set(initialSession.expandedDirectories));
   const [explorerShowHidden, setExplorerShowHidden] = useState(initialSession.explorerShowHidden);
+  const [explorerRevealedHiddenPaths, setExplorerRevealedHiddenPaths] = useState<ReadonlySet<string>>(new Set());
   const [documents, setDocuments] = useState<readonly OpenDocument[]>([]);
   const [activeDocumentId, setActiveDocumentId] = useState<string | undefined>(initialSession.activeDocumentId);
   const [output, setOutput] = useState<string[]>(["tinyIde React shell inicializado."]);
@@ -1032,9 +1103,12 @@ export function App() {
   const [explorerRenamePath, setExplorerRenamePath] = useState<string>();
   const [explorerRenameName, setExplorerRenameName] = useState("");
   const [explorerRenameError, setExplorerRenameError] = useState<string>();
+  const [explorerPendingDeletion, setExplorerPendingDeletion] = useState<WorkspaceEntry>();
   const [highlightedExplorerPath, setHighlightedExplorerPath] = useState<string>();
   const [selectedExplorerPath, setSelectedExplorerPath] = useState<string>();
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
+  const [draggingExplorerPath, setDraggingExplorerPath] = useState<string>();
+  const [dropTargetExplorerPath, setDropTargetExplorerPath] = useState<string>();
   const restoredRef = useRef(false);
   const snapshotTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -1715,6 +1789,35 @@ export function App() {
     setEntries(await hydrateExpandedEntries(nextEntries, expandedPaths));
   };
 
+  const expandExplorerLevel = async () => {
+    if (!workspaceHandle) return;
+    const nextExpanded = expandNextExplorerLevel(entries, expanded, explorerShowHidden);
+    setExpanded(nextExpanded);
+    await refreshExplorer(nextExpanded);
+  };
+
+  const collapseExplorerLevel = async () => {
+    const nextExpanded = collapseDeepestExplorerLevel(expanded);
+    setExpanded(nextExpanded);
+    await refreshExplorer(nextExpanded);
+  };
+
+  const revealActiveDocumentInExplorer = async () => {
+    if (!workspaceHandle || !activeDocument?.path) return;
+    const path = activeDocument.path;
+    const nextExpanded = new Set([...expanded, ...explorerAncestorDirectoryPaths(path)]);
+    if (workspacePathContainsHiddenSegment(path)) setExplorerShowHidden(true);
+    setSidebarView("explorer");
+    setSidebarVisible(true);
+    setExpanded(nextExpanded);
+    await refreshExplorer(nextExpanded);
+    setSelectedExplorerPath(path);
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(`[data-explorer-path="${CSS.escape(path)}"]`)
+        ?.scrollIntoView({ block: "center" });
+    });
+  };
+
   const startExplorerCreation = (kind: "file" | "directory", parentPath?: string) => {
     const targetPath = parentPath ?? explorerTargetDirectoryPath(entries, selectedExplorerPath);
     setExplorerCreation(kind);
@@ -1842,18 +1945,57 @@ export function App() {
 
   const deleteWorkspaceEntry = async (entry: WorkspaceEntry) => {
     if (!workspaceHandle) throw new Error("Restaure o acesso ao workspace antes de excluir recursos.");
-    if (!window.confirm(`Excluir ${entry.kind === "directory" ? "a pasta" : "o arquivo"} “${entry.name}”?`)) return;
     await removeWorkspaceEntry(workspaceHandle, entry.path, entry.kind === "directory");
     const removedPrefix = `${entry.path}/`;
     const removedIds = documents
       .filter((document) => document.path === entry.path || document.path?.startsWith(removedPrefix))
       .map((document) => document.id);
+    const removedIdSet = new Set(removedIds);
+    const nextActiveDocumentId = nearestRemainingItemId(
+      documents.map((document) => document.id),
+      removedIdSet,
+      activeDocumentId,
+    );
     setDocuments((current) => current.filter((document) => !removedIds.includes(document.id)));
-    if (activeDocumentId && removedIds.includes(activeDocumentId)) setActiveDocumentId(undefined);
+    if (activeDocumentId && removedIdSet.has(activeDocumentId)) setActiveDocumentId(nextActiveDocumentId);
     removedIds.forEach((id) => editorHistoriesRef.current.delete(id));
     setSelectedExplorerPath(undefined);
     setExpanded((current) => new Set([...current].filter((path) => path !== entry.path && !path.startsWith(removedPrefix))));
     setEntries(await listDirectory(workspaceHandle));
+  };
+
+  const moveExplorerEntry = async (sourcePath: string, targetDirectoryPath: string) => {
+    if (!workspaceHandle) throw new Error("Restaure o acesso ao workspace antes de mover recursos.");
+    const sourceEntry = findWorkspaceEntry(entries, sourcePath);
+    const targetEntry = findWorkspaceEntry(entries, targetDirectoryPath);
+    if (!sourceEntry || targetEntry?.kind !== "directory") return;
+    const targetHandle = await resolveDirectoryHandle(workspaceHandle, targetDirectoryPath);
+    const targetChildren = targetEntry.children ?? await listDirectory(targetHandle, targetDirectoryPath);
+    if (targetChildren.some((entry) => entry.name === sourceEntry.name)) {
+      throw new Error(`Já existe um item chamado “${sourceEntry.name}” em ${targetDirectoryPath}.`);
+    }
+    const nextPath = await moveWorkspaceEntry(workspaceHandle, sourcePath, targetDirectoryPath);
+    const nextExpanded = new Set([...expanded].map((path) => replaceWorkspacePathPrefix(path, sourcePath, nextPath)));
+    nextExpanded.add(targetDirectoryPath);
+    const nextDocuments = await Promise.all(documents.map(async (document) => {
+      if (!document.path || (document.path !== sourcePath && !document.path.startsWith(`${sourcePath}/`))) return document;
+      const path = replaceWorkspacePathPrefix(document.path, sourcePath, nextPath);
+      const handle = await resolveFileHandle(workspaceHandle, path);
+      return { ...document, id: path, path, name: workspacePathName(path), handle };
+    }));
+    const movedHistories = [...editorHistoriesRef.current.entries()]
+      .filter(([id]) => id === sourcePath || id.startsWith(`${sourcePath}/`));
+    movedHistories.forEach(([id, history]) => {
+      editorHistoriesRef.current.delete(id);
+      editorHistoriesRef.current.set(replaceWorkspacePathPrefix(id, sourcePath, nextPath), history);
+    });
+    setDocuments(nextDocuments);
+    setActiveDocumentId((current) => current ? replaceWorkspacePathPrefix(current, sourcePath, nextPath) : current);
+    setSelectedExplorerPath(nextPath);
+    setExpanded(nextExpanded);
+    setDraggingExplorerPath(undefined);
+    setDropTargetExplorerPath(undefined);
+    await refreshExplorer(nextExpanded);
   };
 
   const runSelectedProfile = async () => {
@@ -1957,7 +2099,7 @@ export function App() {
         return;
       }
       if (item.command === "core.resource.delete") {
-        await deleteWorkspaceEntry(entry);
+        setExplorerPendingDeletion(entry);
         return;
       }
       if (item.command === "core.resource.runScript") {
@@ -2251,7 +2393,7 @@ export function App() {
         const selectedEntry = findWorkspaceEntry(entries, selectedExplorerPath);
         if (selectedEntry) {
           event.preventDefault();
-          invoke(() => deleteWorkspaceEntry(selectedEntry));
+          setExplorerPendingDeletion(selectedEntry);
         }
         return;
       }
@@ -2431,33 +2573,39 @@ export function App() {
                 <span>{sidebarView === "explorer" ? "EXPLORER" : sidebarView === "plugins" ? "PLUGINS" : "AMBIENTES"}</span>
                 <div className="sidebar-heading-actions">
                   {sidebarView === "explorer" ? (
-                    <DropdownMenu.Root>
-                      <DropdownMenu.Trigger asChild>
-                        <button className="icon-button small" type="button" aria-label="Ações do Explorer"><MoreVertical size={15} /></button>
-                      </DropdownMenu.Trigger>
-                      <DropdownMenu.Portal>
-                        <DropdownMenu.Content className="menu-content" align="end" sideOffset={6}>
-                          <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => startExplorerCreation("file")}>
-                            <FilePlus2 size={15} /> Novo arquivo
-                          </DropdownMenu.Item>
-                          <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => startExplorerCreation("directory")}>
-                            <FolderOpen size={15} /> Nova pasta
-                          </DropdownMenu.Item>
-                          <DropdownMenu.Separator className="menu-separator" />
-                          <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => invoke(refreshExplorer)}>
-                            <RefreshCw size={15} /> Atualizar
-                          </DropdownMenu.Item>
-                          <DropdownMenu.Item className="menu-item" disabled={!expanded.size} onSelect={() => setExpanded(new Set())}>
-                            <ChevronRight size={15} /> Recolher tudo
-                          </DropdownMenu.Item>
-                          <DropdownMenu.Separator className="menu-separator" />
-                          <DropdownMenu.Item className="menu-item" onSelect={() => setExplorerShowHidden((visible) => !visible)}>
-                            {explorerShowHidden ? <EyeOff size={15} /> : <Eye size={15} />}
-                            {explorerShowHidden ? "Ocultar arquivos ocultos" : "Mostrar arquivos ocultos"}
-                          </DropdownMenu.Item>
-                        </DropdownMenu.Content>
-                      </DropdownMenu.Portal>
-                    </DropdownMenu.Root>
+                    <>
+                      <button
+                        className="icon-button small"
+                        type="button"
+                        aria-label="Localizar arquivo aberto no Explorer"
+                        disabled={!activeDocument?.path || !workspaceHandle}
+                        onClick={() => invoke(revealActiveDocumentInExplorer)}
+                      ><LocateFixed size={15} /></button>
+                      <DropdownMenu.Root>
+                        <DropdownMenu.Trigger asChild>
+                          <button className="icon-button small" type="button" aria-label="Ações do Explorer"><MoreVertical size={15} /></button>
+                        </DropdownMenu.Trigger>
+                        <DropdownMenu.Portal>
+                          <DropdownMenu.Content className="menu-content" align="end" sideOffset={6}>
+                            <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => startExplorerCreation("file")}>
+                              <FilePlus2 size={15} /> Novo arquivo
+                            </DropdownMenu.Item>
+                            <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => startExplorerCreation("directory")}>
+                              <FolderOpen size={15} /> Nova pasta
+                            </DropdownMenu.Item>
+                            <DropdownMenu.Separator className="menu-separator" />
+                            <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => invoke(refreshExplorer)}>
+                              <RefreshCw size={15} /> Atualizar
+                            </DropdownMenu.Item>
+                            <DropdownMenu.Separator className="menu-separator" />
+                            <DropdownMenu.Item className="menu-item" onSelect={() => setExplorerShowHidden((visible) => !visible)}>
+                              {explorerShowHidden ? <EyeOff size={15} /> : <Eye size={15} />}
+                              {explorerShowHidden ? "Ocultar arquivos ocultos" : "Mostrar arquivos ocultos"}
+                            </DropdownMenu.Item>
+                          </DropdownMenu.Content>
+                        </DropdownMenu.Portal>
+                      </DropdownMenu.Root>
+                    </>
                   ) : null}
                   <button className="icon-button small" type="button" onClick={() => setSidebarVisible(false)} aria-label="Fechar sidebar"><X size={14} /></button>
                 </div>
@@ -2492,18 +2640,46 @@ export function App() {
                       </form>
                     </div>
                   ) : null}
-                  {workspaceName !== "Sem workspace" ? <div className="workspace-name"><FolderRoot size={14} /> {workspaceName}</div> : null}
+                  {workspaceName !== "Sem workspace" ? (
+                    <div className="workspace-name">
+                      <span className="workspace-name__label"><FolderRoot size={14} /> {workspaceName}</span>
+                      <span className="workspace-name__actions">
+                        <button
+                          className="icon-button small"
+                          type="button"
+                          aria-label="Expandir próximo nível"
+                          disabled={!workspaceHandle}
+                          onClick={() => invoke(expandExplorerLevel)}
+                        ><ChevronDown size={14} /></button>
+                        <button
+                          className="icon-button small"
+                          type="button"
+                          aria-label="Recolher nível mais profundo"
+                          disabled={!expanded.size}
+                          onClick={() => invoke(collapseExplorerLevel)}
+                        ><ChevronUp size={14} /></button>
+                      </span>
+                    </div>
+                  ) : null}
                   {entries.length ? (
                     <EntryTree
                       entries={entries}
                       expanded={expanded}
                       showHidden={explorerShowHidden}
+                      revealHidden={explorerShowHidden}
+                      revealedHiddenPaths={explorerRevealedHiddenPaths}
                       highlightedPath={highlightedExplorerPath}
                       selectedPath={selectedExplorerPath}
                       onToggle={(entry) => invoke(() => toggleEntry(entry))}
                       onSelect={(entry) => setSelectedExplorerPath(entry.path)}
                       onOpen={(entry) => invoke(() => openEntry(entry))}
                       onContextMenu={(entry, x, y) => invoke(() => openResourceMenu(entry, x, y))}
+                      onMove={(sourcePath, targetPath) => invoke(() => moveExplorerEntry(sourcePath, targetPath))}
+                      draggingPath={draggingExplorerPath}
+                      dropTargetPath={dropTargetExplorerPath}
+                      onDraggingPathChange={setDraggingExplorerPath}
+                      onDropTargetPathChange={setDropTargetExplorerPath}
+                      onShowHiddenDirectory={(path) => setExplorerRevealedHiddenPaths((current) => new Set(current).add(path))}
                       renamePath={explorerRenamePath}
                       renameName={explorerRenameName}
                       renameError={explorerRenameError}
@@ -3028,6 +3204,29 @@ export function App() {
                   await platform.uninstall(pluginPendingRemoval.manifest.id);
                   setPluginRemovalId(undefined);
                 })}>Remover</button>
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {explorerPendingDeletion ? (
+          <div className="profile-removal-backdrop" role="presentation">
+            <section className="profile-removal-dialog" role="alertdialog" aria-modal="true" aria-labelledby="explorer-removal-title">
+              <div>
+                <span className="eyebrow">CONFIRMAÇÃO</span>
+                <h3 id="explorer-removal-title">Excluir {explorerPendingDeletion.kind === "directory" ? "pasta" : "arquivo"}?</h3>
+                <p>
+                  <strong>{explorerPendingDeletion.name}</strong> será removido do workspace
+                  {explorerPendingDeletion.kind === "directory" ? " com todo o conteúdo interno." : "."}
+                </p>
+              </div>
+              <div className="dialog-actions">
+                <button className="button secondary" type="button" onClick={() => setExplorerPendingDeletion(undefined)}>Cancelar</button>
+                <button className="button danger" type="button" onClick={() => invoke(async () => {
+                  const entry = explorerPendingDeletion;
+                  await deleteWorkspaceEntry(entry);
+                  setExplorerPendingDeletion(undefined);
+                })}>Excluir</button>
               </div>
             </section>
           </div>

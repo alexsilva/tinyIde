@@ -183,6 +183,42 @@ export async function renameWorkspaceEntry(
   return parentPath ? `${parentPath}/${normalizedName}` : normalizedName;
 }
 
+export async function moveWorkspaceEntry(
+  workspaceHandle: BrowserDirectoryHandle,
+  sourcePath: string,
+  targetDirectoryPath: string,
+): Promise<string> {
+  const sourceSegments = [...workspacePathSegments(sourcePath)];
+  const sourceName = sourceSegments.pop();
+  if (!sourceName) throw new Error("O caminho do recurso está vazio.");
+  const sourceParentPath = sourceSegments.join("/");
+  if (sourceParentPath === targetDirectoryPath) return sourcePath;
+  if (targetDirectoryPath === sourcePath || targetDirectoryPath.startsWith(`${sourcePath}/`)) {
+    throw new Error("Não é possível mover uma pasta para dentro dela mesma.");
+  }
+
+  const sourceParent = await resolveDirectoryHandle(workspaceHandle, sourceParentPath);
+  const targetParent = await resolveDirectoryHandle(workspaceHandle, targetDirectoryPath);
+  if (!sourceParent.removeEntry) throw new Error("Este navegador não oferece movimentação de arquivos pelo workspace.");
+
+  let source: BrowserFileHandle | BrowserDirectoryHandle;
+  try {
+    source = await sourceParent.getFileHandle(sourceName);
+  } catch {
+    source = await sourceParent.getDirectoryHandle(sourceName);
+  }
+
+  if (source.kind === "file") {
+    await copyFileHandle(source, await targetParent.getFileHandle(sourceName, { create: true }));
+    await sourceParent.removeEntry(sourceName, { recursive: false });
+  } else {
+    await copyDirectoryHandle(source, await targetParent.getDirectoryHandle(sourceName, { create: true }));
+    await sourceParent.removeEntry(sourceName, { recursive: true });
+  }
+
+  return targetDirectoryPath ? `${targetDirectoryPath}/${sourceName}` : sourceName;
+}
+
 export async function readFileDocument(
   handle: BrowserFileHandle,
   path?: string,

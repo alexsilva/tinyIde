@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   listDirectory,
+  moveWorkspaceEntry,
   readFileDocument,
   renameWorkspaceEntry,
   removeWorkspaceEntry,
@@ -257,6 +258,110 @@ describe("browser filesystem", () => {
     const successfulRoot = directoryHandle("root", [successfulParent]);
     await expect(renameWorkspaceEntry(successfulRoot, "src/old.txt", "new.txt"))
       .resolves.toBe("src/new.txt");
+  });
+
+  it("moves files into a target directory and removes the source", async () => {
+    const source = fileHandle("main.py", "print(1)");
+    const targetFiles = new Map<string, BrowserFileHandle>();
+    const target: BrowserDirectoryHandle = {
+      kind: "directory",
+      name: "src",
+      async *values() { yield* targetFiles.values(); },
+      async getFileHandle(name, options) {
+        const existing = targetFiles.get(name);
+        if (existing) return existing;
+        if (!options?.create) throw new Error("missing file");
+        const created = fileHandle(name);
+        targetFiles.set(name, created);
+        return created;
+      },
+      async getDirectoryHandle() { throw new Error("missing directory"); },
+    };
+    const removeEntry = vi.fn(async () => undefined);
+    const root: BrowserDirectoryHandle = {
+      kind: "directory",
+      name: "root",
+      async *values() { yield source; yield target; },
+      async getFileHandle(name) {
+        if (name === "main.py") return source;
+        throw new Error("missing file");
+      },
+      async getDirectoryHandle(name) {
+        if (name === "src") return target;
+        throw new Error("missing directory");
+      },
+      removeEntry,
+    };
+
+    await expect(moveWorkspaceEntry(root, "main.py", "src")).resolves.toBe("src/main.py");
+    expect(targetFiles.has("main.py")).toBe(true);
+    expect(removeEntry).toHaveBeenCalledWith("main.py", { recursive: false });
+    await expect(moveWorkspaceEntry(root, "src", "src/nested")).rejects.toThrow("dentro dela mesma");
+  });
+
+  it("moves directories, handles root targets and reports unsupported moves", async () => {
+    const nestedFile = fileHandle("data.json", "{}");
+    const sourceDirectory = directoryHandle("assets", [nestedFile]);
+    const copiedFiles = new Map<string, BrowserFileHandle>();
+    const copiedDirectory: BrowserDirectoryHandle = {
+      kind: "directory",
+      name: "assets",
+      async *values() { yield* copiedFiles.values(); },
+      async getFileHandle(name, options) {
+        const existing = copiedFiles.get(name);
+        if (existing) return existing;
+        if (!options?.create) throw new Error("missing file");
+        const created = fileHandle(name);
+        copiedFiles.set(name, created);
+        return created;
+      },
+      async getDirectoryHandle() { throw new Error("missing directory"); },
+    };
+    const target: BrowserDirectoryHandle = {
+      ...directoryHandle("target", []),
+      async getDirectoryHandle(name, options) {
+        if (name === "assets" && options?.create) return copiedDirectory;
+        throw new Error("missing directory");
+      },
+    };
+    const removeEntry = vi.fn(async () => undefined);
+    const root: BrowserDirectoryHandle = {
+      ...directoryHandle("root", [sourceDirectory, target]),
+      removeEntry,
+    };
+
+    await expect(moveWorkspaceEntry(root, "assets", "target")).resolves.toBe("target/assets");
+    expect(copiedFiles.has("data.json")).toBe(true);
+    expect(removeEntry).toHaveBeenCalledWith("assets", { recursive: true });
+    await expect(moveWorkspaceEntry(root, "target/assets", "target")).resolves.toBe("target/assets");
+    await expect(moveWorkspaceEntry(root, "", "target")).rejects.toThrow("O caminho do recurso está vazio.");
+    await expect(moveWorkspaceEntry(
+      directoryHandle("unsupported", [fileHandle("main.py"), directoryHandle("target", [])]),
+      "main.py",
+      "target",
+    ))
+      .rejects.toThrow("Este navegador não oferece movimentação de arquivos pelo workspace.");
+
+    const nestedRemoveEntry = vi.fn(async () => undefined);
+    const nestedSource: BrowserDirectoryHandle = {
+      ...directoryHandle("source", [fileHandle("nested.py")]),
+      removeEntry: nestedRemoveEntry,
+    };
+    const rootFiles = new Map<string, BrowserFileHandle>();
+    const rootTarget: BrowserDirectoryHandle = {
+      ...directoryHandle("root", [nestedSource]),
+      async getFileHandle(name, options) {
+        const existing = rootFiles.get(name);
+        if (existing) return existing;
+        if (!options?.create) throw new Error("missing file");
+        const created = fileHandle(name);
+        rootFiles.set(name, created);
+        return created;
+      },
+    };
+    await expect(moveWorkspaceEntry(rootTarget, "source/nested.py", "")).resolves.toBe("nested.py");
+    expect(rootFiles.has("nested.py")).toBe(true);
+    expect(nestedRemoveEntry).toHaveBeenCalledWith("nested.py", { recursive: false });
   });
 
   it("closes the stream even when writing fails", async () => {
