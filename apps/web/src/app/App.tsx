@@ -896,6 +896,7 @@ function InteractiveSessionPanel({
       ...(pluginSettings ? { pluginSettings } : {}),
     })
       .then((prepared) => {
+        if (disposed) return undefined;
         onIndicatorsChange(prepared.indicators);
         return provider.create({
           ...prepared.options,
@@ -904,6 +905,7 @@ function InteractiveSessionPanel({
         });
       })
       .then((session) => {
+        if (!session) return;
         if (disposed) return provider.close(session.id);
         sessionId = session.id;
         terminal.focus();
@@ -972,6 +974,7 @@ export function App() {
   const [pluginSettingsDraft, setPluginSettingsDraft] = useState<PluginSettingValues>({});
   const [terminalIndicators, setTerminalIndicators] = useState<readonly InteractiveSessionIndicator[]>([]);
   const [terminalSessionRevision, setTerminalSessionRevision] = useState(0);
+  const [restorationComplete, setRestorationComplete] = useState(false);
   const [error, setError] = useState<string>();
   const [workspaceAccess, setWorkspaceAccess] = useState<"ready" | "permission-required" | "missing">("ready");
   const [explorerCreation, setExplorerCreation] = useState<"file" | "directory">();
@@ -1190,7 +1193,8 @@ export function App() {
         setExecutableOptions(contributions.executableOptions);
         restoredRef.current = true;
       })
-      .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+      .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setRestorationComplete(true));
   }, []);
 
   useEffect(() => {
@@ -1229,7 +1233,7 @@ export function App() {
   }, [workspaceName, workspaceRoot, workspaceHandle, entries, documents, diagnostics, output]);
 
   useEffect(() => {
-    if (!platformSnapshot.initialized) return;
+    if (!platformSnapshot.initialized || !restorationComplete) return;
     void loadEnvironments().then((loaded) => {
       setEnvironments(loaded);
       const configured = workspaceSettingsRef.current.environment?.selectedId;
@@ -1255,7 +1259,7 @@ export function App() {
     }).then((contributions) => {
       setExecutableOptions(contributions.executableOptions);
     });
-  }, [platformSnapshot.plugins, platformSnapshot.initialized, workspaceName, workspaceRoot, activeDocument?.id, replaceWorkspaceSettings]);
+  }, [platformSnapshot.plugins, platformSnapshot.initialized, restorationComplete, workspaceName, workspaceRoot, activeDocument?.id, replaceWorkspaceSettings]);
 
   const updateProfiles = (profiles: readonly ExecutionProfile[], selectedId?: string) => {
     const next = { profiles, ...(selectedId ? { selectedId } : {}) };
@@ -2535,7 +2539,7 @@ export function App() {
                 </div>
                 <pre hidden={panelTab !== "output"}>{output.join("\n")}</pre>
                 <div className="problems-list" hidden={panelTab !== "problems"}>{diagnostics.length ? diagnostics.map((diagnostic, index) => <button type="button" key={`${diagnostic.line}:${index}`}><strong>{diagnostic.severity}</strong><span>{diagnostic.line}:{diagnostic.column}</span><span>{diagnostic.message}</span></button>) : <p>Nenhum problema detectado.</p>}</div>
-                {activeInteractiveSessionProvider && terminalSessionOpen ? (
+                {activeInteractiveSessionProvider && terminalSessionOpen && restorationComplete ? (
                   <div className="terminal-panel-host" hidden={panelTab !== "terminal"}>
                     <InteractiveSessionPanel
                       key={terminalSessionRevision}
