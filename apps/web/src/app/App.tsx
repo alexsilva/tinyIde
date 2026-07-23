@@ -54,7 +54,6 @@ import type {
   LanguageLintSettings,
   LanguageProvider,
   PluginSettingValues,
-  PluginSettingsProvider,
   ResourceContext,
   ResourceContextMenuItem,
   ResourceContextMenuProvider,
@@ -131,6 +130,7 @@ import {
   resolvePluginSettingValues,
   updatePluginSettingValue,
 } from "./plugin-settings";
+import { editorLineNumbers, resolveEditorSettings } from "./editor-settings";
 import { reconcileToolWindowLayout } from "./workbench-layout";
 import {
   EMPTY_WORKSPACE_SETTINGS,
@@ -1116,7 +1116,8 @@ export function App() {
   const [lintSettingsOpen, setLintSettingsOpen] = useState(false);
   const [lintEnabledRuleIds, setLintEnabledRuleIds] = useState<readonly string[]>([]);
   const [pluginRemovalId, setPluginRemovalId] = useState<string>();
-  const [pluginSettingsOpenId, setPluginSettingsOpenId] = useState<string>();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSectionId, setSettingsSectionId] = useState("editor");
   const [pluginSettingsDraft, setPluginSettingsDraft] = useState<PluginSettingValues>({});
   const [restorationComplete, setRestorationComplete] = useState(false);
   const [error, setError] = useState<string>();
@@ -1141,6 +1142,7 @@ export function App() {
   const browserResolverRef = useRef<((path: string | undefined) => void) | undefined>(undefined);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const highlightedEditorScrollRef = useRef<HTMLDivElement | null>(null);
+  const editorLineRulerRef = useRef<HTMLPreElement | null>(null);
   const editorHistoriesRef = useRef<Map<string, EditorHistory>>(new Map());
   const workspaceSettingsRef = useRef<WorkspaceSettings>(EMPTY_WORKSPACE_SETTINGS);
   const workspaceSettingsWriteQueueRef = useRef<Promise<WorkspaceSettings>>(Promise.resolve(EMPTY_WORKSPACE_SETTINGS));
@@ -1178,7 +1180,11 @@ export function App() {
   const activeToolWindow = workbenchToolWindows.find((toolWindow) => toolWindow.id === activeToolWindowId);
   const selectedProfile = profilesState.profiles.find((profile) => profile.id === profilesState.selectedId);
   const settingsProviders = pluginSettingsProviders();
-  const activePluginSettingsProvider = settingsProviders.find((provider) => provider.pluginId === pluginSettingsOpenId);
+  const activePluginSettingsProvider = settingsSectionId === "editor"
+    ? undefined
+    : settingsProviders.find((provider) => provider.pluginId === settingsSectionId);
+  const editorSettings = resolveEditorSettings(workspaceSettings);
+  const editorRulerText = activeDocument ? editorLineNumbers(activeDocument.content).join("\n") : "1";
 
   useEffect(() => {
     const snapshot: WorkbenchStateSnapshot = {
@@ -1869,6 +1875,11 @@ export function App() {
       : document));
   };
 
+  const syncEditorLineRuler = (scrollTop: number) => {
+    if (!editorLineRulerRef.current) return;
+    editorLineRulerRef.current.style.transform = `translate3d(0, -${scrollTop}px, 0)`;
+  };
+
   useEffect(() => {
     const textarea = editorRef.current;
     if (!textarea || !activeDocument) return;
@@ -1877,8 +1888,9 @@ export function App() {
       const scrollContainer = highlightedEditorScrollRef.current ?? textarea;
       scrollContainer.scrollTop = activeDocument.scrollTop;
       scrollContainer.scrollLeft = activeDocument.scrollLeft;
+      syncEditorLineRuler(activeDocument.scrollTop);
     });
-  }, [activeDocumentId]);
+  }, [activeDocumentId, editorSettings.lineNumbers]);
 
   const downloadDocument = (openDocument: OpenDocument) => {
     const url = URL.createObjectURL(new Blob([openDocument.content], { type: "text/plain;charset=utf-8" }));
@@ -2624,9 +2636,31 @@ export function App() {
     ? environments.find((environment) => environment.id === editingEnvironmentId)
     : undefined;
 
-  const openPluginSettings = (provider: PluginSettingsProvider) => {
-    setPluginSettingsOpenId(provider.pluginId);
-    setPluginSettingsDraft(resolvePluginSettingValues(provider, workspaceSettings.plugins?.[provider.pluginId]));
+  const openSettings = (sectionId = "editor") => {
+    setSettingsSectionId(sectionId);
+    const provider = settingsProviders.find((candidate) => candidate.pluginId === sectionId);
+    setPluginSettingsDraft(provider
+      ? resolvePluginSettingValues(provider, workspaceSettings.plugins?.[provider.pluginId])
+      : {});
+    setSettingsOpen(true);
+  };
+
+  const selectSettingsSection = (sectionId: string) => {
+    setSettingsSectionId(sectionId);
+    const provider = settingsProviders.find((candidate) => candidate.pluginId === sectionId);
+    setPluginSettingsDraft(provider
+      ? resolvePluginSettingValues(provider, workspaceSettings.plugins?.[provider.pluginId])
+      : {});
+  };
+
+  const applyEditorLineNumbers = async (lineNumbers: boolean) => {
+    await updateWorkspaceSettings((current) => ({
+      ...current,
+      editor: {
+        ...current.editor,
+        lineNumbers,
+      },
+    }));
   };
 
   const applyPluginSetting = async (settingId: string, value: boolean) => {
@@ -2675,6 +2709,30 @@ export function App() {
                 <DropdownMenu.Item className="menu-item" onSelect={() => invoke(() => saveDocument(true))}>
                   <Save size={15} /> Salvar como
                 </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <button className="menu-button" type="button">
+                Configurações <ChevronDown size={13} />
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content className="menu-content" align="start" sideOffset={6}>
+                <DropdownMenu.Item className="menu-item" onSelect={() => openSettings("editor")}>
+                  <Code2 size={15} /> Editor
+                </DropdownMenu.Item>
+                {settingsProviders.length ? <DropdownMenu.Separator className="menu-separator" /> : null}
+                {settingsProviders.map((provider) => (
+                  <DropdownMenu.Item
+                    className="menu-item"
+                    key={provider.pluginId}
+                    onSelect={() => openSettings(provider.pluginId)}
+                  >
+                    <Plug size={15} /> {provider.title}
+                  </DropdownMenu.Item>
+                ))}
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
@@ -2900,7 +2958,7 @@ export function App() {
                               type="button"
                               onClick={() => {
                                 const provider = settingsProviders.find((candidate) => candidate.pluginId === plugin.manifest.id);
-                                if (provider) openPluginSettings(provider);
+                                if (provider) openSettings(provider.pluginId);
                               }}
                             >
                               <Settings2 size={13} /> Configurar
@@ -3029,55 +3087,66 @@ export function App() {
                   </div>
                 </div>
                 <div className="editor-stack">
-                  {activeLanguageProvider && activeDocument ? (
-                    <div
-                      ref={highlightedEditorScrollRef}
-                      className="highlight-editor"
-                      onMouseMove={(event) => {
-                        const bounds = event.currentTarget.getBoundingClientRect();
-                        const contentY = event.clientY - bounds.top + event.currentTarget.scrollTop - 18;
-                        const line = Math.floor(contentY / 21.45) + 1;
-                        const nextLine = diagnostics.some((diagnostic) => diagnostic.line === line)
-                          ? line
-                          : undefined;
-                        setHoveredDiagnosticLine((current) => current === nextLine ? current : nextLine);
-                      }}
-                      onMouseLeave={() => setHoveredDiagnosticLine(undefined)}
-                      onScroll={(event) => {
-                        if (editorRef.current) captureEditorState(editorRef.current, event.currentTarget);
-                      }}
-                    >
-                      <div className="highlight-editor__content">
-                        <pre className="syntax-layer"><HighlightedSource source={activeDocument.content} provider={activeLanguageProvider} /></pre>
-                        <DiagnosticLayer
-                          diagnostics={diagnostics}
-                          source={activeDocument.content}
-                          hoveredLine={hoveredDiagnosticLine}
-                        />
-                        <textarea
-                          ref={editorRef}
-                          className="code-editor code-editor--highlighted"
-                          spellCheck={false}
-                          wrap="off"
-                          value={activeDocument.content}
-                          onChange={(event) => updateDocument(event.currentTarget)}
-                          onKeyDown={handleEditorKeyDown}
-                          onSelect={(event) => captureEditorState(event.currentTarget, highlightedEditorScrollRef.current ?? event.currentTarget)}
-                        />
+                  <div className={`editor-canvas${editorSettings.lineNumbers ? " has-line-numbers" : ""}`}>
+                    {editorSettings.lineNumbers ? (
+                      <div className="editor-line-ruler" aria-hidden="true">
+                        <pre ref={editorLineRulerRef}>{editorRulerText}</pre>
                       </div>
-                    </div>
-                  ) : (
-                    <textarea
-                      ref={editorRef}
-                      className="code-editor"
-                      spellCheck={false}
-                      value={activeDocument?.content ?? ""}
-                      onChange={(event) => updateDocument(event.currentTarget)}
-                      onKeyDown={handleEditorKeyDown}
-                      onSelect={(event) => captureEditorState(event.currentTarget)}
-                      onScroll={(event) => captureEditorState(event.currentTarget)}
-                    />
-                  )}
+                    ) : null}
+                    {activeLanguageProvider && activeDocument ? (
+                      <div
+                        ref={highlightedEditorScrollRef}
+                        className="highlight-editor"
+                        onMouseMove={(event) => {
+                          const bounds = event.currentTarget.getBoundingClientRect();
+                          const contentY = event.clientY - bounds.top + event.currentTarget.scrollTop - 18;
+                          const line = Math.floor(contentY / 21.45) + 1;
+                          const nextLine = diagnostics.some((diagnostic) => diagnostic.line === line)
+                            ? line
+                            : undefined;
+                          setHoveredDiagnosticLine((current) => current === nextLine ? current : nextLine);
+                        }}
+                        onMouseLeave={() => setHoveredDiagnosticLine(undefined)}
+                        onScroll={(event) => {
+                          syncEditorLineRuler(event.currentTarget.scrollTop);
+                          if (editorRef.current) captureEditorState(editorRef.current, event.currentTarget);
+                        }}
+                      >
+                        <div className="highlight-editor__content">
+                          <pre className="syntax-layer"><HighlightedSource source={activeDocument.content} provider={activeLanguageProvider} /></pre>
+                          <DiagnosticLayer
+                            diagnostics={diagnostics}
+                            source={activeDocument.content}
+                            hoveredLine={hoveredDiagnosticLine}
+                          />
+                          <textarea
+                            ref={editorRef}
+                            className="code-editor code-editor--highlighted"
+                            spellCheck={false}
+                            wrap="off"
+                            value={activeDocument.content}
+                            onChange={(event) => updateDocument(event.currentTarget)}
+                            onKeyDown={handleEditorKeyDown}
+                            onSelect={(event) => captureEditorState(event.currentTarget, highlightedEditorScrollRef.current ?? event.currentTarget)}
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <textarea
+                        ref={editorRef}
+                        className="code-editor"
+                        spellCheck={false}
+                        value={activeDocument?.content ?? ""}
+                        onChange={(event) => updateDocument(event.currentTarget)}
+                        onKeyDown={handleEditorKeyDown}
+                        onSelect={(event) => captureEditorState(event.currentTarget)}
+                        onScroll={(event) => {
+                          syncEditorLineRuler(event.currentTarget.scrollTop);
+                          captureEditorState(event.currentTarget);
+                        }}
+                      />
+                    )}
+                  </div>
                 </div>
               </>
             ) : (
@@ -3178,39 +3247,102 @@ export function App() {
           </Dialog.Portal>
         </Dialog.Root>
 
-        <Dialog.Root open={Boolean(activePluginSettingsProvider)} onOpenChange={(open) => {
-          if (!open) setPluginSettingsOpenId(undefined);
-        }}>
+        <Dialog.Root open={settingsOpen} onOpenChange={setSettingsOpen}>
           <Dialog.Portal>
             <Dialog.Overlay className="dialog-overlay" />
-            <Dialog.Content className="plugin-settings-dialog">
+            <Dialog.Content className="settings-dialog">
               <div className="dialog-heading">
                 <div>
-                  <span className="eyebrow">PLUGIN</span>
-                  <Dialog.Title>{activePluginSettingsProvider?.title ?? "Configurações"}</Dialog.Title>
+                  <span className="eyebrow">WORKSPACE</span>
+                  <Dialog.Title>Configurações</Dialog.Title>
                   <Dialog.Description>
-                    {activePluginSettingsProvider?.description ?? "Configurações específicas deste plugin para o workspace."}
+                    Preferências locais do projeto e configurações contribuídas por plugins.
                   </Dialog.Description>
                 </div>
                 <Dialog.Close asChild><button className="icon-button" type="button" aria-label="Fechar"><X size={16} /></button></Dialog.Close>
               </div>
-              <div className="plugin-setting-list">
-                {(activePluginSettingsProvider?.settings ?? []).map((setting) => (
-                  <label className="plugin-setting" key={setting.id}>
-                    <input
-                      type="checkbox"
-                      checked={pluginSettingsDraft[setting.id] !== false}
-                      onChange={(event) => invoke(() => applyPluginSetting(setting.id, event.target.checked))}
-                    />
-                    <span>
-                      <strong>{setting.label}</strong>
-                      {setting.description ? <small>{setting.description}</small> : null}
-                    </span>
-                  </label>
-                ))}
+              <div className="settings-layout">
+                <nav className="settings-navigation" aria-label="Seções de configuração">
+                  <button
+                    className={settingsSectionId === "editor" ? "is-active" : ""}
+                    type="button"
+                    onClick={() => selectSettingsSection("editor")}
+                  >
+                    <Code2 size={15} />
+                    <span>Editor</span>
+                  </button>
+                  {settingsProviders.length ? <span className="settings-navigation__label">Plugins</span> : null}
+                  {settingsProviders.map((provider) => (
+                    <button
+                      className={settingsSectionId === provider.pluginId ? "is-active" : ""}
+                      key={provider.pluginId}
+                      type="button"
+                      onClick={() => selectSettingsSection(provider.pluginId)}
+                    >
+                      <Plug size={15} />
+                      <span>{provider.title}</span>
+                    </button>
+                  ))}
+                </nav>
+                <section className="settings-content">
+                  {settingsSectionId === "editor" ? (
+                    <>
+                      <div className="settings-section-heading">
+                        <span className="eyebrow">NATIVO</span>
+                        <h3>Editor</h3>
+                        <p>Preferências do editor de texto básico do tinyIde.</p>
+                      </div>
+                      <div className="plugin-setting-list">
+                        <label className="plugin-setting">
+                          <input
+                            type="checkbox"
+                            checked={editorSettings.lineNumbers}
+                            disabled={!workspaceRoot}
+                            onChange={(event) => invoke(() => applyEditorLineNumbers(event.target.checked))}
+                          />
+                          <span>
+                            <strong>Régua numérica</strong>
+                            <small>Exibe os números das linhas ao lado do conteúdo do editor.</small>
+                          </span>
+                        </label>
+                      </div>
+                      {!workspaceRoot ? (
+                        <p className="settings-scope-note">Abra um workspace para alterar configurações locais.</p>
+                      ) : (
+                        <p className="settings-scope-note">Salvo em <code>.tinyide/settings.json</code> neste workspace.</p>
+                      )}
+                    </>
+                  ) : activePluginSettingsProvider ? (
+                    <>
+                      <div className="settings-section-heading">
+                        <span className="eyebrow">PLUGIN</span>
+                        <h3>{activePluginSettingsProvider.title}</h3>
+                        <p>{activePluginSettingsProvider.description ?? "Configurações específicas deste plugin para o workspace."}</p>
+                      </div>
+                      <div className="plugin-setting-list">
+                        {activePluginSettingsProvider.settings.map((setting) => (
+                          <label className="plugin-setting" key={setting.id}>
+                            <input
+                              type="checkbox"
+                              checked={pluginSettingsDraft[setting.id] !== false}
+                              disabled={!workspaceRoot}
+                              onChange={(event) => invoke(() => applyPluginSetting(setting.id, event.target.checked))}
+                            />
+                            <span>
+                              <strong>{setting.label}</strong>
+                              {setting.description ? <small>{setting.description}</small> : null}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="settings-empty-state">Esta seção não está mais disponível.</p>
+                  )}
+                </section>
               </div>
               <div className="dialog-actions plugin-settings-actions">
-                <button className="button primary" type="button" onClick={() => setPluginSettingsOpenId(undefined)}>Concluir</button>
+                <button className="button primary" type="button" onClick={() => setSettingsOpen(false)}>Concluir</button>
               </div>
             </Dialog.Content>
           </Dialog.Portal>
