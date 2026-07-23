@@ -13,7 +13,7 @@ import { readFileDocument, resolveFileHandle } from "../browser-filesystem";
 
 const SESSION_KEY = "tinyide.react.session.v2";
 
-export type PersistedSidebarView = "explorer" | "plugins" | "environments";
+export type PersistedSidebarView = string;
 
 export interface LayoutState {
   readonly sidebarVisible: boolean;
@@ -96,7 +96,7 @@ export function readSession(): SessionState {
       explorerShowHidden: false,
     };
     const parsed = JSON.parse(raw) as Partial<SessionState>;
-    const sidebarView = parsed.sidebarView === "plugins" || parsed.sidebarView === "environments"
+    const sidebarView = typeof parsed.sidebarView === "string" && parsed.sidebarView.trim()
       ? parsed.sidebarView
       : "explorer";
     return {

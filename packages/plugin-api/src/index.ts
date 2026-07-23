@@ -110,6 +110,7 @@ export interface PluginExtensionApi {
   registerInteractiveSessionProvider(provider: InteractiveSessionProvider): Disposable;
   getInteractiveSessionHooks(): readonly InteractiveSessionHookProvider[];
   registerPluginSettingsProvider(provider: PluginSettingsProvider): Disposable;
+  registerWorkbenchSidebarHook(hook: WorkbenchSidebarHook): Disposable;
   registerWorkbenchPanelHook(hook: WorkbenchPanelHook): Disposable;
   registerWorkbenchToolWindowHook(hook: WorkbenchToolWindowHook): Disposable;
   registerTextEditorLineDecorationProvider(provider: TextEditorLineDecorationProvider): Disposable;
@@ -361,6 +362,8 @@ export const PLUGIN_SETTINGS_CAPABILITY = "plugin.settings";
 export interface WorkbenchStateSnapshot {
   readonly workspaceName: string;
   readonly workspaceRoot?: string;
+  readonly activeSidebarId: string;
+  readonly sidebarVisible: boolean;
   readonly activePanelId: string;
   readonly panelVisible: boolean;
   readonly activeToolWindowId?: string;
@@ -378,6 +381,34 @@ export interface WorkbenchPanelMountContext {
   readonly container: HTMLElement;
   readonly state: WorkbenchStateApi;
 }
+
+export type WorkbenchActivityIcon =
+  | "box"
+  | "files"
+  | "history"
+  | "source-control"
+  | "terminal";
+
+export interface WorkbenchSidebarMountContext extends WorkbenchPanelMountContext {
+  close(): void;
+}
+
+export interface WorkbenchSidebarContribution {
+  readonly id: string;
+  readonly pluginId: string;
+  readonly label: string;
+  readonly icon?: WorkbenchActivityIcon;
+  readonly order?: number;
+  mount(context: WorkbenchSidebarMountContext): void | Disposable | Promise<void | Disposable>;
+}
+
+export interface WorkbenchSidebarHook {
+  readonly id: string;
+  readonly pluginId: string;
+  contribute(): readonly WorkbenchSidebarContribution[];
+}
+
+export const WORKBENCH_SIDEBAR_HOOK = "workbench.sidebar.hook";
 
 export interface WorkbenchTabContribution {
   readonly id: string;
@@ -433,6 +464,7 @@ export interface WorkbenchToolWindowContribution {
   readonly id: string;
   readonly pluginId: string;
   readonly label: string;
+  readonly icon?: WorkbenchActivityIcon;
   readonly order?: number;
   mount(context: WorkbenchToolWindowMountContext): void | Disposable | Promise<void | Disposable>;
 }
@@ -448,6 +480,7 @@ export interface WorkbenchToolWindowGroupContribution {
   readonly id: string;
   readonly pluginId: string;
   readonly label: string;
+  readonly icon?: WorkbenchActivityIcon;
   readonly order?: number;
   readonly views: readonly WorkbenchToolWindowViewContribution[];
 }
@@ -507,6 +540,7 @@ export interface WorkbenchTextApi {
 export interface WorkbenchApi {
   readonly dialogs: WorkbenchDialogApi;
   readonly text: WorkbenchTextApi;
+  openSidebar(id: string): void;
   openToolWindow(id: string): void;
 }
 

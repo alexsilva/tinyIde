@@ -26,6 +26,7 @@ import type {
   WorkbenchTextHighlightResult,
   WorkbenchPanelHook,
   WorkbenchResourceEditorProvider,
+  WorkbenchSidebarHook,
   WorkbenchToolWindowHook,
   Disposable,
 } from "@tinyide/plugin-api";
@@ -56,6 +57,7 @@ export interface PlatformSnapshot {
 type SnapshotListener = () => void;
 
 interface WorkbenchBinding {
+  openSidebar(id: string): void;
   openToolWindow(id: string): void;
   openDialog(dialog: WorkbenchDialogContribution): Disposable;
   highlightText(request: WorkbenchTextHighlightRequest): WorkbenchTextHighlightResult;
@@ -90,6 +92,11 @@ class AppWorkbenchApi implements WorkbenchApi {
   openToolWindow(id: string): void {
     if (!this.#binding) throw new Error("O workbench ainda não está disponível.");
     this.#binding.openToolWindow(id);
+  }
+
+  openSidebar(id: string): void {
+    if (!this.#binding) throw new Error("O workbench ainda não está disponível.");
+    this.#binding.openSidebar(id);
   }
 }
 
@@ -150,6 +157,7 @@ function pluginContext(platform: TinyIdePlatform, pluginId: string): PluginConte
       registerInteractiveSessionProvider: (provider: InteractiveSessionProvider) => platform.capabilities.register("interactive.session", provider),
       getInteractiveSessionHooks: () => platform.capabilities.getAll<InteractiveSessionHookProvider>("interactive.session.hook"),
       registerPluginSettingsProvider: (provider: PluginSettingsProvider) => platform.capabilities.register("plugin.settings", provider),
+      registerWorkbenchSidebarHook: (hook: WorkbenchSidebarHook) => platform.capabilities.register("workbench.sidebar.hook", hook),
       registerWorkbenchPanelHook: (hook: WorkbenchPanelHook) => platform.capabilities.register("workbench.panel.hook", hook),
       registerWorkbenchToolWindowHook: (hook: WorkbenchToolWindowHook) => platform.capabilities.register("workbench.toolWindow.hook", hook),
       registerTextEditorLineDecorationProvider: (provider: TextEditorLineDecorationProvider) => platform.capabilities.register("textEditor.lineDecoration", provider),

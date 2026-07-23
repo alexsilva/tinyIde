@@ -20,7 +20,9 @@ import {
   Folder,
   FolderOpen,
   FolderRoot,
+  GitBranch,
   HardDrive,
+  History,
   Info,
   Image as ImageIcon,
   LocateFixed,
@@ -62,12 +64,15 @@ import type {
   TextEditorLineDecoration,
   TextDiagnostic,
   WorkbenchDialogContribution,
+  WorkbenchActivityIcon,
   WorkbenchPanelContribution,
   WorkbenchPanelHookContribution,
   WorkbenchTabApi,
   WorkbenchTabContribution,
   WorkbenchPanelHook,
   WorkbenchResourceEditorProvider,
+  WorkbenchSidebarContribution,
+  WorkbenchSidebarHook,
   WorkbenchStateApi,
   WorkbenchStateSnapshot,
   WorkbenchToolWindowContribution,
@@ -198,6 +203,7 @@ function expandWorkbenchToolWindowContribution(
     id: contribution.id,
     pluginId: contribution.pluginId,
     label: contribution.label,
+    ...(contribution.icon ? { icon: contribution.icon } : {}),
     ...(contribution.order !== undefined ? { order: contribution.order } : {}),
     mount({ container, headerContainer, tabs, state }) {
       container.replaceChildren();
@@ -467,6 +473,14 @@ function IconButton({
       </Tooltip.Portal>
     </Tooltip.Root>
   );
+}
+
+function WorkbenchActivityIconView({ icon }: { readonly icon: WorkbenchActivityIcon | undefined }) {
+  if (icon === "files") return <Files size={20} />;
+  if (icon === "history") return <History size={20} />;
+  if (icon === "source-control") return <GitBranch size={20} />;
+  if (icon === "terminal") return <Terminal size={20} />;
+  return <Box size={20} />;
 }
 
 function EntryTree({
@@ -1199,6 +1213,49 @@ function ProfileDialog({
   );
 }
 
+function WorkbenchSidebarHost({
+  provider,
+  state,
+  onClose,
+}: {
+  readonly provider: WorkbenchSidebarContribution;
+  readonly state: WorkbenchStateApi;
+  readonly onClose: () => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    let disposed = false;
+    let mountedDisposable: { dispose(): void } | void;
+    try {
+      const mounted = provider.mount({ container, state, close: onClose });
+      if (mounted && typeof (mounted as PromiseLike<unknown>).then === "function") {
+        void Promise.resolve(mounted)
+          .then((disposable) => {
+            if (disposed) disposable?.dispose();
+            else mountedDisposable = disposable;
+          })
+          .catch((cause) => {
+            if (!disposed) container.textContent = cause instanceof Error ? cause.message : String(cause);
+          });
+      } else {
+        mountedDisposable = mounted as void | { dispose(): void };
+      }
+    } catch (cause) {
+      container.textContent = cause instanceof Error ? cause.message : String(cause);
+    }
+    return () => {
+      disposed = true;
+      mountedDisposable?.dispose();
+      container.replaceChildren();
+    };
+  }, [provider, state, onClose]);
+
+  return <div className="plugin-sidebar-host" ref={containerRef} data-sidebar-id={provider.id} />;
+}
+
 function WorkbenchPanelHost({
   provider,
   state,
@@ -1582,6 +1639,8 @@ export function App() {
   const workbenchStateRef = useRef<WorkbenchStateSnapshot>({
     workspaceName,
     ...(workspaceRoot ? { workspaceRoot } : {}),
+    activeSidebarId: sidebarView,
+    sidebarVisible,
     activePanelId: panelTab,
     panelVisible,
     ...(activeToolWindowId ? { activeToolWindowId } : {}),
@@ -1601,6 +1660,12 @@ export function App() {
   const activeDocument = documents.find((document) => document.id === activeDocumentId);
   const activeResourceEditorProvider = resourceEditorProviderFor(activeDocument);
   const activeLanguageProvider = activeResourceEditorProvider ? undefined : languageProviderFor(activeDocument);
+  const workbenchSidebars = useMemo(() => platform.capabilities
+    .getAll<WorkbenchSidebarHook>("workbench.sidebar.hook")
+    .flatMap((hook) => hook.contribute())
+    .slice()
+    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.label.localeCompare(right.label)), [platformSnapshot]);
+  const activePluginSidebar = workbenchSidebars.find((sidebar) => sidebar.id === sidebarView);
   const workbenchPanels = useMemo(() => platform.capabilities
     .getAll<WorkbenchPanelHook>("workbench.panel.hook")
     .flatMap((hook) => hook.contribute())
@@ -1639,6 +1704,8 @@ export function App() {
     const snapshot: WorkbenchStateSnapshot = {
       workspaceName,
       ...(workspaceRoot ? { workspaceRoot } : {}),
+      activeSidebarId: sidebarView,
+      sidebarVisible,
       activePanelId: panelTab,
       panelVisible,
       ...(activeToolWindowId ? { activeToolWindowId } : {}),
@@ -1648,9 +1715,16 @@ export function App() {
     };
     workbenchStateRef.current = snapshot;
     for (const listener of workbenchStateListenersRef.current) listener(snapshot);
-  }, [workspaceName, workspaceRoot, panelTab, panelVisible, activeToolWindowId, toolWindowVisible, selectedEnvironmentId, workspaceSettings.plugins]);
+  }, [workspaceName, workspaceRoot, sidebarView, sidebarVisible, panelTab, panelVisible, activeToolWindowId, toolWindowVisible, selectedEnvironmentId, workspaceSettings.plugins]);
 
   useEffect(() => platform.workbench.bind({
+    openSidebar(id) {
+      if (!workbenchSidebars.some((sidebar) => sidebar.id === id)) {
+        throw new Error(`Sidebar não registrada: ${id}`);
+      }
+      setSidebarView(id);
+      setSidebarVisible(true);
+    },
     openToolWindow(id) {
       if (!workbenchToolWindows.some((toolWindow) => toolWindow.id === id)) {
         throw new Error(`Tool window não registrada: ${id}`);
@@ -1745,6 +1819,14 @@ export function App() {
       setToolWindowVisible(next.toolWindowVisible);
     }
   }, [platformSnapshot.plugins, platformSnapshot.initialized, activeToolWindowId, toolWindowVisible]);
+
+  useEffect(() => {
+    if (!platformSnapshot.initialized) return;
+    const builtIn = sidebarView === "explorer" || sidebarView === "plugins" || sidebarView === "environments";
+    if (!builtIn && !workbenchSidebars.some((sidebar) => sidebar.id === sidebarView)) {
+      setSidebarView("explorer");
+    }
+  }, [platformSnapshot.initialized, platformSnapshot.plugins, sidebarView, workbenchSidebars]);
 
   const replaceWorkspaceSettings = useCallback((settings: WorkspaceSettings) => {
     workspaceSettingsRef.current = settings;
@@ -3172,6 +3254,15 @@ export function App() {
     setToolWindowVisible(true);
   };
 
+  const togglePluginSidebar = (sidebarId: string) => {
+    if (sidebarView === sidebarId && sidebarVisible) {
+      setSidebarVisible(false);
+      return;
+    }
+    setSidebarView(sidebarId);
+    setSidebarVisible(true);
+  };
+
   const toggleOutputPanel = () => {
     setPanelVisible((visible) => {
       const next = !visible;
@@ -3181,6 +3272,7 @@ export function App() {
   };
 
   const closeToolWindow = useCallback(() => setToolWindowVisible(false), []);
+  const closeSidebar = useCallback(() => setSidebarVisible(false), []);
 
   const installedIds = useMemo(() => new Set(platformSnapshot.plugins.map((plugin) => plugin.manifest.id)), [platformSnapshot.plugins]);
   const pluginPendingRemoval = platformSnapshot.plugins.find((plugin) => plugin.manifest.id === pluginRemovalId);
@@ -3324,6 +3416,16 @@ export function App() {
             <IconButton label="Explorador" active={sidebarView === "explorer" && sidebarVisible} onClick={() => { setSidebarView("explorer"); setSidebarVisible(true); }}>
               <Files size={20} />
             </IconButton>
+            {workbenchSidebars.map((sidebar) => (
+              <IconButton
+                key={sidebar.id}
+                label={sidebar.label}
+                active={sidebarView === sidebar.id && sidebarVisible}
+                onClick={() => togglePluginSidebar(sidebar.id)}
+              >
+                <WorkbenchActivityIconView icon={sidebar.icon} />
+              </IconButton>
+            ))}
             <IconButton label="Plugins" active={sidebarView === "plugins" && sidebarVisible} onClick={() => { setSidebarView("plugins"); setSidebarVisible(true); }}>
               <Plug size={20} />
             </IconButton>
@@ -3343,7 +3445,7 @@ export function App() {
                 active={toolWindowVisible && activeToolWindowId === toolWindow.id}
                 onClick={() => toggleToolWindow(toolWindow.id)}
               >
-                <Box size={20} />
+                <WorkbenchActivityIconView icon={toolWindow.icon} />
               </IconButton>
             ))}
           </aside>
@@ -3351,7 +3453,7 @@ export function App() {
           {sidebarVisible ? (
             <aside className="sidebar">
               <div className="sidebar-heading">
-                <span>{sidebarView === "explorer" ? "EXPLORER" : sidebarView === "plugins" ? "PLUGINS" : "AMBIENTES"}</span>
+                <span>{activePluginSidebar?.label.toLocaleUpperCase() ?? (sidebarView === "explorer" ? "EXPLORER" : sidebarView === "plugins" ? "PLUGINS" : "AMBIENTES")}</span>
                 <div className="sidebar-heading-actions">
                   {sidebarView === "explorer" ? (
                     <>
@@ -3593,6 +3695,14 @@ export function App() {
                     {!environments.length ? <div className="empty-sidebar"><HardDrive size={26} /><p>Nenhum ambiente cadastrado.</p></div> : null}
                   </div>
                 </div>
+              ) : null}
+
+              {activePluginSidebar ? (
+                <WorkbenchSidebarHost
+                  provider={activePluginSidebar}
+                  state={workbenchState}
+                  onClose={closeSidebar}
+                />
               ) : null}
             </aside>
           ) : null}
