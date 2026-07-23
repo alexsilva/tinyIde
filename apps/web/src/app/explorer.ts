@@ -63,6 +63,19 @@ export function hiddenExplorerEntryCount(entries: readonly WorkspaceEntry[] | un
   return entries?.filter((entry) => entry.name.startsWith(".")).length ?? 0;
 }
 
+export function explorerCreationInsertionIndex(
+  entries: readonly WorkspaceEntry[],
+  kind: WorkspaceEntry["kind"],
+  name: string,
+): number {
+  const compare = (entry: WorkspaceEntry): number => {
+    if (kind !== entry.kind) return kind === "directory" ? -1 : 1;
+    return name.localeCompare(entry.name);
+  };
+  const index = entries.findIndex((entry) => compare(entry) < 0);
+  return index < 0 ? entries.length : index;
+}
+
 export function nextExplorerHiddenVisibility(
   showHidden: boolean,
   revealedHiddenPaths: ReadonlySet<string>,

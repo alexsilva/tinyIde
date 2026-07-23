@@ -6,6 +6,7 @@ import {
   explorerAncestorDirectoryPaths,
   explorerTargetDirectoryPath,
   explorerDirectoryEmptyState,
+  explorerCreationInsertionIndex,
   hiddenExplorerEntryCount,
   findWorkspaceEntry,
   flattenVisibleEntries,
@@ -63,6 +64,20 @@ describe("explorer model", () => {
       { name: ".meta", path: ".meta", kind: "file" },
       { name: "main.py", path: "main.py", kind: "file" },
     ])).toBe(2);
+  });
+
+  it("positions virtual creations using the same directory-first ordering as real entries", () => {
+    const ordered: readonly WorkspaceEntry[] = [
+      { name: "backend", path: "backend", kind: "directory" },
+      { name: "docs", path: "docs", kind: "directory" },
+      { name: "app.ts", path: "app.ts", kind: "file" },
+      { name: "README.md", path: "README.md", kind: "file" },
+    ];
+
+    expect(explorerCreationInsertionIndex(ordered, "file", "")).toBe(2);
+    expect(explorerCreationInsertionIndex(ordered, "file", "main.ts")).toBe(3);
+    expect(explorerCreationInsertionIndex(ordered, "directory", "api")).toBe(0);
+    expect(explorerCreationInsertionIndex(ordered, "directory", "frontend")).toBe(2);
   });
 
   it("hides globally visible and locally revealed hidden entries together", () => {

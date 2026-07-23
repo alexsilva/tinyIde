@@ -98,6 +98,7 @@ import {
   expandNextExplorerLevel,
   explorerAncestorDirectoryPaths,
   explorerDirectoryEmptyState,
+  explorerCreationInsertionIndex,
   hiddenExplorerEntryCount,
   explorerTargetDirectoryPath,
   findWorkspaceEntry,
@@ -172,6 +173,7 @@ type SidebarView = PersistedSidebarView;
 type StoredProfiles = WorkspaceExecutionProfiles;
 
 type ContextMenuTarget =
+  | { readonly kind: "root" }
   | { readonly kind: "entry"; readonly entry: WorkspaceEntry }
   | { readonly kind: "document"; readonly document: OpenDocument };
 
@@ -483,8 +485,72 @@ function WorkbenchActivityIconView({ icon }: { readonly icon: WorkbenchActivityI
   return <Box size={20} />;
 }
 
+function ExplorerCreationRow({
+  kind,
+  name,
+  error,
+  onNameChange,
+  onSubmit,
+  onCancel,
+}: {
+  readonly kind: "file" | "directory";
+  readonly name: string;
+  readonly error: string | undefined;
+  readonly onNameChange: (name: string) => void;
+  readonly onSubmit: () => void;
+  readonly onCancel: () => void;
+}) {
+  const label = kind === "directory" ? "Nome da nova pasta" : "Nome do novo arquivo";
+  const rowRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      inputRef.current?.focus({ preventScroll: true });
+      rowRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  return (
+    <div
+      ref={rowRef}
+      className="tree-entry-row tree-entry-row--creation"
+      data-explorer-creation-row
+    >
+      <form
+        className={`tree-entry tree-entry--${kind} tree-entry--creation${error ? " has-error" : ""}`}
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        {kind === "directory"
+          ? <Folder className="tree-entry__icon tree-entry__icon--directory" size={15} />
+          : <File className="tree-entry__icon tree-entry__icon--file" size={15} />}
+        <input
+          ref={inputRef}
+          autoFocus
+          value={name}
+          aria-label={label}
+          placeholder={label}
+          aria-invalid={Boolean(error)}
+          onChange={(event) => onNameChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") onCancel();
+          }}
+        />
+        <button className="icon-button small" type="submit" aria-label="Confirmar criação"><Check size={13} /></button>
+        <button className="icon-button small" type="button" aria-label="Cancelar criação" onClick={onCancel}><X size={13} /></button>
+        {error ? <span className="tree-entry-rename-error" role="alert">{error}</span> : null}
+      </form>
+    </div>
+  );
+}
+
 function EntryTree({
   entries,
+  parentPath,
   expanded,
   showHidden,
   revealHidden,
@@ -507,10 +573,18 @@ function EntryTree({
   onRenameNameChange,
   onRenameSubmit,
   onRenameCancel,
+  creationKind,
+  creationParentPath,
+  creationName,
+  creationError,
+  onCreationNameChange,
+  onCreationSubmit,
+  onCreationCancel,
   workspaceName,
   workspaceRoot,
 }: {
   readonly entries: readonly WorkspaceEntry[];
+  readonly parentPath: string;
   readonly expanded: ReadonlySet<string>;
   readonly showHidden: boolean;
   readonly revealHidden: boolean;
@@ -533,16 +607,45 @@ function EntryTree({
   readonly onRenameNameChange: (name: string) => void;
   readonly onRenameSubmit: () => void;
   readonly onRenameCancel: () => void;
+  readonly creationKind: "file" | "directory" | undefined;
+  readonly creationParentPath: string;
+  readonly creationName: string;
+  readonly creationError: string | undefined;
+  readonly onCreationNameChange: (name: string) => void;
+  readonly onCreationSubmit: () => void;
+  readonly onCreationCancel: () => void;
   readonly workspaceName: string;
   readonly workspaceRoot?: string;
 }) {
   const visibleEntries = revealHidden
     ? entries
     : entries.filter((entry) => !entry.name.startsWith("."));
+  const creationIndex = creationKind && creationParentPath === parentPath
+    ? explorerCreationInsertionIndex(visibleEntries, creationKind, creationName.trim())
+    : -1;
+  const creationRow = creationKind && creationParentPath === parentPath ? (
+    <ExplorerCreationRow
+      kind={creationKind}
+      name={creationName}
+      error={creationError}
+      onNameChange={onCreationNameChange}
+      onSubmit={onCreationSubmit}
+      onCancel={onCreationCancel}
+    />
+  ) : null;
+  const treeItems: Array<
+    | { readonly type: "creation" }
+    | { readonly type: "entry"; readonly entry: WorkspaceEntry }
+  > = visibleEntries.map((entry) => ({ type: "entry", entry }));
+  if (creationRow) treeItems.splice(creationIndex, 0, { type: "creation" });
 
   return (
     <div className="tree">
-      {visibleEntries.map((entry) => {
+      {treeItems.map((item) => {
+        if (item.type === "creation") {
+          return <div key="explorer-creation-entry">{creationRow}</div>;
+        }
+        const { entry } = item;
         const contributedIcon = entry.kind === "file"
           ? resourceIconFor({
               kind: "file",
@@ -645,17 +748,12 @@ function EntryTree({
               </button>
             )}
           </div>
-          {entry.kind === "directory" && expanded.has(entry.path) && entry.children ? (
+          {entry.kind === "directory" && expanded.has(entry.path) && (entry.children || creationParentPath === entry.path) ? (
             <div className="tree-children">
-              {explorerDirectoryEmptyState(entry.children, showHidden || revealedHiddenPaths.has(entry.path)) === "hidden-only" ? (
-                <button className="tree-empty-state tree-empty-state--action" type="button" onClick={() => onShowHiddenDirectory(entry.path)}>
-                  Contém {hiddenExplorerEntryCount(entry.children)} {hiddenExplorerEntryCount(entry.children) === 1 ? "arquivo oculto" : "arquivos ocultos"}. Exibir?
-                </button>
-              ) : explorerDirectoryEmptyState(entry.children, showHidden || revealedHiddenPaths.has(entry.path)) === "empty" ? (
-                <div className="tree-empty-state">Pasta vazia</div>
-              ) : (
+              {creationKind && creationParentPath === entry.path ? (
                 <EntryTree
-                  entries={entry.children}
+                  entries={entry.children ?? []}
+                  parentPath={entry.path}
                   expanded={expanded}
                   showHidden={showHidden}
                   revealHidden={showHidden || revealedHiddenPaths.has(entry.path)}
@@ -678,6 +776,55 @@ function EntryTree({
                   onRenameNameChange={onRenameNameChange}
                   onRenameSubmit={onRenameSubmit}
                   onRenameCancel={onRenameCancel}
+                  creationKind={creationKind}
+                  creationParentPath={creationParentPath}
+                  creationName={creationName}
+                  creationError={creationError}
+                  onCreationNameChange={onCreationNameChange}
+                  onCreationSubmit={onCreationSubmit}
+                  onCreationCancel={onCreationCancel}
+                  workspaceName={workspaceName}
+                  {...(workspaceRoot ? { workspaceRoot } : {})}
+                />
+              ) : explorerDirectoryEmptyState(entry.children, showHidden || revealedHiddenPaths.has(entry.path)) === "hidden-only" ? (
+                <button className="tree-empty-state tree-empty-state--action" type="button" onClick={() => onShowHiddenDirectory(entry.path)}>
+                  Contém {hiddenExplorerEntryCount(entry.children)} {hiddenExplorerEntryCount(entry.children) === 1 ? "arquivo oculto" : "arquivos ocultos"}. Exibir?
+                </button>
+              ) : explorerDirectoryEmptyState(entry.children, showHidden || revealedHiddenPaths.has(entry.path)) === "empty" ? (
+                <div className="tree-empty-state">Pasta vazia</div>
+              ) : (
+                <EntryTree
+                  entries={entry.children ?? []}
+                  parentPath={entry.path}
+                  expanded={expanded}
+                  showHidden={showHidden}
+                  revealHidden={showHidden || revealedHiddenPaths.has(entry.path)}
+                  revealedHiddenPaths={revealedHiddenPaths}
+                  highlightedPath={highlightedPath}
+                  selectedPath={selectedPath}
+                  onToggle={onToggle}
+                  onSelect={onSelect}
+                  onOpen={onOpen}
+                  onContextMenu={onContextMenu}
+                  onMove={onMove}
+                  draggingPath={draggingPath}
+                  dropTargetPath={dropTargetPath}
+                  onDraggingPathChange={onDraggingPathChange}
+                  onDropTargetPathChange={onDropTargetPathChange}
+                  onShowHiddenDirectory={onShowHiddenDirectory}
+                  renamePath={renamePath}
+                  renameName={renameName}
+                  renameError={renameError}
+                  onRenameNameChange={onRenameNameChange}
+                  onRenameSubmit={onRenameSubmit}
+                  onRenameCancel={onRenameCancel}
+                  creationKind={creationKind}
+                  creationParentPath={creationParentPath}
+                  creationName={creationName}
+                  creationError={creationError}
+                  onCreationNameChange={onCreationNameChange}
+                  onCreationSubmit={onCreationSubmit}
+                  onCreationCancel={onCreationCancel}
                   workspaceName={workspaceName}
                   {...(workspaceRoot ? { workspaceRoot } : {})}
                 />
@@ -2217,6 +2364,45 @@ export function App() {
     ...(workspaceRoot ? { workspaceRoot } : {}),
   });
 
+  const rootResourceContext = (): ResourceContext => ({
+    kind: "directory",
+    name: workspaceName,
+    path: "",
+    ...(workspaceName !== "Sem workspace" ? { workspaceName } : {}),
+    ...(workspaceRoot ? { workspaceRoot } : {}),
+  });
+
+  const openRootMenu = async (x: number, y: number) => {
+    if (!workspaceHandle) return;
+    const baseItems: ResourceContextMenuItem[] = [
+      {
+        id: "core.newFile",
+        label: "Novo arquivo",
+        command: "core.resource.newFile",
+        group: "creation",
+        order: 0,
+        icon: "file",
+      },
+      {
+        id: "core.newDirectory",
+        label: "Nova pasta",
+        command: "core.resource.newDirectory",
+        group: "creation",
+        order: 10,
+        icon: "folder",
+      },
+    ];
+    const resource = rootResourceContext();
+    const providers = platform.capabilities.getAll<ResourceContextMenuProvider>("resource.contextMenu");
+    const contributed = (await Promise.all(providers.map((provider) => provider.provideItems(resource)))).flat();
+    const items = [...baseItems, ...contributed]
+      .filter((item) => item.enabled !== false)
+      .sort((left, right) => (left.group === "creation" ? 0 : 100)
+        - (right.group === "creation" ? 0 : 100)
+        || (left.order ?? 0) - (right.order ?? 0));
+    setContextMenu({ target: { kind: "root" }, x, y, items });
+  };
+
   const openResourceMenu = async (entry: WorkspaceEntry, x: number, y: number) => {
     const baseItems: ResourceContextMenuItem[] = [
       {
@@ -2598,7 +2784,14 @@ export function App() {
     });
   };
 
-  const startExplorerCreation = (kind: "file" | "directory", parentPath?: string) => {
+  const cancelExplorerCreation = () => {
+    setExplorerCreation(undefined);
+    setExplorerCreationParentPath("");
+    setExplorerCreationName("");
+    setExplorerCreationError(undefined);
+  };
+
+  const startExplorerCreation = async (kind: "file" | "directory", parentPath?: string) => {
     const targetPath = parentPath ?? explorerTargetDirectoryPath(entries, selectedExplorerPath);
     setExplorerCreation(kind);
     setExplorerCreationParentPath(targetPath);
@@ -2607,7 +2800,9 @@ export function App() {
     setExplorerRenamePath(undefined);
     setExplorerRenameError(undefined);
     if (targetPath) {
-      setExpanded((current) => new Set(current).add(targetPath));
+      const nextExpanded = new Set(expanded).add(targetPath);
+      setExpanded(nextExpanded);
+      await refreshExplorer(nextExpanded);
     }
   };
 
@@ -2665,10 +2860,7 @@ export function App() {
     explorerHighlightTimerRef.current = setTimeout(() => {
       setHighlightedExplorerPath((current) => current === createdPath ? undefined : current);
     }, 5000);
-    setExplorerCreation(undefined);
-    setExplorerCreationParentPath("");
-    setExplorerCreationName("");
-    setExplorerCreationError(undefined);
+    cancelExplorerCreation();
   };
 
   const renameSelectedExplorerEntry = async () => {
@@ -2858,6 +3050,19 @@ export function App() {
 
   const executeContextMenuItem = async (item: ResourceContextMenuItem, target: ContextMenuTarget) => {
     setContextMenu(undefined);
+    if (target.kind === "root") {
+      if (item.command === "core.resource.newFile") {
+        await startExplorerCreation("file", "");
+        return;
+      }
+      if (item.command === "core.resource.newDirectory") {
+        await startExplorerCreation("directory", "");
+        return;
+      }
+      if (!item.command) throw new Error(`A ação '${item.id}' não possui executor.`);
+      await platform.commands.execute(item.command, rootResourceContext());
+      return;
+    }
     if (target.kind === "entry") {
       const { entry } = target;
       if (item.action === "runScript") {
@@ -2892,11 +3097,11 @@ export function App() {
         return;
       }
       if (item.command === "core.resource.newFile") {
-        startExplorerCreation("file", entry.path);
+        await startExplorerCreation("file", entry.path);
         return;
       }
       if (item.command === "core.resource.newDirectory") {
-        startExplorerCreation("directory", entry.path);
+        await startExplorerCreation("directory", entry.path);
         return;
       }
       if (item.command === "core.resource.rename") {
@@ -3470,10 +3675,10 @@ export function App() {
                         </DropdownMenu.Trigger>
                         <DropdownMenu.Portal>
                           <DropdownMenu.Content className="menu-content" align="end" sideOffset={6}>
-                            <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => startExplorerCreation("file")}>
+                            <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => invoke(() => startExplorerCreation("file"))}>
                               <FilePlus2 size={15} /> Novo arquivo
                             </DropdownMenu.Item>
-                            <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => startExplorerCreation("directory")}>
+                            <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => invoke(() => startExplorerCreation("directory"))}>
                               <FolderOpen size={15} /> Nova pasta
                             </DropdownMenu.Item>
                             <DropdownMenu.Separator className="menu-separator" />
@@ -3496,35 +3701,28 @@ export function App() {
 
               {sidebarView === "explorer" ? (
                 <div className="sidebar-content explorer-content">
-                  {explorerCreation ? (
-                    <div className="explorer-actions-sticky">
-                      <form className={`explorer-inline-create${explorerCreationError ? " has-error" : ""}`} onSubmit={(event) => { event.preventDefault(); void createWorkspaceEntry(); }}>
-                      {explorerCreation === "directory" ? <Folder size={14} /> : <File size={14} />}
-                      <input
-                        autoFocus
-                        value={explorerCreationName}
-                        aria-label={explorerCreation === "directory" ? "Nome da nova pasta" : "Nome do novo arquivo"}
-                        placeholder={explorerCreation === "directory" ? "Nome da pasta" : "Nome do arquivo"}
-                        aria-invalid={Boolean(explorerCreationError)}
-                        aria-describedby={explorerCreationError ? "explorer-creation-error" : undefined}
-                        onChange={(event) => { setExplorerCreationName(event.target.value); setExplorerCreationError(undefined); }}
-                        onKeyDown={(event) => {
-                          if (event.key === "Escape") {
-                            setExplorerCreation(undefined);
-                            setExplorerCreationName("");
-                            setExplorerCreationError(undefined);
-                          }
-                        }}
-                      />
-                      <button className="icon-button small" type="submit" aria-label="Confirmar criação"><Check size={14} /></button>
-                      <button className="icon-button small" type="button" aria-label="Cancelar criação" onClick={() => { setExplorerCreation(undefined); setExplorerCreationName(""); setExplorerCreationError(undefined); }}><X size={14} /></button>
-                      {explorerCreationError ? <span className="explorer-inline-error" id="explorer-creation-error" role="alert">{explorerCreationError}</span> : null}
-                      {explorerCreationParentPath ? <span className="explorer-inline-location">em {explorerCreationParentPath}</span> : null}
-                      </form>
-                    </div>
-                  ) : null}
                   {workspaceName !== "Sem workspace" ? (
-                    <div className="workspace-name">
+                    <div
+                      className={`workspace-name${selectedExplorerPath === "" ? " is-selected" : ""}`}
+                      data-explorer-root
+                      role="treeitem"
+                      tabIndex={0}
+                      aria-selected={selectedExplorerPath === ""}
+                      onClick={(event) => {
+                        if ((event.target as Element).closest("button")) return;
+                        setSelectedExplorerPath("");
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        event.preventDefault();
+                        setSelectedExplorerPath("");
+                      }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setSelectedExplorerPath("");
+                        invoke(() => openRootMenu(event.clientX, event.clientY));
+                      }}
+                    >
                       <span className="workspace-name__label"><FolderRoot size={14} /> {workspaceName}</span>
                       <span className="workspace-name__actions">
                         <button
@@ -3544,9 +3742,10 @@ export function App() {
                       </span>
                     </div>
                   ) : null}
-                  {entries.length ? (
+                  {entries.length || (explorerCreation && explorerCreationParentPath === "") ? (
                     <EntryTree
                       entries={entries}
+                      parentPath=""
                       expanded={expanded}
                       showHidden={explorerShowHidden}
                       revealHidden={explorerShowHidden}
@@ -3569,6 +3768,13 @@ export function App() {
                       onRenameNameChange={(name) => { setExplorerRenameName(name); setExplorerRenameError(undefined); }}
                       onRenameSubmit={() => { void renameSelectedExplorerEntry(); }}
                       onRenameCancel={() => { setExplorerRenamePath(undefined); setExplorerRenameName(""); setExplorerRenameError(undefined); }}
+                      creationKind={explorerCreation}
+                      creationParentPath={explorerCreationParentPath}
+                      creationName={explorerCreationName}
+                      creationError={explorerCreationError}
+                      onCreationNameChange={(name) => { setExplorerCreationName(name); setExplorerCreationError(undefined); }}
+                      onCreationSubmit={() => { void createWorkspaceEntry(); }}
+                      onCreationCancel={cancelExplorerCreation}
                       workspaceName={workspaceName}
                       {...(workspaceRoot ? { workspaceRoot } : {})}
                     />
@@ -4236,7 +4442,11 @@ export function App() {
             <div
               className="menu-content resource-context-menu"
               role="menu"
-              aria-label={`Ações de ${contextMenu.target.kind === "entry" ? contextMenu.target.entry.name : contextMenu.target.document.name}`}
+              aria-label={`Ações de ${contextMenu.target.kind === "root"
+                ? workspaceName
+                : contextMenu.target.kind === "entry"
+                  ? contextMenu.target.entry.name
+                  : contextMenu.target.document.name}`}
               style={{ left: contextMenu.x, top: contextMenu.y }}
             >
               {contextMenu.items.map((item, index) => {
