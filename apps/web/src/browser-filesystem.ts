@@ -3,7 +3,7 @@ export interface BrowserPermissionDescriptor {
 }
 
 export interface BrowserWritableFileStream {
-  write(data: string): Promise<void>;
+  write(data: string | Blob | BufferSource): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -122,6 +122,65 @@ export async function removeWorkspaceEntry(
   const parent = await resolveDirectoryHandle(workspaceHandle, segments.join("/"));
   if (!parent.removeEntry) throw new Error("Este navegador não oferece exclusão de arquivos pelo workspace.");
   await parent.removeEntry(name, { recursive });
+}
+
+async function copyFileHandle(source: BrowserFileHandle, target: BrowserFileHandle): Promise<void> {
+  const file = await source.getFile();
+  const writable = await target.createWritable();
+  try {
+    await writable.write(await file.arrayBuffer());
+  } finally {
+    await writable.close();
+  }
+}
+
+async function copyDirectoryHandle(source: BrowserDirectoryHandle, target: BrowserDirectoryHandle): Promise<void> {
+  for await (const child of source.values()) {
+    if (child.kind === "file") {
+      await copyFileHandle(child, await target.getFileHandle(child.name, { create: true }));
+    } else {
+      await copyDirectoryHandle(child, await target.getDirectoryHandle(child.name, { create: true }));
+    }
+  }
+}
+
+export async function renameWorkspaceEntry(
+  workspaceHandle: BrowserDirectoryHandle,
+  path: string,
+  nextName: string,
+): Promise<string> {
+  const segments = [...workspacePathSegments(path)];
+  const currentName = segments.pop();
+  if (!currentName) throw new Error("O caminho do recurso está vazio.");
+  const normalizedName = nextName.trim();
+  if (!normalizedName) throw new Error("Informe um nome.");
+  if (normalizedName.includes("/") || normalizedName.includes("\\")) {
+    throw new Error("Use apenas o nome, sem barras ou caminho.");
+  }
+  if (normalizedName === currentName) return path;
+
+  const parentPath = segments.join("/");
+  const parent = await resolveDirectoryHandle(workspaceHandle, parentPath);
+  if (!parent.removeEntry) throw new Error("Este navegador não oferece renomeação de arquivos pelo workspace.");
+
+  let source: BrowserFileHandle | BrowserDirectoryHandle;
+  try {
+    source = await parent.getFileHandle(currentName);
+  } catch {
+    source = await parent.getDirectoryHandle(currentName);
+  }
+
+  if (source.kind === "file") {
+    const target = await parent.getFileHandle(normalizedName, { create: true });
+    await copyFileHandle(source, target);
+    await parent.removeEntry(currentName, { recursive: false });
+  } else {
+    const target = await parent.getDirectoryHandle(normalizedName, { create: true });
+    await copyDirectoryHandle(source, target);
+    await parent.removeEntry(currentName, { recursive: true });
+  }
+
+  return parentPath ? `${parentPath}/${normalizedName}` : normalizedName;
 }
 
 export async function readFileDocument(

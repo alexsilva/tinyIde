@@ -64,6 +64,7 @@ import type {
 import {
   listDirectory,
   readFileDocument,
+  renameWorkspaceEntry,
   resolveDirectoryHandle,
   resolveFileHandle,
   removeWorkspaceEntry,
@@ -73,6 +74,16 @@ import {
   type OpenDocument,
   type WorkspaceEntry,
 } from "../browser-filesystem";
+import {
+  explorerTargetDirectoryPath,
+  findWorkspaceEntry,
+  flattenVisibleEntries,
+  joinWorkspacePath,
+  parentEntryPath,
+  replaceWorkspacePathPrefix,
+  workspacePathName,
+  workspacePathParent,
+} from "./explorer";
 import { platform } from "./platform";
 import {
   DEFAULT_LAYOUT,
@@ -274,6 +285,12 @@ function EntryTree({
   onSelect,
   onOpen,
   onContextMenu,
+  renamePath,
+  renameName,
+  renameError,
+  onRenameNameChange,
+  onRenameSubmit,
+  onRenameCancel,
   workspaceName,
   workspaceRoot,
 }: {
@@ -286,6 +303,12 @@ function EntryTree({
   readonly onSelect: (entry: WorkspaceEntry) => void;
   readonly onOpen: (entry: WorkspaceEntry) => void;
   readonly onContextMenu: (entry: WorkspaceEntry, x: number, y: number) => void;
+  readonly renamePath: string | undefined;
+  readonly renameName: string;
+  readonly renameError: string | undefined;
+  readonly onRenameNameChange: (name: string) => void;
+  readonly onRenameSubmit: () => void;
+  readonly onRenameCancel: () => void;
   readonly workspaceName: string;
   readonly workspaceRoot?: string;
 }) {
@@ -307,26 +330,44 @@ function EntryTree({
           : undefined;
         return <div key={entry.path}>
           <div className="tree-entry-row">
-            <button
-              type="button"
-              className={`tree-entry tree-entry--${entry.kind}${highlightedPath === entry.path ? " is-new" : ""}${selectedPath === entry.path ? " is-selected" : ""}`}
-              onClick={() => {
-                if (entry.kind === "directory") {
+            {renamePath === entry.path ? (
+              <form className={`tree-entry tree-entry--${entry.kind} tree-entry--rename${renameError ? " has-error" : ""}`} onSubmit={(event) => { event.preventDefault(); onRenameSubmit(); }}>
+                {entry.kind === "directory" ? <Folder className="tree-entry__icon tree-entry__icon--directory" size={15} /> : <File className="tree-entry__icon tree-entry__icon--file" size={15} />}
+                <input
+                  autoFocus
+                  value={renameName}
+                  aria-label={`Renomear ${entry.name}`}
+                  aria-invalid={Boolean(renameError)}
+                  onChange={(event) => onRenameNameChange(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") onRenameCancel();
+                  }}
+                />
+                <button className="icon-button small" type="submit" aria-label="Confirmar renomeação"><Check size={13} /></button>
+                <button className="icon-button small" type="button" aria-label="Cancelar renomeação" onClick={onRenameCancel}><X size={13} /></button>
+                {renameError ? <span className="tree-entry-rename-error" role="alert">{renameError}</span> : null}
+              </form>
+            ) : (
+              <button
+                type="button"
+                className={`tree-entry tree-entry--${entry.kind}${highlightedPath === entry.path ? " is-new" : ""}${selectedPath === entry.path ? " is-selected" : ""}`}
+                onClick={() => {
+                  if (entry.kind === "directory") {
+                    onSelect(entry);
+                    onToggle(entry);
+                    return;
+                  }
+                  if (selectedPath === entry.path) {
+                    onOpen(entry);
+                    return;
+                  }
                   onSelect(entry);
-                  onToggle(entry);
-                  return;
-                }
-                if (selectedPath === entry.path) {
-                  onOpen(entry);
-                  return;
-                }
-                onSelect(entry);
-              }}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                onContextMenu(entry, event.clientX, event.clientY);
-              }}
-            >
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  onContextMenu(entry, event.clientX, event.clientY);
+                }}
+              >
               {entry.kind === "directory" ? (
                 expanded.has(entry.path) ? <ChevronDown size={14} /> : <ChevronRight size={14} />
               ) : (
@@ -349,7 +390,8 @@ function EntryTree({
                 <File className="tree-entry__icon tree-entry__icon--file" size={15} />
               )}
               <span className="tree-entry__name">{entry.name}</span>
-            </button>
+              </button>
+            )}
           </div>
           {entry.kind === "directory" && expanded.has(entry.path) && entry.children ? (
             <div className="tree-children">
@@ -363,6 +405,12 @@ function EntryTree({
                 onSelect={onSelect}
                 onOpen={onOpen}
                 onContextMenu={onContextMenu}
+                renamePath={renamePath}
+                renameName={renameName}
+                renameError={renameError}
+                onRenameNameChange={onRenameNameChange}
+                onRenameSubmit={onRenameSubmit}
+                onRenameCancel={onRenameCancel}
                 workspaceName={workspaceName}
                 {...(workspaceRoot ? { workspaceRoot } : {})}
               />
@@ -978,8 +1026,12 @@ export function App() {
   const [error, setError] = useState<string>();
   const [workspaceAccess, setWorkspaceAccess] = useState<"ready" | "permission-required" | "missing">("ready");
   const [explorerCreation, setExplorerCreation] = useState<"file" | "directory">();
+  const [explorerCreationParentPath, setExplorerCreationParentPath] = useState("");
   const [explorerCreationName, setExplorerCreationName] = useState("");
   const [explorerCreationError, setExplorerCreationError] = useState<string>();
+  const [explorerRenamePath, setExplorerRenamePath] = useState<string>();
+  const [explorerRenameName, setExplorerRenameName] = useState("");
+  const [explorerRenameError, setExplorerRenameError] = useState<string>();
   const [highlightedExplorerPath, setHighlightedExplorerPath] = useState<string>();
   const [selectedExplorerPath, setSelectedExplorerPath] = useState<string>();
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
@@ -1343,6 +1395,32 @@ export function App() {
         order: 0,
         icon: entry.kind === "file" ? "file" : "folder",
       },
+      ...(entry.kind === "directory" ? [
+        {
+          id: "core.newFile",
+          label: "Novo arquivo",
+          command: "core.resource.newFile",
+          group: "creation",
+          order: 0,
+          icon: "file" as const,
+        },
+        {
+          id: "core.newDirectory",
+          label: "Nova pasta",
+          command: "core.resource.newDirectory",
+          group: "creation",
+          order: 10,
+          icon: "folder" as const,
+        },
+      ] : []),
+      {
+        id: "core.rename",
+        label: "Renomear",
+        command: "core.resource.rename",
+        group: "file",
+        order: 0,
+        icon: entry.kind === "directory" ? "folder" : "file",
+      },
       {
         id: "core.copyPath",
         label: "Copiar caminho",
@@ -1365,6 +1443,8 @@ export function App() {
     const contributed = (await Promise.all(providers.map((provider) => provider.provideItems(resource)))).flat();
     const groupOrder = new Map([
       ["navigation", 0],
+      ["creation", 50],
+      ["file", 100],
       ["execution", 100],
       ["clipboard", 200],
       ["destructive", 300],
@@ -1629,6 +1709,34 @@ export function App() {
     setActiveDocumentId(document.id);
   };
 
+  const refreshExplorer = async (expandedPaths: ReadonlySet<string> = expanded) => {
+    if (!workspaceHandle) return;
+    const nextEntries = await listDirectory(workspaceHandle);
+    setEntries(await hydrateExpandedEntries(nextEntries, expandedPaths));
+  };
+
+  const startExplorerCreation = (kind: "file" | "directory", parentPath?: string) => {
+    const targetPath = parentPath ?? explorerTargetDirectoryPath(entries, selectedExplorerPath);
+    setExplorerCreation(kind);
+    setExplorerCreationParentPath(targetPath);
+    setExplorerCreationName("");
+    setExplorerCreationError(undefined);
+    setExplorerRenamePath(undefined);
+    setExplorerRenameError(undefined);
+    if (targetPath) {
+      setExpanded((current) => new Set(current).add(targetPath));
+    }
+  };
+
+  const startExplorerRename = (entry: WorkspaceEntry) => {
+    setSelectedExplorerPath(entry.path);
+    setExplorerRenamePath(entry.path);
+    setExplorerRenameName(entry.name);
+    setExplorerRenameError(undefined);
+    setExplorerCreation(undefined);
+    setExplorerCreationError(undefined);
+  };
+
   const createWorkspaceEntry = async () => {
     setExplorerCreationError(undefined);
     if (!workspaceHandle) {
@@ -1644,43 +1752,92 @@ export function App() {
       setExplorerCreationError("Use apenas o nome, sem barras ou caminho.");
       return;
     }
-    if (entries.some((entry) => entry.name === name)) {
+    const parentHandle = await resolveDirectoryHandle(workspaceHandle, explorerCreationParentPath);
+    const parentEntry = explorerCreationParentPath ? findWorkspaceEntry(entries, explorerCreationParentPath) : undefined;
+    const siblings = parentEntry?.children ?? (explorerCreationParentPath ? await listDirectory(parentHandle, explorerCreationParentPath) : entries);
+    if (siblings.some((entry) => entry.name === name)) {
       setExplorerCreationError(`Já existe um item chamado “${name}”.`);
       return;
     }
 
     try {
       if (explorerCreation === "file") {
-        const handle = await workspaceHandle.getFileHandle(name, { create: true });
-        const document = await readFileDocument(handle, name, workspaceRoot);
+        const handle = await parentHandle.getFileHandle(name, { create: true });
+        const path = joinWorkspacePath(explorerCreationParentPath, name);
+        const document = await readFileDocument(handle, path, workspaceRoot);
         setDocuments((current) => current.some((item) => item.id === document.id) ? current : [...current, document]);
         setActiveDocumentId(document.id);
       } else if (explorerCreation === "directory") {
-        await workspaceHandle.getDirectoryHandle(name, { create: true });
+        await parentHandle.getDirectoryHandle(name, { create: true });
       }
     } catch (cause) {
       setExplorerCreationError(cause instanceof Error ? cause.message : String(cause));
       return;
     }
 
-    setEntries(await listDirectory(workspaceHandle));
-    setHighlightedExplorerPath(name);
+    await refreshExplorer();
+    const createdPath = joinWorkspacePath(explorerCreationParentPath, name);
+    setHighlightedExplorerPath(createdPath);
     if (explorerHighlightTimerRef.current) clearTimeout(explorerHighlightTimerRef.current);
     explorerHighlightTimerRef.current = setTimeout(() => {
-      setHighlightedExplorerPath((current) => current === name ? undefined : current);
+      setHighlightedExplorerPath((current) => current === createdPath ? undefined : current);
     }, 5000);
     setExplorerCreation(undefined);
+    setExplorerCreationParentPath("");
     setExplorerCreationName("");
     setExplorerCreationError(undefined);
   };
 
-  const findEntryByPath = (items: readonly WorkspaceEntry[], path: string): WorkspaceEntry | undefined => {
-    for (const item of items) {
-      if (item.path === path) return item;
-      const nested = item.children ? findEntryByPath(item.children, path) : undefined;
-      if (nested) return nested;
+  const renameSelectedExplorerEntry = async () => {
+    if (!workspaceHandle || !explorerRenamePath) return;
+    const entry = findWorkspaceEntry(entries, explorerRenamePath);
+    if (!entry) return;
+    const name = explorerRenameName.trim();
+    setExplorerRenameError(undefined);
+    if (!name) {
+      setExplorerRenameError("Informe um nome.");
+      return;
     }
-    return undefined;
+    if (name.includes("/") || name.includes("\\")) {
+      setExplorerRenameError("Use apenas o nome, sem barras ou caminho.");
+      return;
+    }
+    const parentPath = workspacePathParent(entry.path);
+    const parent = parentPath ? findWorkspaceEntry(entries, parentPath) : undefined;
+    const siblings = parent?.children ?? (parentPath ? await listDirectory(await resolveDirectoryHandle(workspaceHandle, parentPath), parentPath) : entries);
+    if (siblings.some((candidate) => candidate.name === name && candidate.path !== entry.path)) {
+      setExplorerRenameError(`Já existe um item chamado “${name}”.`);
+      return;
+    }
+
+    try {
+      const nextPath = await renameWorkspaceEntry(workspaceHandle, entry.path, name);
+      const nextDocuments = await Promise.all(documents.map(async (document) => {
+        if (!document.path || (document.path !== entry.path && !document.path.startsWith(`${entry.path}/`))) return document;
+        const path = replaceWorkspacePathPrefix(document.path, entry.path, nextPath);
+        const handle = await resolveFileHandle(workspaceHandle, path);
+        return { ...document, id: path, path, name: workspacePathName(path), handle };
+      }));
+      setDocuments(nextDocuments);
+      const nextActiveDocumentId = activeDocumentId
+        ? replaceWorkspacePathPrefix(activeDocumentId, entry.path, nextPath)
+        : undefined;
+      setActiveDocumentId(nextActiveDocumentId);
+      const nextExpanded = new Set([...expanded].map((path) => replaceWorkspacePathPrefix(path, entry.path, nextPath)));
+      setExpanded(nextExpanded);
+      const movedHistories = [...editorHistoriesRef.current.entries()]
+        .filter(([id]) => id === entry.path || id.startsWith(`${entry.path}/`));
+      movedHistories.forEach(([id, history]) => {
+        editorHistoriesRef.current.delete(id);
+        editorHistoriesRef.current.set(replaceWorkspacePathPrefix(id, entry.path, nextPath), history);
+      });
+      setSelectedExplorerPath(nextPath);
+      setExplorerRenamePath(undefined);
+      setExplorerRenameName("");
+      await refreshExplorer(nextExpanded);
+    } catch (cause) {
+      setExplorerRenameError(cause instanceof Error ? cause.message : String(cause));
+    }
   };
 
   const deleteWorkspaceEntry = async (entry: WorkspaceEntry) => {
@@ -1785,6 +1942,18 @@ export function App() {
       }
       if (item.command === "core.resource.copyPath") {
         await navigator.clipboard?.writeText(entry.path);
+        return;
+      }
+      if (item.command === "core.resource.newFile") {
+        startExplorerCreation("file", entry.path);
+        return;
+      }
+      if (item.command === "core.resource.newDirectory") {
+        startExplorerCreation("directory", entry.path);
+        return;
+      }
+      if (item.command === "core.resource.rename") {
+        startExplorerRename(entry);
         return;
       }
       if (item.command === "core.resource.delete") {
@@ -2021,11 +2190,65 @@ export function App() {
         || target instanceof HTMLTextAreaElement
         || target instanceof HTMLSelectElement
         || Boolean(target?.isContentEditable);
+      if (!editing && sidebarView === "explorer") {
+        const visibleEntries = flattenVisibleEntries(entries, expanded, explorerShowHidden);
+        const selectedIndex = selectedExplorerPath
+          ? visibleEntries.findIndex((entry) => entry.path === selectedExplorerPath)
+          : -1;
+        const selectedEntry = selectedIndex >= 0 ? visibleEntries[selectedIndex] : undefined;
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          const direction = event.key === "ArrowDown" ? 1 : -1;
+          const nextIndex = selectedIndex < 0
+            ? (direction > 0 ? 0 : visibleEntries.length - 1)
+            : Math.min(visibleEntries.length - 1, Math.max(0, selectedIndex + direction));
+          const next = visibleEntries[nextIndex];
+          if (next) setSelectedExplorerPath(next.path);
+          return;
+        }
+        if (event.key === "Enter" && selectedEntry) {
+          event.preventDefault();
+          invoke(() => selectedEntry.kind === "directory" ? toggleEntry(selectedEntry) : openEntry(selectedEntry));
+          return;
+        }
+        if (event.key === "ArrowRight" && selectedEntry?.kind === "directory") {
+          event.preventDefault();
+          if (!expanded.has(selectedEntry.path)) {
+            invoke(() => toggleEntry(selectedEntry));
+          } else {
+            const firstChild = selectedEntry.children?.find((entry) => explorerShowHidden || !entry.name.startsWith("."));
+            if (firstChild) setSelectedExplorerPath(firstChild.path);
+          }
+          return;
+        }
+        if (event.key === "ArrowLeft" && selectedEntry) {
+          event.preventDefault();
+          if (selectedEntry.kind === "directory" && expanded.has(selectedEntry.path)) {
+            invoke(() => toggleEntry(selectedEntry));
+          } else {
+            const parentPath = parentEntryPath(selectedEntry.path);
+            if (parentPath) setSelectedExplorerPath(parentPath);
+          }
+          return;
+        }
+        if (event.key === "F2" && selectedEntry) {
+          event.preventDefault();
+          startExplorerRename(selectedEntry);
+          return;
+        }
+        if (event.key === "Escape") {
+          setExplorerCreation(undefined);
+          setExplorerCreationError(undefined);
+          setExplorerRenamePath(undefined);
+          setExplorerRenameError(undefined);
+          return;
+        }
+      }
       if ((event.key === "Delete" || event.key === "Backspace")
         && !editing
         && sidebarView === "explorer"
         && selectedExplorerPath) {
-        const selectedEntry = findEntryByPath(entries, selectedExplorerPath);
+        const selectedEntry = findWorkspaceEntry(entries, selectedExplorerPath);
         if (selectedEntry) {
           event.preventDefault();
           invoke(() => deleteWorkspaceEntry(selectedEntry));
@@ -2047,7 +2270,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [newDocument, openSingleFile, saveDocument, invoke, sidebarView, selectedExplorerPath, entries, workspaceHandle, documents, activeDocumentId]);
+  }, [newDocument, openSingleFile, saveDocument, invoke, sidebarView, selectedExplorerPath, entries, expanded, explorerShowHidden, workspaceHandle, documents, activeDocumentId]);
 
   const beginSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -2214,11 +2437,18 @@ export function App() {
                       </DropdownMenu.Trigger>
                       <DropdownMenu.Portal>
                         <DropdownMenu.Content className="menu-content" align="end" sideOffset={6}>
-                          <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => { setExplorerCreation("file"); setExplorerCreationName(""); }}>
+                          <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => startExplorerCreation("file")}>
                             <FilePlus2 size={15} /> Novo arquivo
                           </DropdownMenu.Item>
-                          <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => { setExplorerCreation("directory"); setExplorerCreationName(""); }}>
+                          <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => startExplorerCreation("directory")}>
                             <FolderOpen size={15} /> Nova pasta
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Separator className="menu-separator" />
+                          <DropdownMenu.Item className="menu-item" disabled={!workspaceHandle} onSelect={() => invoke(refreshExplorer)}>
+                            <RefreshCw size={15} /> Atualizar
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Item className="menu-item" disabled={!expanded.size} onSelect={() => setExpanded(new Set())}>
+                            <ChevronRight size={15} /> Recolher tudo
                           </DropdownMenu.Item>
                           <DropdownMenu.Separator className="menu-separator" />
                           <DropdownMenu.Item className="menu-item" onSelect={() => setExplorerShowHidden((visible) => !visible)}>
@@ -2258,6 +2488,7 @@ export function App() {
                       <button className="icon-button small" type="submit" aria-label="Confirmar criação"><Check size={14} /></button>
                       <button className="icon-button small" type="button" aria-label="Cancelar criação" onClick={() => { setExplorerCreation(undefined); setExplorerCreationName(""); setExplorerCreationError(undefined); }}><X size={14} /></button>
                       {explorerCreationError ? <span className="explorer-inline-error" id="explorer-creation-error" role="alert">{explorerCreationError}</span> : null}
+                      {explorerCreationParentPath ? <span className="explorer-inline-location">em {explorerCreationParentPath}</span> : null}
                       </form>
                     </div>
                   ) : null}
@@ -2273,6 +2504,12 @@ export function App() {
                       onSelect={(entry) => setSelectedExplorerPath(entry.path)}
                       onOpen={(entry) => invoke(() => openEntry(entry))}
                       onContextMenu={(entry, x, y) => invoke(() => openResourceMenu(entry, x, y))}
+                      renamePath={explorerRenamePath}
+                      renameName={explorerRenameName}
+                      renameError={explorerRenameError}
+                      onRenameNameChange={(name) => { setExplorerRenameName(name); setExplorerRenameError(undefined); }}
+                      onRenameSubmit={() => { void renameSelectedExplorerEntry(); }}
+                      onRenameCancel={() => { setExplorerRenamePath(undefined); setExplorerRenameName(""); setExplorerRenameError(undefined); }}
                       workspaceName={workspaceName}
                       {...(workspaceRoot ? { workspaceRoot } : {})}
                     />

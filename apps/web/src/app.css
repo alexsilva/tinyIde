@@ -169,12 +169,17 @@ button { color: inherit; }
 .explorer-inline-create input { min-width: 0; height: 26px; }
 .explorer-inline-create.has-error input { border-color: #b85660; box-shadow: 0 0 0 1px rgb(184 86 96 / 20%); }
 .explorer-inline-error { grid-column: 2 / -1; color: #ff9da5; font-size: 10px; line-height: 1.35; }
+.explorer-inline-location { grid-column: 2 / -1; color: #7f8998; font-size: 9px; line-height: 1.3; }
 .workspace-name { display: flex; align-items: center; gap: 4px; padding: 7px 4px; color: #c8ced8; font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .tree,
 .tree > div { min-width: 0; }
 .tree-children { min-width: 0; margin-left: 7px; padding-left: 8px; border-left: 1px solid #252c38; }
 .tree-entry-row { display: grid; grid-template-columns: minmax(0, 1fr) 25px; align-items: center; min-width: 0; }
 .tree-entry { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 27px; padding: 0 6px; overflow: hidden; border: 0; border-radius: 4px; background: transparent; color: #c3cad5; font-size: 12px; text-align: left; cursor: pointer; }
+.tree-entry--rename { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; height: auto; min-height: 27px; cursor: default; overflow: visible; }
+.tree-entry--rename input { min-width: 0; height: 23px; border: 1px solid var(--accent); border-radius: 3px; padding: 0 5px; background: #0d1016; color: var(--text); font-size: 11px; }
+.tree-entry--rename.has-error input { border-color: #b85660; }
+.tree-entry-rename-error { grid-column: 2 / -1; color: #ff9da5; font-size: 9px; line-height: 1.3; }
 .tree-entry-menu { display: grid; width: 25px; height: 25px; place-items: center; border: 0; border-radius: 4px; background: transparent; color: #8791a0; opacity: 0; cursor: pointer; }
 .tree-entry-row:hover .tree-entry-menu,
 .tree-entry-menu:focus-visible,

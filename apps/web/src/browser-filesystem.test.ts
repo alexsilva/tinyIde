@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   listDirectory,
   readFileDocument,
+  renameWorkspaceEntry,
   removeWorkspaceEntry,
   resolveDirectoryHandle,
   resolveFileHandle,
@@ -97,7 +98,7 @@ describe("browser filesystem", () => {
   });
 
   it("writes content, closes the stream and updates document metadata", async () => {
-    const write = vi.fn(async () => undefined);
+    const write = vi.fn(async (_data: string | Blob | BufferSource) => undefined);
     const close = vi.fn(async () => undefined);
     const handle: BrowserFileHandle = {
       ...fileHandle("saved.py"),
@@ -117,6 +118,145 @@ describe("browser filesystem", () => {
     expect(write).toHaveBeenCalledWith("print(1)");
     expect(close).toHaveBeenCalledOnce();
     expect(saved).toMatchObject({ id: "file:saved.py", name: "saved.py", savedContent: "print(1)" });
+  });
+
+  it("renames files by copying their bytes and removing the original entry", async () => {
+    const source = fileHandle("old.txt", "payload");
+    const write = vi.fn(async (_data: string | Blob | BufferSource) => undefined);
+    const close = vi.fn(async () => undefined);
+    const target: BrowserFileHandle = {
+      ...fileHandle("new.txt"),
+      createWritable: async () => ({ write, close }),
+    };
+    const removeEntry = vi.fn(async () => undefined);
+    const root: BrowserDirectoryHandle = {
+      kind: "directory",
+      name: "root",
+      async *values() { yield source; },
+      async getFileHandle(name, options) {
+        if (name === "old.txt") return source;
+        if (name === "new.txt" && options?.create) return target;
+        throw new Error("missing file");
+      },
+      async getDirectoryHandle() { throw new Error("missing directory"); },
+      removeEntry,
+    };
+
+    expect(await renameWorkspaceEntry(root, "old.txt", "new.txt")).toBe("new.txt");
+    expect(write).toHaveBeenCalledOnce();
+    expect(write.mock.calls[0]?.[0]).toBeInstanceOf(ArrayBuffer);
+    expect(close).toHaveBeenCalledOnce();
+    expect(removeEntry).toHaveBeenCalledWith("old.txt", { recursive: false });
+  });
+
+  it("validates rename names before touching the workspace", async () => {
+    const root = directoryHandle("root", []);
+    await expect(renameWorkspaceEntry(root, "", "file.txt")).rejects.toThrow("O caminho do recurso está vazio.");
+    await expect(renameWorkspaceEntry(root, "file.txt", "")).rejects.toThrow("Informe um nome.");
+    await expect(renameWorkspaceEntry(root, "file.txt", "nested/file.txt")).rejects.toThrow("Use apenas o nome");
+    await expect(renameWorkspaceEntry(root, "file.txt", "file.txt")).resolves.toBe("file.txt");
+    await expect(renameWorkspaceEntry(root, "file.txt", "renamed.txt"))
+      .rejects.toThrow("Este navegador não oferece renomeação de arquivos pelo workspace.");
+  });
+
+  it("renames directories recursively before removing the original tree", async () => {
+    const nestedFile = fileHandle("nested.py", "print(2)");
+    const nestedDirectory = directoryHandle("lib", [nestedFile]);
+    const sourceFile = fileHandle("main.py", "print(1)");
+    const sourceDirectory = directoryHandle("src", [sourceFile, nestedDirectory]);
+    const targetFiles = new Map<string, BrowserFileHandle>();
+    const nestedTargetFiles = new Map<string, BrowserFileHandle>();
+    const nestedTargetDirectory: BrowserDirectoryHandle = {
+      kind: "directory",
+      name: "lib",
+      async *values() { yield* nestedTargetFiles.values(); },
+      async getFileHandle(name, options) {
+        const current = nestedTargetFiles.get(name);
+        if (current) return current;
+        if (!options?.create) throw new Error("missing file");
+        const created = fileHandle(name);
+        nestedTargetFiles.set(name, created);
+        return created;
+      },
+      async getDirectoryHandle() { throw new Error("unused"); },
+    };
+    const targetDirectory: BrowserDirectoryHandle = {
+      kind: "directory",
+      name: "source",
+      async *values() { yield* targetFiles.values(); },
+      async getFileHandle(name, options) {
+        const current = targetFiles.get(name);
+        if (current) return current;
+        if (!options?.create) throw new Error("missing file");
+        const created = fileHandle(name);
+        targetFiles.set(name, created);
+        return created;
+      },
+      async getDirectoryHandle(name, options) {
+        if (name === "lib" && options?.create) return nestedTargetDirectory;
+        throw new Error("missing directory");
+      },
+    };
+    const removeEntry = vi.fn(async () => undefined);
+    const root: BrowserDirectoryHandle = {
+      kind: "directory",
+      name: "root",
+      async *values() { yield sourceDirectory; },
+      async getFileHandle() { throw new Error("not a file"); },
+      async getDirectoryHandle(name, options) {
+        if (name === "src") return sourceDirectory;
+        if (name === "source" && options?.create) return targetDirectory;
+        throw new Error("missing directory");
+      },
+      removeEntry,
+    };
+
+    expect(await renameWorkspaceEntry(root, "src", "source")).toBe("source");
+    expect(targetFiles.has("main.py")).toBe(true);
+    expect(nestedTargetFiles.has("nested.py")).toBe(true);
+    expect(removeEntry).toHaveBeenCalledWith("src", { recursive: true });
+  });
+
+  it("returns nested renamed paths and closes copy streams after failures", async () => {
+    const source = fileHandle("old.txt", "payload");
+    const close = vi.fn(async () => undefined);
+    const target: BrowserFileHandle = {
+      ...fileHandle("new.txt"),
+      createWritable: async () => ({
+        write: async () => { throw new Error("copy failed"); },
+        close,
+      }),
+    };
+    const removeEntry = vi.fn(async () => undefined);
+    const parent: BrowserDirectoryHandle = {
+      kind: "directory",
+      name: "src",
+      async *values() { yield source; },
+      async getFileHandle(name, options) {
+        if (name === "old.txt") return source;
+        if (name === "new.txt" && options?.create) return target;
+        throw new Error("missing file");
+      },
+      async getDirectoryHandle() { throw new Error("missing directory"); },
+      removeEntry,
+    };
+    const root = directoryHandle("root", [parent]);
+    await expect(renameWorkspaceEntry(root, "src/old.txt", "new.txt")).rejects.toThrow("copy failed");
+    expect(close).toHaveBeenCalledOnce();
+    expect(removeEntry).not.toHaveBeenCalled();
+
+    const successfulTarget = fileHandle("new.txt");
+    const successfulParent: BrowserDirectoryHandle = {
+      ...parent,
+      async getFileHandle(name, options) {
+        if (name === "old.txt") return source;
+        if (name === "new.txt" && options?.create) return successfulTarget;
+        throw new Error("missing file");
+      },
+    };
+    const successfulRoot = directoryHandle("root", [successfulParent]);
+    await expect(renameWorkspaceEntry(successfulRoot, "src/old.txt", "new.txt"))
+      .resolves.toBe("src/new.txt");
   });
 
   it("closes the stream even when writing fails", async () => {
