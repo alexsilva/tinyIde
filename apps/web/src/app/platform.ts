@@ -2,10 +2,27 @@ import {
   CapabilityRegistry,
   CommandRegistry,
   EventBus,
-  ModulePluginHost,
   PluginManager,
 } from "@tinyide/core";
-import type { PluginManifest, PluginRecord } from "@tinyide/plugin-api";
+import type {
+  ExecutionEnvironmentProvider,
+  ExecutionProfileContributionProvider,
+  InteractiveSessionHookProvider,
+  InteractiveSessionProvider,
+  LanguageProvider,
+  PluginContext,
+  PluginBackendRequestOptions,
+  PluginBackendApi,
+  PluginManifest,
+  PluginRecord,
+  PluginSettingsProvider,
+  ResourceContextMenuProvider,
+  ResourceIconProvider,
+  ScriptExecutionContribution,
+  WorkbenchPanelHook,
+  WorkbenchToolWindowHook,
+} from "@tinyide/plugin-api";
+import { AppPluginHost } from "./plugin-host";
 
 const PLATFORM_VERSION = "0.4.0";
 const STORAGE_KEY = "tinyide.react.plugins.v1";
@@ -31,11 +48,65 @@ export interface PlatformSnapshot {
 
 type SnapshotListener = () => void;
 
-function pluginContext(platform: TinyIdePlatform) {
+function pluginSourceUrl(manifest: PluginManifest, manifestUrl: string): string {
+  const frontend = manifest.entrypoints?.frontend;
+  if (!frontend) throw new Error(`Plugin '${manifest.name}' não possui entrypoint de frontend.`);
+  const sourceUrl = new URL(frontend, manifestUrl);
+  sourceUrl.searchParams.set("tinyide-plugin-version", manifest.version);
+  return sourceUrl.href;
+}
+
+function pluginBackend(pluginId: string): PluginBackendApi {
   return {
+    async request<Response>(path: string, options: PluginBackendRequestOptions = {}): Promise<Response> {
+      const suffix = path.startsWith("/") ? path : `/${path}`;
+      const pathname = suffix.split(/[?#]/, 1)[0] ?? "";
+      if (suffix.startsWith("//") || pathname.split("/").includes("..")) {
+        throw new Error("O caminho do backend do plugin deve ser relativo ao próprio plugin.");
+      }
+      const response = await fetch(`/plugin-api/${encodeURIComponent(pluginId)}${suffix}`, {
+        ...options,
+        headers: {
+          ...(options.body ? { "Content-Type": "application/json" } : {}),
+          ...(options.headers ?? {}),
+        },
+      });
+      const contentType = response.headers.get("Content-Type") ?? "";
+      const payload = response.status === 204
+        ? undefined
+        : contentType.includes("application/json")
+          ? await response.json().catch(() => undefined)
+          : await response.text().catch(() => undefined);
+      if (!response.ok) {
+        const message = payload && typeof payload === "object" && "error" in payload
+          ? String(payload.error)
+          : `Backend do plugin indisponível: HTTP ${response.status}`;
+        throw new Error(message);
+      }
+      return payload as Response;
+    },
+  };
+}
+
+function pluginContext(platform: TinyIdePlatform, pluginId: string): PluginContext {
+  return {
+    backend: pluginBackend(pluginId),
     commands: platform.commands,
     events: platform.events,
-    capabilities: platform.capabilities,
+    extensions: {
+      registerLanguageProvider: (provider: LanguageProvider) => platform.capabilities.register("language.provider", provider),
+      registerResourceIconProvider: (provider: ResourceIconProvider) => platform.capabilities.register("resource.icon", provider),
+      registerExecutionEnvironmentProvider: (provider: ExecutionEnvironmentProvider) => platform.capabilities.register("execution.environment", provider),
+      registerExecutionProfileContributionProvider: (provider: ExecutionProfileContributionProvider) => platform.capabilities.register("execution.profile.contribution", provider),
+      registerScriptExecution: (contribution: ScriptExecutionContribution) => platform.capabilities.register("execution.script", contribution),
+      registerResourceContextMenuProvider: (provider: ResourceContextMenuProvider) => platform.capabilities.register("resource.contextMenu", provider),
+      registerInteractiveSessionHook: (provider: InteractiveSessionHookProvider) => platform.capabilities.register("interactive.session.hook", provider),
+      registerInteractiveSessionProvider: (provider: InteractiveSessionProvider) => platform.capabilities.register("interactive.session", provider),
+      getInteractiveSessionHooks: () => platform.capabilities.getAll<InteractiveSessionHookProvider>("interactive.session.hook"),
+      registerPluginSettingsProvider: (provider: PluginSettingsProvider) => platform.capabilities.register("plugin.settings", provider),
+      registerWorkbenchPanelHook: (hook: WorkbenchPanelHook) => platform.capabilities.register("workbench.panel.hook", hook),
+      registerWorkbenchToolWindowHook: (hook: WorkbenchToolWindowHook) => platform.capabilities.register("workbench.toolWindow.hook", hook),
+    },
     subscriptions: [],
   };
 }
@@ -48,7 +119,7 @@ export class TinyIdePlatform {
   readonly #sourceUrls = new Map<string, string>();
   readonly #manifestUrls = new Map<string, string>();
   readonly #listeners = new Set<SnapshotListener>();
-  readonly #host = new ModulePluginHost({
+  readonly #host = new AppPluginHost({
     loadModule: (plugin) => {
       const sourceUrl = this.#sourceUrls.get(plugin.manifest.id);
       if (!sourceUrl) throw new Error(`Fonte do plugin não registrada: ${plugin.manifest.id}`);
@@ -155,15 +226,12 @@ export class TinyIdePlatform {
     if (!response.ok) throw new Error(`Falha ao carregar manifesto: HTTP ${response.status}`);
 
     const manifest = (await response.json()) as PluginManifest;
-    const frontend = manifest.entrypoints?.frontend;
-    if (!frontend) throw new Error(`Plugin '${manifest.name}' não possui entrypoint de frontend.`);
-
-    const sourceUrl = new URL(frontend, absoluteManifestUrl).href;
+    const sourceUrl = pluginSourceUrl(manifest, absoluteManifestUrl);
     await this.plugins.install(manifest);
     this.#sourceUrls.set(manifest.id, sourceUrl);
     this.#manifestUrls.set(manifest.id, absoluteManifestUrl);
     await this.plugins.enable(manifest.id);
-    await this.plugins.activate(manifest.id, pluginContext(this));
+    await this.plugins.activate(manifest.id, pluginContext(this, manifest.id));
     this.#persist();
     this.#notify();
   }
@@ -171,7 +239,7 @@ export class TinyIdePlatform {
   async setEnabled(id: string, enabled: boolean): Promise<void> {
     if (enabled) {
       await this.plugins.enable(id);
-      await this.plugins.activate(id, pluginContext(this));
+      await this.plugins.activate(id, pluginContext(this, id));
     } else {
       await this.plugins.disable(id);
     }
@@ -198,12 +266,24 @@ export class TinyIdePlatform {
 
     for (const entry of stored) {
       try {
-        await this.plugins.install(entry.manifest);
-        this.#sourceUrls.set(entry.manifest.id, entry.sourceUrl);
-        this.#manifestUrls.set(entry.manifest.id, entry.manifestUrl);
+        let manifest = entry.manifest;
+        let manifestUrl = entry.manifestUrl;
+        let sourceUrl = entry.sourceUrl;
+        try {
+          const response = await fetch(manifestUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
+          if (response.ok) {
+            manifest = (await response.json()) as PluginManifest;
+            sourceUrl = pluginSourceUrl(manifest, manifestUrl);
+          }
+        } catch {
+          // Installed plugins remain restorable when their original source is temporarily unavailable.
+        }
+        await this.plugins.install(manifest);
+        this.#sourceUrls.set(manifest.id, sourceUrl);
+        this.#manifestUrls.set(manifest.id, manifestUrl);
         if (entry.enabled) {
-          await this.plugins.enable(entry.manifest.id);
-          await this.plugins.activate(entry.manifest.id, pluginContext(this));
+          await this.plugins.enable(manifest.id);
+          await this.plugins.activate(manifest.id, pluginContext(this, manifest.id));
         }
       } catch (error) {
         console.warn(`Não foi possível restaurar o plugin ${entry.manifest.id}.`, error);

@@ -18,7 +18,8 @@
     "coverage:web-critical": "vitest run apps/web/src/file-browser.test.ts apps/web/src/browser-filesystem.test.ts apps/web/src/app/workspace-settings.test.ts --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.include='apps/web/src/file-browser.ts' --coverage.include='apps/web/src/browser-filesystem.ts' --coverage.include='apps/web/src/app/workspace-settings.ts' --coverage.thresholds.lines=100 --coverage.thresholds.functions=100 --coverage.thresholds.statements=100 --coverage.thresholds.branches=100",
     "coverage:plugins": "npm run coverage --prefix plugins/python && npm run coverage --prefix plugins/python-venv",
     "coverage": "npm run coverage:core && npm run coverage:web-critical && npm run coverage:plugins",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:plugins": "tsc -p plugins/python/jsconfig.json && tsc -p plugins/python-venv/jsconfig.json && tsc -p plugins/terminal/jsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && npm run typecheck:plugins",
     "check": "npm run typecheck && npm run test && npm run test:performance && npm run coverage && npm run build"
   },
   "devDependencies": {

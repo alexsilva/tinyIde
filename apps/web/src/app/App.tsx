@@ -2,8 +2,6 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { FitAddon } from "@xterm/addon-fit";
-import { Terminal as XTerm } from "@xterm/xterm";
 import {
   Box,
   Check,
@@ -26,6 +24,7 @@ import {
   LocateFixed,
   MoreVertical,
   Package,
+  PanelBottom,
   Play,
   Plug,
   Plus,
@@ -59,9 +58,13 @@ import type {
   ResourceContext,
   ResourceContextMenuItem,
   ResourceContextMenuProvider,
-  InteractiveSessionProvider,
-  InteractiveSessionIndicator,
   TextDiagnostic,
+  WorkbenchPanelContribution,
+  WorkbenchPanelHook,
+  WorkbenchStateApi,
+  WorkbenchStateSnapshot,
+  WorkbenchToolWindowContribution,
+  WorkbenchToolWindowHook,
 } from "@tinyide/plugin-api";
 import {
   listDirectory,
@@ -88,6 +91,7 @@ import {
   flattenVisibleEntries,
   joinWorkspacePath,
   nearestRemainingItemId,
+  nextExplorerHiddenVisibility,
   parentEntryPath,
   replaceWorkspacePathPrefix,
   workspacePathName,
@@ -114,13 +118,11 @@ import {
   readHostContext,
   runExecutionProfile,
   runScript,
-  prepareTerminalSessionOptions,
   pluginSettingsProviders,
   resourceIconFor,
   scriptExecutionFor,
   setHostWorkspace,
   stopHostProcess,
-  interactiveSessionProvider,
 } from "./runtime";
 import {
   resolvePluginSettingValues,
@@ -942,107 +944,125 @@ function ProfileDialog({
   );
 }
 
-function InteractiveSessionPanel({
+function WorkbenchPanelHost({
   provider,
-  workspaceRoot,
-  selectedEnvironmentId,
-  pluginSettings,
-  onIndicatorsChange,
+  state,
 }: {
-  readonly provider: InteractiveSessionProvider;
-  readonly workspaceRoot?: string;
-  readonly selectedEnvironmentId?: string;
-  readonly pluginSettings?: WorkspaceSettings["plugins"];
-  readonly onIndicatorsChange: (indicators: readonly InteractiveSessionIndicator[]) => void;
+  readonly provider: WorkbenchPanelContribution;
+  readonly state: WorkbenchStateApi;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-
-    const terminal = new XTerm({
-      cursorBlink: true,
-      fontFamily: '"JetBrains Mono", "Fira Code", Consolas, monospace',
-      fontSize: 12,
-      scrollback: 10_000,
-      theme: {
-        background: "#0e1116",
-        foreground: "#d4d8df",
-        cursor: "#f2f4f8",
-        selectionBackground: "#35548a",
-      },
-    });
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.open(container);
-    let sessionId: string | undefined;
-    let offset = 0;
-    let timer: number | undefined;
     let disposed = false;
-
-    const fit = () => {
-      fitAddon.fit();
-      if (sessionId) void provider.resize(sessionId, terminal.cols, terminal.rows).catch(() => undefined);
-    };
-    const observer = new ResizeObserver(fit);
-    observer.observe(container);
-    fit();
-
-    const input = terminal.onData((data) => {
-      if (sessionId) void provider.write(sessionId, data).catch((cause) => {
-        terminal.writeln(`\r\n[terminal] ${cause instanceof Error ? cause.message : String(cause)}`);
-      });
-    });
-
-    const poll = async () => {
-      if (!sessionId || disposed) return;
-      try {
-        const snapshot = await provider.read(sessionId, offset);
-        offset = snapshot.offset;
-        if (snapshot.data) terminal.write(snapshot.data);
-        if (snapshot.status === "running") timer = window.setTimeout(() => void poll(), 60);
-        else terminal.writeln(`\r\n[processo encerrado: ${snapshot.exitCode ?? -1}]`);
-      } catch (cause) {
-        terminal.writeln(`\r\n[terminal] ${cause instanceof Error ? cause.message : String(cause)}`);
+    let mountedDisposable: { dispose(): void } | void;
+    try {
+      const mounted = provider.mount({ container, state });
+      if (mounted && typeof (mounted as PromiseLike<unknown>).then === "function") {
+        void Promise.resolve(mounted)
+          .then((disposable) => {
+            if (disposed) disposable?.dispose();
+            else mountedDisposable = disposable;
+          })
+          .catch((cause) => {
+            if (!disposed) container.textContent = cause instanceof Error ? cause.message : String(cause);
+          });
+      } else {
+        mountedDisposable = mounted as void | { dispose(): void };
       }
-    };
-
-    void prepareTerminalSessionOptions({
-      ...(workspaceRoot ? { workspaceRoot } : {}),
-      ...(selectedEnvironmentId ? { selectedEnvironmentId } : {}),
-      ...(pluginSettings ? { pluginSettings } : {}),
-    })
-      .then((prepared) => {
-        if (disposed) return undefined;
-        onIndicatorsChange(prepared.indicators);
-        return provider.create({
-          ...prepared.options,
-          cols: terminal.cols,
-          rows: terminal.rows,
-        });
-      })
-      .then((session) => {
-        if (!session) return;
-        if (disposed) return provider.close(session.id);
-        sessionId = session.id;
-        terminal.focus();
-        void poll();
-      })
-      .catch((cause) => terminal.writeln(`[terminal] ${cause instanceof Error ? cause.message : String(cause)}`));
+    } catch (cause) {
+      container.textContent = cause instanceof Error ? cause.message : String(cause);
+    }
 
     return () => {
       disposed = true;
-      observer.disconnect();
-      input.dispose();
-      if (timer) window.clearTimeout(timer);
-      if (sessionId) void provider.close(sessionId).catch(() => undefined);
-      onIndicatorsChange([]);
-      terminal.dispose();
+      mountedDisposable?.dispose();
+      container.replaceChildren();
     };
-  }, [provider, workspaceRoot, selectedEnvironmentId, pluginSettings, onIndicatorsChange]);
+  }, [provider, state]);
 
-  return <div className="terminal-surface" ref={containerRef} aria-label="Terminal do workspace" />;
+  return <div className="plugin-panel-host" ref={containerRef} data-panel-id={provider.id} />;
+}
+
+function WorkbenchToolWindowHost({
+  provider,
+  state,
+  visible,
+  height,
+  onClose,
+  onResize,
+  onResetHeight,
+}: {
+  readonly provider: WorkbenchToolWindowContribution;
+  readonly state: WorkbenchStateApi;
+  readonly visible: boolean;
+  readonly height: number;
+  readonly onClose: () => void;
+  readonly onResize: (event: React.PointerEvent<HTMLDivElement>) => void;
+  readonly onResetHeight: () => void;
+}) {
+  const headerContainerRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const headerContainer = headerContainerRef.current;
+    const container = containerRef.current;
+    if (!headerContainer || !container) return;
+    let disposed = false;
+    let mountedDisposable: { dispose(): void } | void;
+    try {
+      const mounted = provider.mount({ headerContainer, container, state, close: onClose });
+      if (mounted && typeof (mounted as PromiseLike<unknown>).then === "function") {
+        void Promise.resolve(mounted)
+          .then((disposable) => {
+            if (disposed) disposable?.dispose();
+            else mountedDisposable = disposable;
+          })
+          .catch((cause) => {
+            if (!disposed) container.textContent = cause instanceof Error ? cause.message : String(cause);
+          });
+      } else {
+        mountedDisposable = mounted as void | { dispose(): void };
+      }
+    } catch (cause) {
+      container.textContent = cause instanceof Error ? cause.message : String(cause);
+    }
+
+    return () => {
+      disposed = true;
+      mountedDisposable?.dispose();
+      headerContainer.replaceChildren();
+      container.replaceChildren();
+    };
+  }, [provider, state, onClose]);
+
+  return (
+    <section
+      className={`tool-window-panel${visible ? "" : " tool-window-panel--hidden"}`}
+      style={{ height }}
+      data-tool-window-id={provider.id}
+    >
+      <div
+        className="resize-handle resize-handle--panel"
+        role="separator"
+        aria-label={`Redimensionar ${provider.label}`}
+        onPointerDown={onResize}
+        onDoubleClick={onResetHeight}
+      />
+      <div className="panel-heading tool-window-heading">
+        <div className="tool-window-header-content" ref={headerContainerRef} />
+        <button
+          className="icon-button small"
+          type="button"
+          aria-label={`Fechar painel ${provider.label}`}
+          onClick={onClose}
+        ><X size={14} /></button>
+      </div>
+      <div className="plugin-panel-host" ref={containerRef} data-panel-id={provider.id} />
+    </section>
+  );
 }
 
 export function App() {
@@ -1053,8 +1073,10 @@ export function App() {
   const [sidebarWidth, setSidebarWidth] = useState(initialSession.sidebarWidth);
   const [panelVisible, setPanelVisible] = useState(initialSession.panelVisible);
   const [panelHeight, setPanelHeight] = useState(initialSession.panelHeight);
-  const [panelTab, setPanelTab] = useState<"output" | "problems" | "terminal">(initialSession.panelTab);
-  const [terminalSessionOpen, setTerminalSessionOpen] = useState(initialSession.panelTab === "terminal");
+  const [panelTab, setPanelTab] = useState(initialSession.panelTab);
+  const [toolWindowVisible, setToolWindowVisible] = useState(initialSession.toolWindowVisible);
+  const [toolWindowHeight, setToolWindowHeight] = useState(initialSession.toolWindowHeight);
+  const [activeToolWindowId, setActiveToolWindowId] = useState<string | undefined>(initialSession.activeToolWindowId);
   const [workspaceHandle, setWorkspaceHandle] = useState<BrowserDirectoryHandle>();
   const [workspaceName, setWorkspaceName] = useState(initialSession.workspaceName);
   const [workspaceRoot, setWorkspaceRoot] = useState<string | undefined>(initialSession.workspaceRoot);
@@ -1091,8 +1113,6 @@ export function App() {
   const [pluginRemovalId, setPluginRemovalId] = useState<string>();
   const [pluginSettingsOpenId, setPluginSettingsOpenId] = useState<string>();
   const [pluginSettingsDraft, setPluginSettingsDraft] = useState<PluginSettingValues>({});
-  const [terminalIndicators, setTerminalIndicators] = useState<readonly InteractiveSessionIndicator[]>([]);
-  const [terminalSessionRevision, setTerminalSessionRevision] = useState(0);
   const [restorationComplete, setRestorationComplete] = useState(false);
   const [error, setError] = useState<string>();
   const [workspaceAccess, setWorkspaceAccess] = useState<"ready" | "permission-required" | "missing">("ready");
@@ -1119,13 +1139,69 @@ export function App() {
   const editorHistoriesRef = useRef<Map<string, EditorHistory>>(new Map());
   const workspaceSettingsRef = useRef<WorkspaceSettings>(EMPTY_WORKSPACE_SETTINGS);
   const workspaceSettingsWriteQueueRef = useRef<Promise<WorkspaceSettings>>(Promise.resolve(EMPTY_WORKSPACE_SETTINGS));
+  const workbenchStateRef = useRef<WorkbenchStateSnapshot>({
+    workspaceName,
+    ...(workspaceRoot ? { workspaceRoot } : {}),
+    activePanelId: panelTab,
+    panelVisible,
+    ...(activeToolWindowId ? { activeToolWindowId } : {}),
+    toolWindowVisible,
+    ...(selectedEnvironmentId ? { selectedExecutionEnvironmentId: selectedEnvironmentId } : {}),
+    pluginSettings: workspaceSettings.plugins ?? {},
+  });
+  const workbenchStateListenersRef = useRef(new Set<(snapshot: WorkbenchStateSnapshot) => void>());
+  const workbenchState = useMemo<WorkbenchStateApi>(() => ({
+    snapshot: () => workbenchStateRef.current,
+    subscribe: (listener) => {
+      workbenchStateListenersRef.current.add(listener);
+      return { dispose: () => workbenchStateListenersRef.current.delete(listener) };
+    },
+  }), []);
 
   const activeDocument = documents.find((document) => document.id === activeDocumentId);
   const activeLanguageProvider = languageProviderFor(activeDocument);
-  const activeInteractiveSessionProvider = interactiveSessionProvider();
+  const workbenchPanels = platform.capabilities
+    .getAll<WorkbenchPanelHook>("workbench.panel.hook")
+    .flatMap((hook) => hook.contribute())
+    .slice()
+    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.label.localeCompare(right.label));
+  const workbenchToolWindows = platform.capabilities
+    .getAll<WorkbenchToolWindowHook>("workbench.toolWindow.hook")
+    .flatMap((hook) => hook.contribute())
+    .slice()
+    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.label.localeCompare(right.label));
+  const activeToolWindow = workbenchToolWindows.find((toolWindow) => toolWindow.id === activeToolWindowId);
   const selectedProfile = profilesState.profiles.find((profile) => profile.id === profilesState.selectedId);
   const settingsProviders = pluginSettingsProviders();
   const activePluginSettingsProvider = settingsProviders.find((provider) => provider.pluginId === pluginSettingsOpenId);
+
+  useEffect(() => {
+    const snapshot: WorkbenchStateSnapshot = {
+      workspaceName,
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+      activePanelId: panelTab,
+      panelVisible,
+      ...(activeToolWindowId ? { activeToolWindowId } : {}),
+      toolWindowVisible,
+      ...(selectedEnvironmentId ? { selectedExecutionEnvironmentId: selectedEnvironmentId } : {}),
+      pluginSettings: workspaceSettings.plugins ?? {},
+    };
+    workbenchStateRef.current = snapshot;
+    for (const listener of workbenchStateListenersRef.current) listener(snapshot);
+  }, [workspaceName, workspaceRoot, panelTab, panelVisible, activeToolWindowId, toolWindowVisible, selectedEnvironmentId, workspaceSettings.plugins]);
+
+  useEffect(() => {
+    const firstToolWindow = workbenchToolWindows[0];
+    if (!firstToolWindow) {
+      setActiveToolWindowId(undefined);
+      setToolWindowVisible(false);
+      return;
+    }
+    if (!activeToolWindowId || !workbenchToolWindows.some((toolWindow) => toolWindow.id === activeToolWindowId)) {
+      setActiveToolWindowId(firstToolWindow.id);
+      setToolWindowVisible(true);
+    }
+  }, [platformSnapshot.plugins, activeToolWindowId]);
 
   const replaceWorkspaceSettings = useCallback((settings: WorkspaceSettings) => {
     workspaceSettingsRef.current = settings;
@@ -1331,13 +1407,16 @@ export function App() {
       panelVisible,
       panelHeight,
       panelTab,
+      toolWindowVisible,
+      toolWindowHeight,
+      ...(activeToolWindowId ? { activeToolWindowId } : {}),
       workspaceName,
       ...(workspaceRoot ? { workspaceRoot } : {}),
       ...(activeDocumentId ? { activeDocumentId } : {}),
       expandedDirectories: [...expanded],
       explorerShowHidden,
     });
-  }, [sidebarView, sidebarVisible, sidebarWidth, panelVisible, panelHeight, panelTab, workspaceName, workspaceRoot, activeDocumentId, expanded, explorerShowHidden]);
+  }, [sidebarView, sidebarVisible, sidebarWidth, panelVisible, panelHeight, panelTab, toolWindowVisible, toolWindowHeight, activeToolWindowId, workspaceName, workspaceRoot, activeDocumentId, expanded, explorerShowHidden]);
 
   useEffect(() => {
     if (!restoredRef.current) return;
@@ -1802,6 +1881,16 @@ export function App() {
     await refreshExplorer(nextExpanded);
   };
 
+  const explorerHiddenEntriesVisible = explorerShowHidden || explorerRevealedHiddenPaths.size > 0;
+  const toggleExplorerHiddenEntries = () => {
+    const nextVisibility = nextExplorerHiddenVisibility(
+      explorerShowHidden,
+      explorerRevealedHiddenPaths,
+    );
+    setExplorerShowHidden(nextVisibility.showHidden);
+    setExplorerRevealedHiddenPaths(nextVisibility.revealedHiddenPaths);
+  };
+
   const revealActiveDocumentInExplorer = async () => {
     if (!workspaceHandle || !activeDocument?.path) return;
     const path = activeDocument.path;
@@ -2078,6 +2167,26 @@ export function App() {
     setContextMenu(undefined);
     if (target.kind === "entry") {
       const { entry } = target;
+      if (item.action === "runScript") {
+        if (entry.kind !== "file") throw new Error("O recurso selecionado não é um arquivo executável.");
+        const openDocument = documents.find((candidate) => candidate.path === entry.path);
+        const document = openDocument
+          ?? (entry.handle
+            ? await readFileDocument(entry.handle as BrowserFileHandle, entry.path)
+            : {
+                id: entry.path,
+                name: entry.name,
+                path: entry.path,
+                content: "",
+                savedContent: "",
+                selectionStart: 0,
+                selectionEnd: 0,
+                scrollTop: 0,
+                scrollLeft: 0,
+              });
+        await runDocumentScript(document);
+        return;
+      }
       if (item.command === "core.resource.open") {
         await (entry.kind === "file" ? openEntry(entry) : toggleEntry(entry));
         return;
@@ -2102,31 +2211,16 @@ export function App() {
         setExplorerPendingDeletion(entry);
         return;
       }
-      if (item.command === "core.resource.runScript") {
-        if (entry.kind !== "file") throw new Error("O recurso selecionado não é um arquivo executável.");
-        const openDocument = documents.find((candidate) => candidate.path === entry.path);
-        const document = openDocument
-          ?? (entry.handle
-            ? await readFileDocument(entry.handle as BrowserFileHandle, entry.path)
-            : {
-                id: entry.path,
-                name: entry.name,
-                path: entry.path,
-                content: "",
-                savedContent: "",
-                selectionStart: 0,
-                selectionEnd: 0,
-                scrollTop: 0,
-                scrollLeft: 0,
-              });
-        await runDocumentScript(document);
-        return;
-      }
+      if (!item.command) throw new Error(`A ação '${item.id}' não possui executor.`);
       await platform.commands.execute(item.command, resourceContext(entry));
       return;
     }
 
     const { document } = target;
+    if (item.action === "runScript") {
+      await runDocumentScript(document);
+      return;
+    }
     if (item.command === "core.tab.activate") {
       setActiveDocumentId(document.id);
       return;
@@ -2157,10 +2251,7 @@ export function App() {
       if (document.path) await navigator.clipboard?.writeText(document.path);
       return;
     }
-    if (item.command === "core.resource.runScript") {
-      await runDocumentScript(document);
-      return;
-    }
+    if (!item.command) throw new Error(`A ação '${item.id}' não possui executor.`);
     await platform.commands.execute(item.command, documentResourceContext(document));
   };
 
@@ -2440,6 +2531,30 @@ export function App() {
     window.addEventListener("pointerup", finish);
   };
 
+  const beginToolWindowResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startHeight = toolWindowHeight;
+    const move = (pointerEvent: PointerEvent) => setToolWindowHeight(Math.min(640, Math.max(120, startHeight + startY - pointerEvent.clientY)));
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+  };
+
+  const toggleToolWindow = (toolWindowId: string) => {
+    if (activeToolWindowId === toolWindowId) {
+      setToolWindowVisible((visible) => !visible);
+      return;
+    }
+    setActiveToolWindowId(toolWindowId);
+    setToolWindowVisible(true);
+  };
+
+  const closeToolWindow = useCallback(() => setToolWindowVisible(false), []);
+
   const installedIds = useMemo(() => new Set(platformSnapshot.plugins.map((plugin) => plugin.manifest.id)), [platformSnapshot.plugins]);
   const pluginPendingRemoval = platformSnapshot.plugins.find((plugin) => plugin.manifest.id === pluginRemovalId);
   const editingEnvironment = editingEnvironmentId
@@ -2466,10 +2581,6 @@ export function App() {
         [activePluginSettingsProvider.pluginId]: values,
       },
     }));
-    if (terminalSessionOpen) {
-      setTerminalIndicators([]);
-      setTerminalSessionRevision((revision) => revision + 1);
-    }
   };
 
   return (
@@ -2549,22 +2660,19 @@ export function App() {
               </IconButton>
             ) : null}
             <div className="activity-spacer" />
-            <IconButton label="Painel inferior" active={panelVisible} onClick={() => setPanelVisible((visible) => !visible)}>
-              <Terminal size={20} />
+            <IconButton label="Saída e problemas" active={panelVisible} onClick={() => setPanelVisible((visible) => !visible)}>
+              <PanelBottom size={20} />
             </IconButton>
-            {activeInteractiveSessionProvider ? (
+            {workbenchToolWindows.map((toolWindow) => (
               <IconButton
-                label="Terminal"
-                active={panelVisible && panelTab === "terminal"}
-                onClick={() => {
-                  setTerminalSessionOpen(true);
-                  setPanelTab("terminal");
-                  setPanelVisible(true);
-                }}
+                key={toolWindow.id}
+                label={toolWindow.label}
+                active={toolWindowVisible && activeToolWindowId === toolWindow.id}
+                onClick={() => toggleToolWindow(toolWindow.id)}
               >
-                <Code2 size={20} />
+                <Box size={20} />
               </IconButton>
-            ) : null}
+            ))}
           </aside>
 
           {sidebarVisible ? (
@@ -2598,9 +2706,9 @@ export function App() {
                               <RefreshCw size={15} /> Atualizar
                             </DropdownMenu.Item>
                             <DropdownMenu.Separator className="menu-separator" />
-                            <DropdownMenu.Item className="menu-item" onSelect={() => setExplorerShowHidden((visible) => !visible)}>
-                              {explorerShowHidden ? <EyeOff size={15} /> : <Eye size={15} />}
-                              {explorerShowHidden ? "Ocultar arquivos ocultos" : "Mostrar arquivos ocultos"}
+                            <DropdownMenu.Item className="menu-item" onSelect={toggleExplorerHiddenEntries}>
+                              {explorerHiddenEntriesVisible ? <EyeOff size={15} /> : <Eye size={15} />}
+                              {explorerHiddenEntriesVisible ? "Ocultar arquivos ocultos" : "Mostrar arquivos ocultos"}
                             </DropdownMenu.Item>
                           </DropdownMenu.Content>
                         </DropdownMenu.Portal>
@@ -2923,48 +3031,44 @@ export function App() {
               </div>
             )}
 
-            {panelVisible || terminalSessionOpen ? (
+            {panelVisible ? (
               <section className={`output-panel${panelVisible ? "" : " output-panel--hidden"}`} style={{ height: panelHeight }}>
                 <div className="resize-handle resize-handle--panel" role="separator" aria-label="Redimensionar painel inferior" onPointerDown={beginPanelResize} onDoubleClick={() => setPanelHeight(DEFAULT_LAYOUT.panelHeight)} />
                 <div className="panel-heading">
                   <div className="panel-tabs">
                     <button className={`panel-tab${panelTab === "output" ? " active" : ""}`} type="button" onClick={() => setPanelTab("output")}>SAÍDA</button>
                     <button className={`panel-tab${panelTab === "problems" ? " active" : ""}`} type="button" onClick={() => setPanelTab("problems")}>PROBLEMAS <span>{diagnostics.length}</span></button>
-                    {activeInteractiveSessionProvider && terminalSessionOpen ? (
-                      <div className={`panel-tab-group${panelTab === "terminal" ? " active" : ""}`}>
-                        <button className="panel-tab" type="button" onClick={() => setPanelTab("terminal")}>TERMINAL</button>
-                        <button
-                          className="panel-tab-close"
-                          type="button"
-                          aria-label="Encerrar terminal"
-                          title="Encerrar terminal"
-                          onClick={() => {
-                            setTerminalSessionOpen(false);
-                            setPanelTab("output");
-                          }}
-                        >
-                          <X size={12} />
-                        </button>
-                      </div>
-                    ) : null}
+                    {workbenchPanels.map((panel) => (
+                      <button
+                        className={`panel-tab${panelTab === panel.id ? " active" : ""}`}
+                        type="button"
+                        key={panel.id}
+                        onClick={() => setPanelTab(panel.id)}
+                      >{panel.label}</button>
+                    ))}
                   </div>
                   <button className="icon-button small" type="button" aria-label="Fechar painel" onClick={() => setPanelVisible(false)}><X size={14} /></button>
                 </div>
                 <pre hidden={panelTab !== "output"}>{output.join("\n")}</pre>
                 <div className="problems-list" hidden={panelTab !== "problems"}>{diagnostics.length ? diagnostics.map((diagnostic, index) => <button type="button" key={`${diagnostic.line}:${index}`}><strong>{diagnostic.severity}</strong><span>{diagnostic.line}:{diagnostic.column}</span><span>{diagnostic.message}</span></button>) : <p>Nenhum problema detectado.</p>}</div>
-                {activeInteractiveSessionProvider && terminalSessionOpen && restorationComplete ? (
-                  <div className="terminal-panel-host" hidden={panelTab !== "terminal"}>
-                    <InteractiveSessionPanel
-                      key={terminalSessionRevision}
-                      provider={activeInteractiveSessionProvider}
-                      {...(workspaceRoot ? { workspaceRoot } : {})}
-                      {...(selectedEnvironmentId ? { selectedEnvironmentId } : {})}
-                      {...(workspaceSettings.plugins ? { pluginSettings: workspaceSettings.plugins } : {})}
-                      onIndicatorsChange={setTerminalIndicators}
-                    />
+                {restorationComplete ? workbenchPanels.map((panel) => (
+                  <div className="plugin-panel-container" hidden={panelTab !== panel.id} key={panel.id}>
+                    <WorkbenchPanelHost provider={panel} state={workbenchState} />
                   </div>
-                ) : null}
+                )) : null}
               </section>
+            ) : null}
+
+            {restorationComplete && activeToolWindow ? (
+              <WorkbenchToolWindowHost
+                provider={activeToolWindow}
+                state={workbenchState}
+                visible={toolWindowVisible}
+                height={toolWindowHeight}
+                onClose={closeToolWindow}
+                onResize={beginToolWindowResize}
+                onResetHeight={() => setToolWindowHeight(DEFAULT_LAYOUT.toolWindowHeight)}
+              />
             ) : null}
           </main>
         </div>

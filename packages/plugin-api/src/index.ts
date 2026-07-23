@@ -76,15 +76,46 @@ export interface PluginRecord {
   readonly error?: string;
 }
 
+export interface PluginBackendRequestOptions {
+  readonly method?: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly body?: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface PluginBackendApi {
+  request<Response = unknown>(
+    path: string,
+    options?: PluginBackendRequestOptions,
+  ): Promise<Response>;
+}
+
 export interface PluginContext {
+  readonly backend: PluginBackendApi;
   readonly commands: CommandRegistryApi;
   readonly events: EventBusApi;
-  readonly capabilities: CapabilityRegistryApi;
+  readonly extensions: PluginExtensionApi;
   readonly subscriptions: Disposable[];
 }
 
+export interface PluginExtensionApi {
+  registerLanguageProvider(provider: LanguageProvider): Disposable;
+  registerResourceIconProvider(provider: ResourceIconProvider): Disposable;
+  registerExecutionEnvironmentProvider(provider: ExecutionEnvironmentProvider): Disposable;
+  registerExecutionProfileContributionProvider(provider: ExecutionProfileContributionProvider): Disposable;
+  registerScriptExecution(contribution: ScriptExecutionContribution): Disposable;
+  registerResourceContextMenuProvider(provider: ResourceContextMenuProvider): Disposable;
+  registerInteractiveSessionHook(provider: InteractiveSessionHookProvider): Disposable;
+  registerInteractiveSessionProvider(provider: InteractiveSessionProvider): Disposable;
+  getInteractiveSessionHooks(): readonly InteractiveSessionHookProvider[];
+  registerPluginSettingsProvider(provider: PluginSettingsProvider): Disposable;
+  registerWorkbenchPanelHook(hook: WorkbenchPanelHook): Disposable;
+  registerWorkbenchToolWindowHook(hook: WorkbenchToolWindowHook): Disposable;
+}
+
 export interface PluginModule {
-  activate(context: PluginContext): void | Promise<void>;
+  init(context: PluginContext): void | Promise<void>;
+  activate?(): void | Promise<void>;
   deactivate?(): void | Promise<void>;
 }
 
@@ -276,10 +307,13 @@ export const RESOURCE_ICON_CAPABILITY = "resource.icon";
 
 export type ResourceContextMenuIcon = "file" | "folder" | "play" | "copy" | "terminal" | "save" | "close";
 
+export type ResourceContextMenuAction = "runScript";
+
 export interface ResourceContextMenuItem {
   readonly id: string;
   readonly label: string;
-  readonly command: string;
+  readonly command?: string;
+  readonly action?: ResourceContextMenuAction;
   readonly group?: string;
   readonly order?: number;
   readonly icon?: ResourceContextMenuIcon;
@@ -320,6 +354,68 @@ export interface PluginSettingsProvider {
 }
 
 export const PLUGIN_SETTINGS_CAPABILITY = "plugin.settings";
+
+export interface WorkbenchStateSnapshot {
+  readonly workspaceName: string;
+  readonly workspaceRoot?: string;
+  readonly activePanelId: string;
+  readonly panelVisible: boolean;
+  readonly activeToolWindowId?: string;
+  readonly toolWindowVisible: boolean;
+  readonly selectedExecutionEnvironmentId?: string;
+  readonly pluginSettings: PluginSettingsMap;
+}
+
+export interface WorkbenchStateApi {
+  snapshot(): WorkbenchStateSnapshot;
+  subscribe(listener: (snapshot: WorkbenchStateSnapshot) => void): Disposable;
+}
+
+export interface WorkbenchPanelMountContext {
+  readonly container: HTMLElement;
+  readonly state: WorkbenchStateApi;
+}
+
+export interface WorkbenchPanelContribution {
+  readonly id: string;
+  readonly pluginId: string;
+  readonly label: string;
+  readonly order?: number;
+  mount(context: WorkbenchPanelMountContext): void | Disposable | Promise<void | Disposable>;
+}
+
+export interface WorkbenchPanelHook {
+  readonly id: string;
+  readonly pluginId: string;
+  contribute(): readonly WorkbenchPanelContribution[];
+}
+
+export const WORKBENCH_PANEL_HOOK = "workbench.panel.hook";
+
+export interface WorkbenchToolWindowContribution {
+  readonly id: string;
+  readonly pluginId: string;
+  readonly label: string;
+  readonly order?: number;
+  mount(context: WorkbenchToolWindowMountContext): void | Disposable | Promise<void | Disposable>;
+}
+
+export interface WorkbenchToolWindowMountContext extends WorkbenchPanelMountContext {
+  readonly headerContainer: HTMLElement;
+  close(): void;
+}
+
+export interface WorkbenchToolWindowHook {
+  readonly id: string;
+  readonly pluginId: string;
+  contribute(): readonly WorkbenchToolWindowContribution[];
+}
+
+export const WORKBENCH_TOOL_WINDOW_HOOK = "workbench.toolWindow.hook";
+
+export interface WorkbenchExtensionApi {
+  registerPanelHook(hook: WorkbenchPanelHook): Disposable;
+}
 
 export interface TerminalSessionInfo {
   readonly id: string;
@@ -399,6 +495,11 @@ export type InteractiveSessionProvider = TerminalProvider;
 
 export const INTERACTIVE_SESSION_PROVIDER_CAPABILITY = "interactive.session";
 export const INTERACTIVE_SESSION_HOOK_CAPABILITY = "interactive.session.hook";
+
+export interface InteractiveSessionExtensionApi {
+  registerProvider(provider: InteractiveSessionProvider): Disposable;
+  hooks(): readonly InteractiveSessionHookProvider[];
+}
 
 export type ExecutionEnvironmentType = string;
 

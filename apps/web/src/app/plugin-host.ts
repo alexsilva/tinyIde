@@ -4,33 +4,36 @@ type ImportedPluginModule = Partial<PluginModule> & {
   readonly default?: Partial<PluginModule>;
 };
 
-export interface ModulePluginHostOptions {
+export interface AppPluginHostOptions {
   readonly loadModule?: (plugin: PluginRecord) => Promise<unknown>;
 }
 
 function normalizeModule(imported: ImportedPluginModule): PluginModule {
-  const candidate = imported.activate ? imported : imported.default;
+  const candidate = imported.init ? imported : imported.default;
 
-  if (!candidate || typeof candidate.activate !== "function") {
-    throw new Error("Plugin frontend entrypoint must export an activate(context) function.");
+  if (!candidate || typeof candidate.init !== "function") {
+    throw new Error("Plugin frontend entrypoint must export an init(context) function.");
   }
 
   return {
-    activate: candidate.activate.bind(candidate),
+    init: candidate.init.bind(candidate),
+    ...(typeof candidate.activate === "function"
+      ? { activate: candidate.activate.bind(candidate) }
+      : {}),
     ...(typeof candidate.deactivate === "function"
       ? { deactivate: candidate.deactivate.bind(candidate) }
       : {}),
   };
 }
 
-export class ModulePluginHost implements PluginHost {
+export class AppPluginHost implements PluginHost {
   readonly #modules = new Map<
     string,
     { readonly module: PluginModule; readonly context: PluginContext }
   >();
   readonly #loadModule: (plugin: PluginRecord) => Promise<unknown>;
 
-  constructor(options: ModulePluginHostOptions = {}) {
+  constructor(options: AppPluginHostOptions = {}) {
     this.#loadModule =
       options.loadModule ??
       ((plugin) => {
@@ -45,7 +48,8 @@ export class ModulePluginHost implements PluginHost {
   async activate(plugin: PluginRecord, context: PluginContext): Promise<void> {
     const imported = (await this.#loadModule(plugin)) as ImportedPluginModule;
     const module = normalizeModule(imported);
-    await module.activate(context);
+    await module.init(context);
+    await module.activate?.();
     this.#modules.set(plugin.manifest.id, { module, context });
   }
 

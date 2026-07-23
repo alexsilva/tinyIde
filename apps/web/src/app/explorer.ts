@@ -63,6 +63,25 @@ export function hiddenExplorerEntryCount(entries: readonly WorkspaceEntry[] | un
   return entries?.filter((entry) => entry.name.startsWith(".")).length ?? 0;
 }
 
+export function nextExplorerHiddenVisibility(
+  showHidden: boolean,
+  revealedHiddenPaths: ReadonlySet<string>,
+): {
+  readonly showHidden: boolean;
+  readonly revealedHiddenPaths: ReadonlySet<string>;
+} {
+  if (showHidden || revealedHiddenPaths.size > 0) {
+    return {
+      showHidden: false,
+      revealedHiddenPaths: new Set(),
+    };
+  }
+  return {
+    showHidden: true,
+    revealedHiddenPaths,
+  };
+}
+
 export function expandNextExplorerLevel(
   entries: readonly WorkspaceEntry[],
   expanded: ReadonlySet<string>,

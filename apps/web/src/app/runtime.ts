@@ -9,17 +9,11 @@ import type {
   LanguageProvider,
   LanguageLintSettings,
   ProcessExecutionRequest,
-  PluginSettingsMap,
   PluginSettingsProvider,
   ResourceContext,
   ResourceIcon,
   ResourceIconProvider,
   ScriptExecutionContribution,
-  InteractiveSessionCreateOptions,
-  InteractiveSessionHookContribution,
-  InteractiveSessionHookProvider,
-  InteractiveSessionIndicator,
-  InteractiveSessionProvider,
   TextDiagnostic,
 } from "@tinyide/plugin-api";
 import type { OpenDocument } from "../browser-filesystem";
@@ -51,11 +45,6 @@ export interface RunProfileCallbacks {
   readonly onOutput: (lines: readonly string[]) => void;
 }
 
-export interface PreparedTerminalSession {
-  readonly options: InteractiveSessionCreateOptions;
-  readonly indicators: readonly InteractiveSessionIndicator[];
-}
-
 export function languageProviderFor(document: OpenDocument | undefined): LanguageProvider | undefined {
   if (!document) return undefined;
   const lowerName = document.name.toLocaleLowerCase();
@@ -81,54 +70,6 @@ export function resourceIconFor(resource: ResourceContext): ResourceIcon | undef
 
 export function environmentProvider(): ExecutionEnvironmentProvider | undefined {
   return platform.capabilities.getAll<ExecutionEnvironmentProvider>("execution.environment")[0];
-}
-
-export function interactiveSessionProvider(): InteractiveSessionProvider | undefined {
-  return platform.capabilities.getAll<InteractiveSessionProvider>("interactive.session")[0];
-}
-
-export function mergeTerminalSessionContributions(
-  contributions: readonly (InteractiveSessionHookContribution | undefined)[],
-): PreparedTerminalSession {
-  const environmentVariables: Record<string, string> = {};
-  const unsetEnvironmentVariables = new Set<string>();
-  const prependPathEntries: string[] = [];
-  const indicators: InteractiveSessionIndicator[] = [];
-  let promptPrefix: string | undefined;
-  for (const contribution of contributions) {
-    if (!contribution) continue;
-    for (const name of contribution.unsetEnvironmentVariables ?? []) unsetEnvironmentVariables.add(name);
-    Object.assign(environmentVariables, contribution.environmentVariables ?? {});
-    prependPathEntries.push(...(contribution.prependPathEntries ?? []));
-    indicators.push(...(contribution.indicators ?? []));
-    if (contribution.promptPrefix) promptPrefix = contribution.promptPrefix;
-    else if (!promptPrefix && contribution.indicators?.[0]?.label) {
-      promptPrefix = `(${contribution.indicators[0].label}) `;
-    }
-  }
-  return {
-    options: {
-      ...(Object.keys(environmentVariables).length ? { environmentVariables } : {}),
-      ...(unsetEnvironmentVariables.size ? { unsetEnvironmentVariables: [...unsetEnvironmentVariables] } : {}),
-      ...(prependPathEntries.length ? { prependPathEntries } : {}),
-      ...(promptPrefix ? { promptPrefix } : {}),
-    },
-    indicators,
-  };
-}
-
-export async function prepareTerminalSessionOptions(input: {
-  readonly workspaceRoot?: string;
-  readonly selectedEnvironmentId?: string;
-  readonly pluginSettings?: PluginSettingsMap;
-}): Promise<PreparedTerminalSession> {
-  const hooks = platform.capabilities.getAll<InteractiveSessionHookProvider>("interactive.session.hook");
-  const contributions = await Promise.all(hooks.map((hook) => hook.prepare({
-    ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),
-    ...(input.selectedEnvironmentId ? { selectedEnvironmentId: input.selectedEnvironmentId } : {}),
-    settings: input.pluginSettings?.[hook.pluginId] ?? {},
-  })));
-  return mergeTerminalSessionContributions(contributions);
 }
 
 export function pluginSettingsProviders(): readonly PluginSettingsProvider[] {

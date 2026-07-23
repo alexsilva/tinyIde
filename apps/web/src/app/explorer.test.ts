@@ -11,6 +11,7 @@ import {
   flattenVisibleEntries,
   joinWorkspacePath,
   nearestRemainingItemId,
+  nextExplorerHiddenVisibility,
   parentEntryPath,
   replaceWorkspacePathPrefix,
   workspacePathName,
@@ -62,6 +63,23 @@ describe("explorer model", () => {
       { name: ".meta", path: ".meta", kind: "file" },
       { name: "main.py", path: "main.py", kind: "file" },
     ])).toBe(2);
+  });
+
+  it("hides globally visible and locally revealed hidden entries together", () => {
+    const locallyRevealed = new Set(["src", "tests"]);
+
+    expect(nextExplorerHiddenVisibility(false, new Set())).toEqual({
+      showHidden: true,
+      revealedHiddenPaths: new Set(),
+    });
+    expect(nextExplorerHiddenVisibility(true, locallyRevealed)).toEqual({
+      showHidden: false,
+      revealedHiddenPaths: new Set(),
+    });
+    expect(nextExplorerHiddenVisibility(false, locallyRevealed)).toEqual({
+      showHidden: false,
+      revealedHiddenPaths: new Set(),
+    });
   });
 
   it("manipulates workspace paths consistently", () => {

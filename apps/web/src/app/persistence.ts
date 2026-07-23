@@ -21,7 +21,10 @@ export interface LayoutState {
   readonly sidebarView: PersistedSidebarView;
   readonly panelVisible: boolean;
   readonly panelHeight: number;
-  readonly panelTab: "output" | "problems" | "terminal";
+  readonly panelTab: string;
+  readonly toolWindowVisible: boolean;
+  readonly toolWindowHeight: number;
+  readonly activeToolWindowId?: string;
 }
 
 export interface SessionState extends LayoutState {
@@ -72,6 +75,8 @@ export const DEFAULT_LAYOUT: LayoutState = {
   panelVisible: true,
   panelHeight: 190,
   panelTab: "output",
+  toolWindowVisible: false,
+  toolWindowHeight: 240,
 };
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -97,9 +102,14 @@ export function readSession(): SessionState {
       sidebarView,
       panelVisible: parsed.panelVisible !== false,
       panelHeight: clamp(Number(parsed.panelHeight) || DEFAULT_LAYOUT.panelHeight, 96, 640),
-      panelTab: parsed.panelTab === "problems" || parsed.panelTab === "terminal"
+      panelTab: typeof parsed.panelTab === "string" && parsed.panelTab.trim()
         ? parsed.panelTab
         : "output",
+      toolWindowVisible: parsed.toolWindowVisible === true,
+      toolWindowHeight: clamp(Number(parsed.toolWindowHeight) || DEFAULT_LAYOUT.toolWindowHeight, 120, 640),
+      ...(typeof parsed.activeToolWindowId === "string" && parsed.activeToolWindowId.trim()
+        ? { activeToolWindowId: parsed.activeToolWindowId }
+        : {}),
       workspaceName: typeof parsed.workspaceName === "string" ? parsed.workspaceName : "Sem workspace",
       ...(typeof parsed.workspaceRoot === "string" ? { workspaceRoot: parsed.workspaceRoot } : {}),
       ...(typeof parsed.activeDocumentId === "string" ? { activeDocumentId: parsed.activeDocumentId } : {}),

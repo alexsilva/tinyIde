@@ -263,10 +263,13 @@ button { color: inherit; }
 .panel-tab-close:hover { color: #eef2f8; background: #252b36; }
 .terminal-indicator { align-self: center; max-width: 150px; margin: 0 3px 0 2px; border: 1px solid #365f4a; border-radius: 999px; padding: 2px 7px; background: #183126; color: #9ee2b9; font-size: 9px; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .output-panel pre { height: calc(100% - 36px); margin: 0; overflow: auto; padding: 10px 12px; color: #c4cbd5; font: 11px/1.55 "JetBrains Mono", Consolas, monospace; white-space: pre-wrap; }
-.terminal-panel-host { height: calc(100% - 36px); min-height: 0; }
-.terminal-surface { height: 100%; min-height: 0; padding: 8px 10px; background: #0e1116; }
-.terminal-surface .xterm { height: 100%; }
-.terminal-surface .xterm-viewport { scrollbar-gutter: stable; }
+.plugin-panel-container { height: calc(100% - 30px); min-height: 0; }
+.plugin-panel-host { height: 100%; min-height: 0; }
+.tool-window-panel { position: relative; display: grid; grid-template-rows: 30px minmax(0, 1fr); min-height: 120px; border-top: 1px solid var(--border); background: #0b0e13; overflow: hidden; }
+.tool-window-panel--hidden { display: none; }
+.tool-window-heading { padding-left: 0; }
+.tool-window-header-content { display: flex; align-items: stretch; min-width: 0; height: 100%; flex: 1; overflow: hidden; }
+.tool-window-panel > .plugin-panel-host { min-height: 0; }
 
 .statusbar { display: flex; align-items: center; gap: 12px; border-top: 1px solid #263047; background: #243760; color: #e8eeff; padding: 0 8px; font-size: 10px; }
 .statusbar button { color: inherit; font-size: 10px; }
