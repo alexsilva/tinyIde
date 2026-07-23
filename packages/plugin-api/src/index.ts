@@ -532,8 +532,22 @@ export interface TextEditorLineDecoration {
   readonly label?: string;
   readonly tooltip?: string;
   readonly change?: TextEditorLineChangePreview;
+  readonly actions?: readonly TextEditorLineDecorationAction[];
   /** Number of removed lines represented by a deletion marker at this line. */
   readonly deletedLineCount?: number;
+}
+
+export interface TextEditorLineDecorationAction {
+  readonly id: string;
+  readonly label: string;
+  readonly command: string;
+  readonly title?: string;
+}
+
+export interface TextEditorLineDecorationActionContext {
+  readonly document: TextEditorDocumentSnapshot;
+  readonly decoration: TextEditorLineDecoration;
+  readonly action: TextEditorLineDecorationAction;
 }
 
 export interface TextEditorLineSnapshot {

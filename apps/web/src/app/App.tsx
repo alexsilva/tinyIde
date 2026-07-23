@@ -705,10 +705,12 @@ function EditorLineDiffPeek({
   decoration,
   provider,
   onClose,
+  onAction,
 }: {
   readonly decoration: TextEditorLineDecoration;
   readonly provider: LanguageProvider | undefined;
   readonly onClose: () => void;
+  readonly onAction: (action: NonNullable<TextEditorLineDecoration["actions"]>[number]) => void;
 }) {
   const change = decoration.change;
   if (!change) return null;
@@ -734,7 +736,20 @@ function EditorLineDiffPeek({
           <span className={`editor-line-diff-peek__status is-${decoration.kind}`} />
           <strong>{decoration.label ?? decoration.tooltip ?? `Alteração na linha ${decoration.line}`}</strong>
         </div>
-        <button className="icon-button small" type="button" aria-label="Fechar diff da linha" onClick={onClose}><X size={14} /></button>
+        <div className="editor-line-diff-peek__actions">
+          {decoration.actions?.map((action) => (
+            <button
+              className="secondary-button small"
+              key={action.id}
+              type="button"
+              title={action.title}
+              onClick={() => onAction(action)}
+            >
+              {action.label}
+            </button>
+          ))}
+          <button className="icon-button small" type="button" aria-label="Fechar diff da linha" onClick={onClose}><X size={14} /></button>
+        </div>
       </div>
       <div className="editor-line-diff-peek__comparison">
         {renderSide("Antes", "before", change.before)}
@@ -3478,6 +3493,22 @@ export function App() {
                       decoration={selectedEditorLineDecoration}
                       provider={activeLanguageProvider}
                       onClose={() => setSelectedEditorLineDecoration(undefined)}
+                      onAction={(action) => {
+                        if (!activeDocument) return;
+                        invoke(async () => {
+                          await platform.commands.execute(action.command, {
+                            document: {
+                              id: activeDocument.id,
+                              name: activeDocument.name,
+                              ...(activeDocument.path ? { path: activeDocument.path } : {}),
+                              ...(activeDocument.workspaceRoot ? { workspaceRoot: activeDocument.workspaceRoot } : {}),
+                              content: activeDocument.content,
+                            },
+                            decoration: selectedEditorLineDecoration,
+                            action,
+                          });
+                        });
+                      }}
                     />
                   ) : null}
                   <div className={`editor-canvas${showEditorGutter ? " has-editor-gutter" : ""}${editorSettings.lineNumbers ? " has-line-numbers" : ""}`}>

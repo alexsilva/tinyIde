@@ -270,7 +270,9 @@ button { color: inherit; }
 .terminal-indicator { align-self: center; max-width: 150px; margin: 0 3px 0 2px; border: 1px solid #365f4a; border-radius: 999px; padding: 2px 7px; background: #183126; color: #9ee2b9; font-size: 9px; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .output-panel pre { height: calc(100% - 36px); margin: 0; overflow: auto; padding: 10px 12px; color: #c4cbd5; font: 11px/1.55 "JetBrains Mono", Consolas, monospace; white-space: pre-wrap; }
 .plugin-panel-container { height: calc(100% - 30px); min-height: 0; }
-.plugin-panel-host { height: 100%; min-height: 0; }
+.plugin-panel-host { height: 100%; min-height: 0; overflow: hidden; }
+.workbench-tool-window-view { height: 100%; min-height: 0; overflow: hidden; }
+.workbench-tool-window-view[hidden] { display: none; }
 .tool-window-panel { position: relative; display: grid; grid-template-rows: 30px minmax(0, 1fr); min-height: 120px; border-top: 1px solid var(--border); background: #0b0e13; overflow: hidden; }
 .tool-window-panel--hidden { display: none; }
 .tool-window-heading { padding-left: 0; }
@@ -568,6 +570,8 @@ button.editor-line-ruler__line:focus-visible { outline: none; background: #222b3
 .editor-line-diff-peek { flex: 0 0 auto; border-bottom: 1px solid #354052; background: #111720; box-shadow: 0 8px 20px rgb(0 0 0 / 18%); }
 .editor-line-diff-peek__heading { display: flex; align-items: center; justify-content: space-between; min-height: 34px; gap: 12px; padding: 5px 9px 5px 12px; border-bottom: 1px solid #293342; background: #171e29; }
 .editor-line-diff-peek__heading > div { display: flex; align-items: center; min-width: 0; gap: 8px; }
+.editor-line-diff-peek__actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+.editor-line-diff-peek__actions .secondary-button.small { min-height: 24px; padding: 3px 8px; font-size: 10px; }
 .editor-line-diff-peek__heading strong { overflow: hidden; color: #cbd4e2; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .editor-line-diff-peek__status { width: 4px; height: 18px; border-radius: 2px; background: #6d91df; }
 .editor-line-diff-peek__status.is-added { background: #55b876; }
