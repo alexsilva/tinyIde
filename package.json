@@ -13,7 +13,7 @@
     "build": "npm run build --workspaces --if-present",
     "preview": "vite preview --config apps/web/vite.config.mjs apps/web",
     "test": "vitest run packages apps/web/src --exclude '**/*.performance.test.ts'",
-    "test:performance": "vitest run apps/web/src/file-browser.performance.test.ts",
+    "test:performance": "vitest run apps/web/src/file-browser.performance.test.ts && npm run test:performance --prefix plugins/python-venv",
     "coverage:core": "vitest run packages --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.include='packages/core/src/**/*.ts' --coverage.exclude='packages/core/src/**/*.test.ts' --coverage.exclude='packages/core/src/index.ts' --coverage.thresholds.lines=100 --coverage.thresholds.functions=100 --coverage.thresholds.statements=100 --coverage.thresholds.branches=100",
     "coverage:web-critical": "vitest run apps/web/src/file-browser.test.ts apps/web/src/browser-filesystem.test.ts apps/web/src/app/workspace-settings.test.ts --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.include='apps/web/src/file-browser.ts' --coverage.include='apps/web/src/browser-filesystem.ts' --coverage.include='apps/web/src/app/workspace-settings.ts' --coverage.thresholds.lines=100 --coverage.thresholds.functions=100 --coverage.thresholds.statements=100 --coverage.thresholds.branches=100",
     "coverage:plugins": "npm run coverage --prefix plugins/python && npm run coverage --prefix plugins/python-venv",
