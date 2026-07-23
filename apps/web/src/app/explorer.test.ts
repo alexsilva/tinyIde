@@ -4,6 +4,7 @@ import {
   collapseDeepestExplorerLevel,
   expandNextExplorerLevel,
   explorerAncestorDirectoryPaths,
+  explorerDropTargetDirectory,
   explorerTargetDirectoryPath,
   explorerDirectoryEmptyState,
   explorerCreationInsertionIndex,
@@ -34,6 +35,14 @@ const entries: readonly WorkspaceEntry[] = [
 ];
 
 describe("explorer model", () => {
+  it("uses free space as root and files as their parent drop target", () => {
+    expect(explorerDropTargetDirectory(undefined, undefined)).toBe("");
+    expect(explorerDropTargetDirectory(undefined, undefined, "src")).toBe("src");
+    expect(explorerDropTargetDirectory("README.md", "file")).toBe("");
+    expect(explorerDropTargetDirectory("src/main.ts", "file")).toBe("src");
+    expect(explorerDropTargetDirectory("src/components", "directory")).toBe("src/components");
+  });
+
   it("resolves entries and contextual target directories", () => {
     expect(findWorkspaceEntry(entries, "src/main.py")?.name).toBe("main.py");
     expect(explorerTargetDirectoryPath(entries, "src")).toBe("src");

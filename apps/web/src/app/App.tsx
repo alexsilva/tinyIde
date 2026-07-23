@@ -105,6 +105,7 @@ import {
   collapseDeepestExplorerLevel,
   expandNextExplorerLevel,
   explorerAncestorDirectoryPaths,
+  explorerDropTargetDirectory,
   explorerDirectoryEmptyState,
   explorerCreationInsertionIndex,
   hiddenExplorerEntryCount,
@@ -652,7 +653,7 @@ function EntryTree({
   if (creationRow) treeItems.splice(creationIndex, 0, { type: "creation" });
 
   return (
-    <div className="tree">
+    <div className="tree" data-explorer-directory-path={parentPath}>
       {treeItems.map((item) => {
         if (item.type === "creation") {
           return <div key="explorer-creation-entry">{creationRow}</div>;
@@ -691,6 +692,7 @@ function EntryTree({
               <button
                 type="button"
                 data-explorer-path={entry.path}
+                data-explorer-kind={entry.kind}
                 draggable
                 className={`tree-entry tree-entry--${entry.kind}${highlightedPath === entry.path ? " is-new" : ""}${selectedPath === entry.path ? " is-selected" : ""}${draggingPath === entry.path ? " is-dragging" : ""}${dropTargetPath === entry.path ? " is-drop-target" : ""}`}
                 onDragStart={(event) => {
@@ -705,6 +707,7 @@ function EntryTree({
                 onDragOver={(event) => {
                   if (entry.kind !== "directory") return;
                   event.preventDefault();
+                  event.stopPropagation();
                   event.dataTransfer.dropEffect = "move";
                   onDropTargetPathChange(entry.path);
                 }}
@@ -714,6 +717,7 @@ function EntryTree({
                 onDrop={(event) => {
                   if (entry.kind !== "directory") return;
                   event.preventDefault();
+                  event.stopPropagation();
                   const sourcePath = event.dataTransfer.getData("application/x-tinyide-workspace-path");
                   onDropTargetPathChange(undefined);
                   if (sourcePath) onMove(sourcePath, entry.path);
@@ -3925,28 +3929,51 @@ export function App() {
               </div>
 
               {sidebarView === "explorer" ? (
-                <div className="sidebar-content explorer-content">
+                <div
+                  className={`sidebar-content explorer-content${dropTargetExplorerPath === "" ? " is-root-drop-target" : ""}`}
+                  onDragOver={(event) => {
+                    const target = (event.target as Element).closest<HTMLElement>("[data-explorer-path]");
+                    if (target?.dataset.explorerKind === "directory") return;
+                    const containingDirectoryPath = (event.target as Element)
+                      .closest<HTMLElement>("[data-explorer-directory-path]")
+                      ?.dataset.explorerDirectoryPath ?? "";
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    setDropTargetExplorerPath(explorerDropTargetDirectory(
+                      target?.dataset.explorerPath,
+                      target?.dataset.explorerKind as WorkspaceEntry["kind"] | undefined,
+                      containingDirectoryPath,
+                    ));
+                  }}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetExplorerPath(undefined);
+                  }}
+                  onDrop={(event) => {
+                    const target = (event.target as Element).closest<HTMLElement>("[data-explorer-path]");
+                    if (target?.dataset.explorerKind === "directory") return;
+                    const containingDirectoryPath = (event.target as Element)
+                      .closest<HTMLElement>("[data-explorer-directory-path]")
+                      ?.dataset.explorerDirectoryPath ?? "";
+                    event.preventDefault();
+                    const sourcePath = event.dataTransfer.getData("application/x-tinyide-workspace-path");
+                    const targetDirectoryPath = explorerDropTargetDirectory(
+                      target?.dataset.explorerPath,
+                      target?.dataset.explorerKind as WorkspaceEntry["kind"] | undefined,
+                      containingDirectoryPath,
+                    );
+                    setDropTargetExplorerPath(undefined);
+                    if (sourcePath && workspacePathParent(sourcePath) !== targetDirectoryPath) {
+                      invoke(() => moveExplorerEntry(sourcePath, targetDirectoryPath));
+                    }
+                  }}
+                >
                   {workspaceName !== "Sem workspace" ? (
                     <div
-                      className={`workspace-name${selectedExplorerPath === "" ? " is-selected" : ""}${dropTargetExplorerPath === "" ? " is-drop-target" : ""}`}
+                      className={`workspace-name${selectedExplorerPath === "" ? " is-selected" : ""}`}
                       data-explorer-root
                       role="treeitem"
                       tabIndex={0}
                       aria-selected={selectedExplorerPath === ""}
-                      onDragOver={(event) => {
-                        event.preventDefault();
-                        event.dataTransfer.dropEffect = "move";
-                        setDropTargetExplorerPath("");
-                      }}
-                      onDragLeave={(event) => {
-                        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetExplorerPath(undefined);
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        const sourcePath = event.dataTransfer.getData("application/x-tinyide-workspace-path");
-                        setDropTargetExplorerPath(undefined);
-                        if (sourcePath) invoke(() => moveExplorerEntry(sourcePath, ""));
-                      }}
                       onClick={(event) => {
                         if ((event.target as Element).closest("button")) return;
                         setSelectedExplorerPath("");

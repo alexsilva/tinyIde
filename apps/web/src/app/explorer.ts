@@ -6,6 +6,15 @@ export function workspacePathParent(path: string): string {
   return segments.join("/");
 }
 
+export function explorerDropTargetDirectory(
+  path: string | undefined,
+  kind: WorkspaceEntry["kind"] | undefined,
+  containingDirectoryPath = "",
+): string {
+  if (!path) return containingDirectoryPath;
+  return kind === "directory" ? path : workspacePathParent(path);
+}
+
 export function workspacePathName(path: string): string {
   return path.split("/").filter(Boolean).at(-1) ?? "";
 }
