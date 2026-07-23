@@ -24,6 +24,7 @@ import type {
   WorkbenchApi,
   WorkbenchDialogContribution,
   WorkbenchTextEditorReplaceContentRequest,
+  WorkbenchTextEditorSaveRequest,
   WorkbenchTextHighlightRequest,
   WorkbenchTextHighlightResult,
   WorkbenchPanelHook,
@@ -63,6 +64,7 @@ interface WorkbenchBinding {
   openToolWindow(id: string): void;
   openDialog(dialog: WorkbenchDialogContribution): Disposable;
   replaceEditorContent(request: WorkbenchTextEditorReplaceContentRequest): Promise<void>;
+  saveEditorDocument(request: WorkbenchTextEditorSaveRequest): Promise<void>;
   highlightText(request: WorkbenchTextHighlightRequest): WorkbenchTextHighlightResult;
 }
 
@@ -80,6 +82,10 @@ class AppWorkbenchApi implements WorkbenchApi {
     replaceContent: async (request: WorkbenchTextEditorReplaceContentRequest): Promise<void> => {
       if (!this.#binding) throw new Error("O workbench ainda não está disponível.");
       await this.#binding.replaceEditorContent(request);
+    },
+    save: async (request: WorkbenchTextEditorSaveRequest): Promise<void> => {
+      if (!this.#binding) throw new Error("O workbench ainda não está disponível.");
+      await this.#binding.saveEditorDocument(request);
     },
   };
 

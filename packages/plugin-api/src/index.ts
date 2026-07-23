@@ -566,8 +566,13 @@ export interface WorkbenchTextEditorReplaceContentRequest {
   readonly selectionEnd?: number;
 }
 
+export interface WorkbenchTextEditorSaveRequest {
+  readonly documentId: string;
+}
+
 export interface WorkbenchTextEditorApi {
   replaceContent(request: WorkbenchTextEditorReplaceContentRequest): Promise<void>;
+  save(request: WorkbenchTextEditorSaveRequest): Promise<void>;
 }
 
 export interface WorkbenchApi {

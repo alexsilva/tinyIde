@@ -1977,6 +1977,13 @@ export function App() {
         isDirty: changedDocument.content !== changedDocument.savedContent,
       });
     },
+    async saveEditorDocument(request) {
+      const currentDocument = documentsRef.current.find((document) => document.id === request.documentId);
+      if (!currentDocument) throw new Error(`Documento não encontrado: ${request.documentId}`);
+      if (currentDocument.kind !== "text") throw new Error("Este recurso não é um documento de texto editável.");
+      if (currentDocument.content === currentDocument.savedContent) return;
+      await saveOpenDocument(currentDocument);
+    },
     highlightText(request) {
       const lowerName = request.fileName.toLocaleLowerCase();
       const provider = platform.capabilities
@@ -2910,7 +2917,9 @@ export function App() {
       handle = await window.showSaveFilePicker({ suggestedName: document.name });
     }
     const saved = await writeFileDocument(document, handle);
-    setDocuments((current) => current.map((item) => item.id === document.id ? saved : item));
+    const nextDocuments = documentsRef.current.map((item) => item.id === document.id ? saved : item);
+    documentsRef.current = nextDocuments;
+    setDocuments(nextDocuments);
     const savedEvent: TextEditorDocumentSavedEvent = {
       document: {
         id: saved.id,
