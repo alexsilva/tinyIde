@@ -21,6 +21,7 @@ const context = (): PluginContext => ({
   commands: {} as PluginContext["commands"],
   events: {} as PluginContext["events"],
   extensions: {} as PluginContext["extensions"],
+  workbench: {} as PluginContext["workbench"],
   subscriptions: [],
 });
 

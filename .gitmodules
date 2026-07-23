@@ -7,3 +7,6 @@
 [submodule "plugins/terminal"]
 	path = plugins/terminal
 	url = ./.repos/tinyide-terminal
+[submodule "plugins/git"]
+	path = plugins/git
+	url = ./.repos/tinyide-git

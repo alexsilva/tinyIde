@@ -57,12 +57,18 @@ import type {
   ResourceContext,
   ResourceContextMenuItem,
   ResourceContextMenuProvider,
+  TextEditorLineDecoration,
   TextDiagnostic,
+  WorkbenchDialogContribution,
   WorkbenchPanelContribution,
+  WorkbenchPanelHookContribution,
+  WorkbenchTabApi,
+  WorkbenchTabContribution,
   WorkbenchPanelHook,
   WorkbenchStateApi,
   WorkbenchStateSnapshot,
   WorkbenchToolWindowContribution,
+  WorkbenchToolWindowHookContribution,
   WorkbenchToolWindowHook,
 } from "@tinyide/plugin-api";
 import {
@@ -125,6 +131,7 @@ import {
   scriptExecutionFor,
   setHostWorkspace,
   stopHostProcess,
+  textEditorLineDecorationProviders,
 } from "./runtime";
 import {
   resolvePluginSettingValues,
@@ -163,6 +170,172 @@ interface ContextMenuState {
   readonly x: number;
   readonly y: number;
   readonly items: readonly ResourceContextMenuItem[];
+}
+
+function expandWorkbenchPanelContribution(
+  contribution: WorkbenchPanelHookContribution,
+): readonly WorkbenchPanelContribution[] {
+  if (!("tabs" in contribution)) return [contribution];
+  return contribution.tabs.map((tab) => ({
+    id: tab.id,
+    pluginId: contribution.pluginId,
+    label: tab.label,
+    ...((tab.order ?? contribution.order) !== undefined ? { order: tab.order ?? contribution.order } : {}),
+    mount: tab.mount,
+  }));
+}
+
+function expandWorkbenchToolWindowContribution(
+  contribution: WorkbenchToolWindowHookContribution,
+): readonly WorkbenchToolWindowContribution[] {
+  if (!("views" in contribution)) return [contribution];
+  return [{
+    id: contribution.id,
+    pluginId: contribution.pluginId,
+    label: contribution.label,
+    ...(contribution.order !== undefined ? { order: contribution.order } : {}),
+    mount({ container, headerContainer, tabs, state }) {
+      container.replaceChildren();
+      const views = [...contribution.views]
+        .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.label.localeCompare(right.label));
+      const sections = new Map<string, HTMLElement>();
+      const tabDisposables: Array<{ dispose(): void }> = [];
+      const mountedDisposables: Array<{ dispose(): void }> = [];
+      let disposed = false;
+
+      const activate = (id: string) => {
+        for (const [viewId, section] of sections) section.hidden = viewId !== id;
+      };
+
+      for (const view of views) {
+        const section = document.createElement("section");
+        section.className = "workbench-tool-window-view";
+        section.dataset.viewId = view.id;
+        section.hidden = true;
+        container.append(section);
+        sections.set(view.id, section);
+        tabDisposables.push(tabs.register({
+          id: view.id,
+          label: view.label,
+          ...(view.order !== undefined ? { order: view.order } : {}),
+          onSelect: () => activate(view.id),
+        }));
+        try {
+          const mounted = view.mount({ container: section, state });
+          if (mounted && typeof (mounted as PromiseLike<unknown>).then === "function") {
+            void Promise.resolve(mounted).then((result) => {
+              if (!result) return;
+              if (disposed) result.dispose();
+              else mountedDisposables.push(result);
+            }).catch((cause) => {
+              if (!disposed) section.textContent = cause instanceof Error ? cause.message : String(cause);
+            });
+          } else if (mounted) {
+            mountedDisposables.push(mounted as { dispose(): void });
+          }
+        } catch (cause) {
+          section.textContent = cause instanceof Error ? cause.message : String(cause);
+        }
+      }
+
+      const firstView = views[0];
+      if (firstView) tabs.select(firstView.id);
+      return {
+        dispose() {
+          disposed = true;
+          mountedDisposables.forEach((item) => item.dispose());
+          tabDisposables.forEach((item) => item.dispose());
+          container.replaceChildren();
+        },
+      };
+    },
+  }];
+}
+
+function createWorkbenchTabApi(container: HTMLElement): WorkbenchTabApi & { dispose(): void } {
+  const strip = document.createElement("div");
+  strip.className = "workbench-tab-strip";
+  container.append(strip);
+  const tabs = new Map<string, { contribution: WorkbenchTabContribution; element: HTMLDivElement }>();
+  let activeId: string | undefined;
+
+  const renderSelection = () => {
+    for (const [id, record] of tabs) {
+      const active = id === activeId;
+      record.element.classList.toggle("is-active", active);
+      record.element.querySelector("button[role='tab']")?.setAttribute("aria-selected", String(active));
+    }
+  };
+
+  const select = (id: string) => {
+    const record = tabs.get(id);
+    if (!record) return;
+    activeId = id;
+    renderSelection();
+    record.contribution.onSelect();
+  };
+
+  return {
+    register(contribution) {
+      if (tabs.has(contribution.id)) throw new Error(`Aba já registrada: ${contribution.id}`);
+      const group = document.createElement("div");
+      group.className = "workbench-tab-group";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.role = "tab";
+      button.className = "workbench-tab";
+      button.textContent = contribution.label;
+      button.addEventListener("click", () => select(contribution.id));
+      group.append(button);
+      if (contribution.closable) {
+        const closeButton = document.createElement("button");
+        closeButton.type = "button";
+        closeButton.className = "workbench-tab-close";
+        closeButton.setAttribute("aria-label", `Fechar ${contribution.label}`);
+        closeButton.textContent = "×";
+        closeButton.addEventListener("click", (event) => {
+          event.stopPropagation();
+          void contribution.onClose?.();
+        });
+        group.append(closeButton);
+      }
+      tabs.set(contribution.id, { contribution, element: group });
+      const ordered = [...tabs.entries()].sort(([, left], [, right]) =>
+        (left.contribution.order ?? 0) - (right.contribution.order ?? 0)
+        || left.contribution.label.localeCompare(right.contribution.label));
+      strip.replaceChildren(...ordered.map(([, record]) => record.element));
+      if (!activeId) select(contribution.id);
+      else renderSelection();
+      return {
+        dispose() {
+          const wasActive = activeId === contribution.id;
+          tabs.delete(contribution.id);
+          group.remove();
+          if (wasActive) {
+            activeId = tabs.keys().next().value;
+            if (activeId) select(activeId);
+          }
+        },
+      };
+    },
+    select,
+    activeId: () => activeId,
+    dispose() {
+      tabs.clear();
+      activeId = undefined;
+      strip.remove();
+    },
+  };
+}
+
+interface ActiveWorkbenchDialog {
+  readonly token: symbol;
+  readonly contribution: WorkbenchDialogContribution;
+}
+
+function lineDecorationClassName(decorations: readonly TextEditorLineDecoration[]): string {
+  const kinds = [...new Set(decorations.map((decoration) => decoration.kind))];
+  return kinds.map((kind) => ` has-${kind}`).join("");
 }
 
 function lintSettingsStorageKey(workspaceName: string, providerId: string): string {
@@ -511,6 +684,64 @@ function HighlightedSource({ source, provider }: { readonly source: string; read
   if (cursor < source.length) fragments.push(source.slice(cursor));
   fragments.push("\n");
   return <>{fragments}</>;
+}
+
+function HighlightedLine({ source, provider }: { readonly source: string; readonly provider: LanguageProvider | undefined }) {
+  if (!provider) return <>{source}</>;
+  const tokens = [...provider.highlight(source)].sort((left, right) => left.start - right.start);
+  const fragments: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const token of tokens) {
+    if (token.start < cursor || token.start < 0 || token.end > source.length) continue;
+    if (token.start > cursor) fragments.push(source.slice(cursor, token.start));
+    fragments.push(<span className={`syntax-${token.scope}`} key={`${token.start}:${token.end}`}>{source.slice(token.start, token.end)}</span>);
+    cursor = token.end;
+  }
+  if (cursor < source.length) fragments.push(source.slice(cursor));
+  return <>{fragments}</>;
+}
+
+function EditorLineDiffPeek({
+  decoration,
+  provider,
+  onClose,
+}: {
+  readonly decoration: TextEditorLineDecoration;
+  readonly provider: LanguageProvider | undefined;
+  readonly onClose: () => void;
+}) {
+  const change = decoration.change;
+  if (!change) return null;
+  const allLines = [...change.before, ...change.after].map((line) => line.line);
+  const width = Math.max(2, String(Math.max(1, ...allLines)).length);
+  const renderSide = (label: string, kind: "before" | "after", lines: typeof change.before) => (
+    <section className={`editor-line-diff-peek__side is-${kind}`}>
+      <header>{label}</header>
+      <div className="editor-line-diff-peek__code">
+        {lines.length ? lines.map((line) => (
+          <div className="editor-line-diff-peek__row" key={`${kind}:${line.line}`}>
+            <span>{String(line.line).padStart(width, "0")}</span>
+            <pre><HighlightedLine source={line.content} provider={provider} /></pre>
+          </div>
+        )) : <div className="editor-line-diff-peek__empty">Sem conteúdo</div>}
+      </div>
+    </section>
+  );
+  return (
+    <section className="editor-line-diff-peek" aria-label={`Diferença da linha ${decoration.line}`}>
+      <div className="editor-line-diff-peek__heading">
+        <div>
+          <span className={`editor-line-diff-peek__status is-${decoration.kind}`} />
+          <strong>{decoration.label ?? decoration.tooltip ?? `Alteração na linha ${decoration.line}`}</strong>
+        </div>
+        <button className="icon-button small" type="button" aria-label="Fechar diff da linha" onClick={onClose}><X size={14} /></button>
+      </div>
+      <div className="editor-line-diff-peek__comparison">
+        {renderSide("Antes", "before", change.before)}
+        {renderSide("Depois", "after", change.after)}
+      </div>
+    </section>
+  );
 }
 
 function DiagnosticLayer({
@@ -1016,8 +1247,9 @@ function WorkbenchToolWindowHost({
     if (!headerContainer || !container) return;
     let disposed = false;
     let mountedDisposable: { dispose(): void } | void;
+    const tabs = createWorkbenchTabApi(headerContainer);
     try {
-      const mounted = provider.mount({ headerContainer, container, state, close: onClose });
+      const mounted = provider.mount({ headerContainer, container, state, tabs, close: onClose });
       if (mounted && typeof (mounted as PromiseLike<unknown>).then === "function") {
         void Promise.resolve(mounted)
           .then((disposable) => {
@@ -1037,6 +1269,7 @@ function WorkbenchToolWindowHost({
     return () => {
       disposed = true;
       mountedDisposable?.dispose();
+      tabs.dispose();
       headerContainer.replaceChildren();
       container.replaceChildren();
     };
@@ -1067,6 +1300,48 @@ function WorkbenchToolWindowHost({
       <div className="plugin-panel-host" ref={containerRef} data-panel-id={provider.id} />
     </section>
   );
+}
+
+function WorkbenchDialogHost({
+  provider,
+  onClose,
+}: {
+  readonly provider: WorkbenchDialogContribution;
+  readonly onClose: () => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    let disposed = false;
+    let mountedDisposable: { dispose(): void } | void;
+    try {
+      const mounted = provider.mount({ container, close: onClose });
+      if (mounted && typeof (mounted as PromiseLike<unknown>).then === "function") {
+        void Promise.resolve(mounted)
+          .then((disposable) => {
+            if (disposed) disposable?.dispose();
+            else mountedDisposable = disposable;
+          })
+          .catch((cause) => {
+            if (!disposed) container.textContent = cause instanceof Error ? cause.message : String(cause);
+          });
+      } else {
+        mountedDisposable = mounted as void | { dispose(): void };
+      }
+    } catch (cause) {
+      container.textContent = cause instanceof Error ? cause.message : String(cause);
+    }
+
+    return () => {
+      disposed = true;
+      mountedDisposable?.dispose();
+      container.replaceChildren();
+    };
+  }, [provider, onClose]);
+
+  return <div className="plugin-dialog-host" ref={containerRef} data-dialog-id={provider.id} />;
 }
 
 export function App() {
@@ -1119,6 +1394,10 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSectionId, setSettingsSectionId] = useState("editor");
   const [pluginSettingsDraft, setPluginSettingsDraft] = useState<PluginSettingValues>({});
+  const [workbenchDialog, setWorkbenchDialog] = useState<ActiveWorkbenchDialog>();
+  const [editorLineDecorations, setEditorLineDecorations] = useState<readonly TextEditorLineDecoration[]>([]);
+  const [selectedEditorLineDecoration, setSelectedEditorLineDecoration] = useState<TextEditorLineDecoration>();
+  const [editorDecorationRevision, setEditorDecorationRevision] = useState(0);
   const [restorationComplete, setRestorationComplete] = useState(false);
   const [error, setError] = useState<string>();
   const [workspaceAccess, setWorkspaceAccess] = useState<"ready" | "permission-required" | "missing">("ready");
@@ -1167,16 +1446,18 @@ export function App() {
 
   const activeDocument = documents.find((document) => document.id === activeDocumentId);
   const activeLanguageProvider = languageProviderFor(activeDocument);
-  const workbenchPanels = platform.capabilities
+  const workbenchPanels = useMemo(() => platform.capabilities
     .getAll<WorkbenchPanelHook>("workbench.panel.hook")
     .flatMap((hook) => hook.contribute())
+    .flatMap(expandWorkbenchPanelContribution)
     .slice()
-    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.label.localeCompare(right.label));
-  const workbenchToolWindows = platform.capabilities
+    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.label.localeCompare(right.label)), [platformSnapshot]);
+  const workbenchToolWindows = useMemo(() => platform.capabilities
     .getAll<WorkbenchToolWindowHook>("workbench.toolWindow.hook")
     .flatMap((hook) => hook.contribute())
+    .flatMap(expandWorkbenchToolWindowContribution)
     .slice()
-    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.label.localeCompare(right.label));
+    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.label.localeCompare(right.label)), [platformSnapshot]);
   const activeToolWindow = workbenchToolWindows.find((toolWindow) => toolWindow.id === activeToolWindowId);
   const selectedProfile = profilesState.profiles.find((profile) => profile.id === profilesState.selectedId);
   const settingsProviders = pluginSettingsProviders();
@@ -1184,7 +1465,18 @@ export function App() {
     ? undefined
     : settingsProviders.find((provider) => provider.pluginId === settingsSectionId);
   const editorSettings = resolveEditorSettings(workspaceSettings);
-  const editorRulerText = activeDocument ? editorLineNumbers(activeDocument.content).join("\n") : "1";
+  const editorRulerLines = activeDocument ? editorLineNumbers(activeDocument.content) : ["01"];
+  const editorDecorationsByLine = useMemo(() => {
+    const grouped = new Map<number, TextEditorLineDecoration[]>();
+    for (const decoration of editorLineDecorations) {
+      if (!Number.isInteger(decoration.line) || decoration.line < 1) continue;
+      const items = grouped.get(decoration.line) ?? [];
+      items.push(decoration);
+      grouped.set(decoration.line, items);
+    }
+    return grouped;
+  }, [editorLineDecorations]);
+  const showEditorGutter = editorSettings.lineNumbers || editorLineDecorations.length > 0;
 
   useEffect(() => {
     const snapshot: WorkbenchStateSnapshot = {
@@ -1200,6 +1492,85 @@ export function App() {
     workbenchStateRef.current = snapshot;
     for (const listener of workbenchStateListenersRef.current) listener(snapshot);
   }, [workspaceName, workspaceRoot, panelTab, panelVisible, activeToolWindowId, toolWindowVisible, selectedEnvironmentId, workspaceSettings.plugins]);
+
+  useEffect(() => platform.workbench.bind({
+    openToolWindow(id) {
+      if (!workbenchToolWindows.some((toolWindow) => toolWindow.id === id)) {
+        throw new Error(`Tool window não registrada: ${id}`);
+      }
+      setActiveToolWindowId(id);
+      setPanelVisible(false);
+      setToolWindowVisible(true);
+    },
+    openDialog(contribution) {
+      const token = Symbol(contribution.id);
+      setWorkbenchDialog({ token, contribution });
+      return {
+        dispose: () => {
+          setWorkbenchDialog((current) => current?.token === token ? undefined : current);
+        },
+      };
+    },
+    highlightText(request) {
+      const lowerName = request.fileName.toLocaleLowerCase();
+      const provider = platform.capabilities
+        .getAll<LanguageProvider>("language.provider")
+        .find((candidate) => candidate.extensions.some((extension) => lowerName.endsWith(extension)));
+      return {
+        ...(provider ? { languageId: provider.id } : {}),
+        tokens: provider?.highlight(request.source) ?? [],
+      };
+    },
+  }).dispose, [platformSnapshot.plugins]);
+
+  useEffect(() => {
+    if (!workbenchDialog) return;
+    const installed = platformSnapshot.plugins.some(
+      (plugin) => plugin.manifest.id === workbenchDialog.contribution.pluginId && plugin.state === "active",
+    );
+    if (!installed) setWorkbenchDialog(undefined);
+  }, [platformSnapshot.plugins, workbenchDialog?.contribution.pluginId]);
+
+  useEffect(() => {
+    const subscriptions = textEditorLineDecorationProviders()
+      .map((provider) => provider.onDidChange?.(() => setEditorDecorationRevision((current) => current + 1)))
+      .filter((subscription): subscription is { dispose(): void } => Boolean(subscription));
+    return () => subscriptions.forEach((subscription) => subscription.dispose());
+  }, [platformSnapshot.plugins]);
+
+  useEffect(() => {
+    if (!activeDocument?.path || !workspaceRoot) {
+      setEditorLineDecorations([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const document = {
+        id: activeDocument.id,
+        name: activeDocument.name,
+        ...(activeDocument.path ? { path: activeDocument.path } : {}),
+        workspaceRoot: activeDocument.workspaceRoot ?? workspaceRoot,
+        content: activeDocument.content,
+      };
+      void Promise.all(textEditorLineDecorationProviders().map(async (provider) => {
+        try {
+          return await provider.provideDecorations(document);
+        } catch {
+          return [];
+        }
+      })).then((items) => {
+        if (!cancelled) setEditorLineDecorations(items.flat());
+      });
+    }, 140);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeDocument?.id, activeDocument?.path, activeDocument?.content, activeDocument?.workspaceRoot, workspaceRoot, editorDecorationRevision, platformSnapshot.plugins]);
+
+  useEffect(() => {
+    setSelectedEditorLineDecoration(undefined);
+  }, [activeDocument?.id]);
 
   useEffect(() => {
     const next = reconcileToolWindowLayout({
@@ -2170,6 +2541,7 @@ export function App() {
     }
 
     setBusy(true);
+    setToolWindowVisible(false);
     setPanelVisible(true);
     setPanelTab("output");
     try {
@@ -2208,6 +2580,7 @@ export function App() {
       throw new Error("Configure um ambiente de execução pronto antes de executar o arquivo.");
     }
     setBusy(true);
+    setToolWindowVisible(false);
     setPanelVisible(true);
     setPanelTab("output");
     try {
@@ -2621,11 +2994,24 @@ export function App() {
 
   const toggleToolWindow = (toolWindowId: string) => {
     if (activeToolWindowId === toolWindowId) {
-      setToolWindowVisible((visible) => !visible);
+      setToolWindowVisible((visible) => {
+        const next = !visible;
+        if (next) setPanelVisible(false);
+        return next;
+      });
       return;
     }
     setActiveToolWindowId(toolWindowId);
+    setPanelVisible(false);
     setToolWindowVisible(true);
+  };
+
+  const toggleOutputPanel = () => {
+    setPanelVisible((visible) => {
+      const next = !visible;
+      if (next) setToolWindowVisible(false);
+      return next;
+    });
   };
 
   const closeToolWindow = useCallback(() => setToolWindowVisible(false), []);
@@ -2781,7 +3167,7 @@ export function App() {
               </IconButton>
             ) : null}
             <div className="activity-spacer" />
-            <IconButton label="Saída e problemas" active={panelVisible} onClick={() => setPanelVisible((visible) => !visible)}>
+            <IconButton label="Saída e problemas" active={panelVisible} onClick={toggleOutputPanel}>
               <PanelBottom size={20} />
             </IconButton>
             {workbenchToolWindows.map((toolWindow) => (
@@ -3087,10 +3473,45 @@ export function App() {
                   </div>
                 </div>
                 <div className="editor-stack">
-                  <div className={`editor-canvas${editorSettings.lineNumbers ? " has-line-numbers" : ""}`}>
-                    {editorSettings.lineNumbers ? (
-                      <div className="editor-line-ruler" aria-hidden="true">
-                        <pre ref={editorLineRulerRef}>{editorRulerText}</pre>
+                  {selectedEditorLineDecoration?.change ? (
+                    <EditorLineDiffPeek
+                      decoration={selectedEditorLineDecoration}
+                      provider={activeLanguageProvider}
+                      onClose={() => setSelectedEditorLineDecoration(undefined)}
+                    />
+                  ) : null}
+                  <div className={`editor-canvas${showEditorGutter ? " has-editor-gutter" : ""}${editorSettings.lineNumbers ? " has-line-numbers" : ""}`}>
+                    {showEditorGutter ? (
+                      <div className={`editor-line-ruler${editorSettings.lineNumbers ? "" : " decorations-only"}`}>
+                        <pre ref={editorLineRulerRef}>
+                          {editorRulerLines.map((lineNumber, index) => {
+                            const line = index + 1;
+                            const decorations = editorDecorationsByLine.get(line) ?? [];
+                            const changeDecoration = decorations.find((decoration) => decoration.change);
+                            const tooltip = decorations
+                              .map((decoration) => decoration.tooltip ?? decoration.label)
+                              .filter((value): value is string => Boolean(value))
+                              .join("\n");
+                            const content = <>
+                              <i className="editor-line-ruler__marker" />
+                              {editorSettings.lineNumbers ? <b>{lineNumber}</b> : null}
+                            </>;
+                            return changeDecoration ? (
+                              <button
+                                className={`editor-line-ruler__line${lineDecorationClassName(decorations)}`}
+                                key={line}
+                                type="button"
+                                title={tooltip || undefined}
+                                aria-label={`${tooltip || "Exibir alteração"}, linha ${line}`}
+                                onClick={() => setSelectedEditorLineDecoration((current) => current === changeDecoration ? undefined : changeDecoration)}
+                              >
+                                {content}
+                              </button>
+                            ) : (
+                              <span className="editor-line-ruler__line" key={line}>{content}</span>
+                            );
+                          })}
+                        </pre>
                       </div>
                     ) : null}
                     {activeLanguageProvider && activeDocument ? (
@@ -3163,6 +3584,9 @@ export function App() {
               </div>
             )}
 
+          </main>
+
+          <div className="workbench-bottom-region">
             {panelVisible ? (
               <section className={`output-panel${panelVisible ? "" : " output-panel--hidden"}`} style={{ height: panelHeight }}>
                 <div className="resize-handle resize-handle--panel" role="separator" aria-label="Redimensionar painel inferior" onPointerDown={beginPanelResize} onDoubleClick={() => setPanelHeight(DEFAULT_LAYOUT.panelHeight)} />
@@ -3202,7 +3626,7 @@ export function App() {
                 onResetHeight={() => setToolWindowHeight(DEFAULT_LAYOUT.toolWindowHeight)}
               />
             ) : null}
-          </main>
+          </div>
         </div>
 
         <footer className="statusbar">
@@ -3247,22 +3671,59 @@ export function App() {
           </Dialog.Portal>
         </Dialog.Root>
 
+        <Dialog.Root open={Boolean(workbenchDialog)} onOpenChange={(open) => {
+          if (!open) setWorkbenchDialog(undefined);
+        }}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="dialog-overlay" />
+            <Dialog.Content className={`workbench-plugin-dialog workbench-plugin-dialog--${workbenchDialog?.contribution.size ?? "large"}`}>
+              <div className="dialog-heading">
+                <div>
+                  <span className="eyebrow">PLUGIN</span>
+                  <Dialog.Title>{workbenchDialog?.contribution.title ?? "Plugin"}</Dialog.Title>
+                  {workbenchDialog?.contribution.description ? (
+                    <Dialog.Description>{workbenchDialog.contribution.description}</Dialog.Description>
+                  ) : null}
+                </div>
+                <Dialog.Close asChild>
+                  <button className="icon-button" type="button" aria-label="Fechar"><X size={16} /></button>
+                </Dialog.Close>
+              </div>
+              {workbenchDialog ? (
+                <WorkbenchDialogHost
+                  provider={workbenchDialog.contribution}
+                  onClose={() => setWorkbenchDialog(undefined)}
+                />
+              ) : null}
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
+
         <Dialog.Root open={settingsOpen} onOpenChange={setSettingsOpen}>
           <Dialog.Portal>
             <Dialog.Overlay className="dialog-overlay" />
             <Dialog.Content className="settings-dialog">
-              <div className="dialog-heading">
-                <div>
-                  <span className="eyebrow">WORKSPACE</span>
-                  <Dialog.Title>Configurações</Dialog.Title>
-                  <Dialog.Description>
-                    Preferências locais do projeto e configurações contribuídas por plugins.
-                  </Dialog.Description>
+              <div className="dialog-heading settings-dialog__heading">
+                <div className="settings-dialog__identity">
+                  <span className="settings-dialog__icon"><Settings2 size={20} /></span>
+                  <div>
+                    <span className="eyebrow">PREFERÊNCIAS DO PROJETO</span>
+                    <Dialog.Title>Configurações</Dialog.Title>
+                    <Dialog.Description>
+                      Ajustes locais do editor e extensões instaladas.
+                    </Dialog.Description>
+                  </div>
                 </div>
-                <Dialog.Close asChild><button className="icon-button" type="button" aria-label="Fechar"><X size={16} /></button></Dialog.Close>
+                <div className="settings-dialog__heading-actions">
+                  <span className="settings-workspace-badge" title={workspaceRoot ?? "Nenhum workspace aberto"}>
+                    <FolderRoot size={13} /> {workspaceName}
+                  </span>
+                  <Dialog.Close asChild><button className="icon-button" type="button" aria-label="Fechar"><X size={16} /></button></Dialog.Close>
+                </div>
               </div>
               <div className="settings-layout">
                 <nav className="settings-navigation" aria-label="Seções de configuração">
+                  <span className="settings-navigation__label">Geral</span>
                   <button
                     className={settingsSectionId === "editor" ? "is-active" : ""}
                     type="button"
@@ -3288,49 +3749,56 @@ export function App() {
                   {settingsSectionId === "editor" ? (
                     <>
                       <div className="settings-section-heading">
-                        <span className="eyebrow">NATIVO</span>
-                        <h3>Editor</h3>
-                        <p>Preferências do editor de texto básico do tinyIde.</p>
+                        <span className="settings-section-heading__icon"><Code2 size={18} /></span>
+                        <div>
+                          <span className="eyebrow">NATIVO</span>
+                          <h3>Editor</h3>
+                          <p>Comportamento e apresentação do editor de texto.</p>
+                        </div>
                       </div>
                       <div className="plugin-setting-list">
                         <label className="plugin-setting">
-                          <input
-                            type="checkbox"
-                            checked={editorSettings.lineNumbers}
-                            disabled={!workspaceRoot}
-                            onChange={(event) => invoke(() => applyEditorLineNumbers(event.target.checked))}
-                          />
-                          <span>
+                          <span className="plugin-setting__copy">
                             <strong>Régua numérica</strong>
-                            <small>Exibe os números das linhas ao lado do conteúdo do editor.</small>
+                            <small>Mostra a numeração das linhas e serve como área de indicadores do editor.</small>
+                          </span>
+                          <span className="settings-switch">
+                            <input
+                              type="checkbox"
+                              checked={editorSettings.lineNumbers}
+                              disabled={!workspaceRoot}
+                              onChange={(event) => invoke(() => applyEditorLineNumbers(event.target.checked))}
+                            />
+                            <i aria-hidden="true" />
                           </span>
                         </label>
                       </div>
-                      {!workspaceRoot ? (
-                        <p className="settings-scope-note">Abra um workspace para alterar configurações locais.</p>
-                      ) : (
-                        <p className="settings-scope-note">Salvo em <code>.tinyide/settings.json</code> neste workspace.</p>
-                      )}
                     </>
                   ) : activePluginSettingsProvider ? (
                     <>
                       <div className="settings-section-heading">
-                        <span className="eyebrow">PLUGIN</span>
-                        <h3>{activePluginSettingsProvider.title}</h3>
-                        <p>{activePluginSettingsProvider.description ?? "Configurações específicas deste plugin para o workspace."}</p>
+                        <span className="settings-section-heading__icon"><Plug size={18} /></span>
+                        <div>
+                          <span className="eyebrow">PLUGIN</span>
+                          <h3>{activePluginSettingsProvider.title}</h3>
+                          <p>{activePluginSettingsProvider.description ?? "Configurações específicas deste plugin para o workspace."}</p>
+                        </div>
                       </div>
                       <div className="plugin-setting-list">
                         {activePluginSettingsProvider.settings.map((setting) => (
                           <label className="plugin-setting" key={setting.id}>
-                            <input
-                              type="checkbox"
-                              checked={pluginSettingsDraft[setting.id] !== false}
-                              disabled={!workspaceRoot}
-                              onChange={(event) => invoke(() => applyPluginSetting(setting.id, event.target.checked))}
-                            />
-                            <span>
+                            <span className="plugin-setting__copy">
                               <strong>{setting.label}</strong>
                               {setting.description ? <small>{setting.description}</small> : null}
+                            </span>
+                            <span className="settings-switch">
+                              <input
+                                type="checkbox"
+                                checked={pluginSettingsDraft[setting.id] !== false}
+                                disabled={!workspaceRoot}
+                                onChange={(event) => invoke(() => applyPluginSetting(setting.id, event.target.checked))}
+                              />
+                              <i aria-hidden="true" />
                             </span>
                           </label>
                         ))}
@@ -3341,7 +3809,12 @@ export function App() {
                   )}
                 </section>
               </div>
-              <div className="dialog-actions plugin-settings-actions">
+              <div className="settings-dialog__footer">
+                {!workspaceRoot ? (
+                  <p className="settings-scope-note"><CircleAlert size={14} /> Abra um workspace para alterar configurações locais.</p>
+                ) : (
+                  <p className="settings-scope-note"><Check size={14} /> Alterações salvas automaticamente em <code>.tinyide/settings.json</code>.</p>
+                )}
                 <button className="button primary" type="button" onClick={() => setSettingsOpen(false)}>Concluir</button>
               </div>
             </Dialog.Content>

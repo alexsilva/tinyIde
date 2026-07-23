@@ -19,8 +19,14 @@ import type {
   ResourceContextMenuProvider,
   ResourceIconProvider,
   ScriptExecutionContribution,
+  TextEditorLineDecorationProvider,
+  WorkbenchApi,
+  WorkbenchDialogContribution,
+  WorkbenchTextHighlightRequest,
+  WorkbenchTextHighlightResult,
   WorkbenchPanelHook,
   WorkbenchToolWindowHook,
+  Disposable,
 } from "@tinyide/plugin-api";
 import { AppPluginHost } from "./plugin-host";
 
@@ -47,6 +53,44 @@ export interface PlatformSnapshot {
 }
 
 type SnapshotListener = () => void;
+
+interface WorkbenchBinding {
+  openToolWindow(id: string): void;
+  openDialog(dialog: WorkbenchDialogContribution): Disposable;
+  highlightText(request: WorkbenchTextHighlightRequest): WorkbenchTextHighlightResult;
+}
+
+class AppWorkbenchApi implements WorkbenchApi {
+  #binding: WorkbenchBinding | undefined;
+
+  readonly dialogs = {
+    open: (dialog: WorkbenchDialogContribution): Disposable => {
+      if (!this.#binding) throw new Error("O workbench ainda não está disponível.");
+      return this.#binding.openDialog(dialog);
+    },
+  };
+
+  readonly text = {
+    highlight: (request: WorkbenchTextHighlightRequest): WorkbenchTextHighlightResult => {
+      if (!this.#binding) throw new Error("O workbench ainda não está disponível.");
+      return this.#binding.highlightText(request);
+    },
+  };
+
+  bind(binding: WorkbenchBinding): Disposable {
+    this.#binding = binding;
+    return {
+      dispose: () => {
+        if (this.#binding === binding) this.#binding = undefined;
+      },
+    };
+  }
+
+  openToolWindow(id: string): void {
+    if (!this.#binding) throw new Error("O workbench ainda não está disponível.");
+    this.#binding.openToolWindow(id);
+  }
+}
 
 function pluginSourceUrl(manifest: PluginManifest, manifestUrl: string): string {
   const frontend = manifest.entrypoints?.frontend;
@@ -93,6 +137,7 @@ function pluginContext(platform: TinyIdePlatform, pluginId: string): PluginConte
     backend: pluginBackend(pluginId),
     commands: platform.commands,
     events: platform.events,
+    workbench: platform.workbench,
     extensions: {
       registerLanguageProvider: (provider: LanguageProvider) => platform.capabilities.register("language.provider", provider),
       registerResourceIconProvider: (provider: ResourceIconProvider) => platform.capabilities.register("resource.icon", provider),
@@ -106,6 +151,7 @@ function pluginContext(platform: TinyIdePlatform, pluginId: string): PluginConte
       registerPluginSettingsProvider: (provider: PluginSettingsProvider) => platform.capabilities.register("plugin.settings", provider),
       registerWorkbenchPanelHook: (hook: WorkbenchPanelHook) => platform.capabilities.register("workbench.panel.hook", hook),
       registerWorkbenchToolWindowHook: (hook: WorkbenchToolWindowHook) => platform.capabilities.register("workbench.toolWindow.hook", hook),
+      registerTextEditorLineDecorationProvider: (provider: TextEditorLineDecorationProvider) => platform.capabilities.register("textEditor.lineDecoration", provider),
     },
     subscriptions: [],
   };
@@ -115,6 +161,7 @@ export class TinyIdePlatform {
   readonly commands = new CommandRegistry();
   readonly events = new EventBus();
   readonly capabilities = new CapabilityRegistry();
+  readonly workbench = new AppWorkbenchApi();
 
   readonly #sourceUrls = new Map<string, string>();
   readonly #manifestUrls = new Map<string, string>();

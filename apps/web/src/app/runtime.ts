@@ -14,6 +14,7 @@ import type {
   ResourceIcon,
   ResourceIconProvider,
   ScriptExecutionContribution,
+  TextEditorLineDecorationProvider,
   TextDiagnostic,
 } from "@tinyide/plugin-api";
 import type { OpenDocument } from "../browser-filesystem";
@@ -89,6 +90,10 @@ export function environmentProvider(): ExecutionEnvironmentProvider | undefined 
 
 export function pluginSettingsProviders(): readonly PluginSettingsProvider[] {
   return platform.capabilities.getAll<PluginSettingsProvider>("plugin.settings");
+}
+
+export function textEditorLineDecorationProviders(): readonly TextEditorLineDecorationProvider[] {
+  return platform.capabilities.getAll<TextEditorLineDecorationProvider>("textEditor.lineDecoration");
 }
 
 export function environmentProviderFor(document: OpenDocument | undefined): ExecutionEnvironmentProvider | undefined {

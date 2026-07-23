@@ -95,6 +95,7 @@ export interface PluginContext {
   readonly commands: CommandRegistryApi;
   readonly events: EventBusApi;
   readonly extensions: PluginExtensionApi;
+  readonly workbench: WorkbenchApi;
   readonly subscriptions: Disposable[];
 }
 
@@ -111,6 +112,7 @@ export interface PluginExtensionApi {
   registerPluginSettingsProvider(provider: PluginSettingsProvider): Disposable;
   registerWorkbenchPanelHook(hook: WorkbenchPanelHook): Disposable;
   registerWorkbenchToolWindowHook(hook: WorkbenchToolWindowHook): Disposable;
+  registerTextEditorLineDecorationProvider(provider: TextEditorLineDecorationProvider): Disposable;
 }
 
 export interface PluginModule {
@@ -305,7 +307,7 @@ export interface ResourceIconProvider {
 
 export const RESOURCE_ICON_CAPABILITY = "resource.icon";
 
-export type ResourceContextMenuIcon = "file" | "folder" | "play" | "copy" | "terminal" | "save" | "close";
+export type ResourceContextMenuIcon = "file" | "folder" | "play" | "copy" | "terminal" | "save" | "close" | "diff";
 
 export type ResourceContextMenuAction = "runScript";
 
@@ -376,6 +378,21 @@ export interface WorkbenchPanelMountContext {
   readonly state: WorkbenchStateApi;
 }
 
+export interface WorkbenchTabContribution {
+  readonly id: string;
+  readonly label: string;
+  readonly closable?: boolean;
+  readonly order?: number;
+  onSelect(): void;
+  onClose?(): void | Promise<void>;
+}
+
+export interface WorkbenchTabApi {
+  register(tab: WorkbenchTabContribution): Disposable;
+  select(id: string): void;
+  activeId(): string | undefined;
+}
+
 export interface WorkbenchPanelContribution {
   readonly id: string;
   readonly pluginId: string;
@@ -384,10 +401,29 @@ export interface WorkbenchPanelContribution {
   mount(context: WorkbenchPanelMountContext): void | Disposable | Promise<void | Disposable>;
 }
 
+export interface WorkbenchPanelTabContribution {
+  readonly id: string;
+  readonly label: string;
+  readonly order?: number;
+  mount(context: WorkbenchPanelMountContext): void | Disposable | Promise<void | Disposable>;
+}
+
+export interface WorkbenchPanelTabGroupContribution {
+  readonly id: string;
+  readonly pluginId: string;
+  readonly label: string;
+  readonly order?: number;
+  readonly tabs: readonly WorkbenchPanelTabContribution[];
+}
+
+export type WorkbenchPanelHookContribution =
+  | WorkbenchPanelContribution
+  | WorkbenchPanelTabGroupContribution;
+
 export interface WorkbenchPanelHook {
   readonly id: string;
   readonly pluginId: string;
-  contribute(): readonly WorkbenchPanelContribution[];
+  contribute(): readonly WorkbenchPanelHookContribution[];
 }
 
 export const WORKBENCH_PANEL_HOOK = "workbench.panel.hook";
@@ -400,18 +436,126 @@ export interface WorkbenchToolWindowContribution {
   mount(context: WorkbenchToolWindowMountContext): void | Disposable | Promise<void | Disposable>;
 }
 
+export interface WorkbenchToolWindowViewContribution {
+  readonly id: string;
+  readonly label: string;
+  readonly order?: number;
+  mount(context: WorkbenchPanelMountContext): void | Disposable | Promise<void | Disposable>;
+}
+
+export interface WorkbenchToolWindowGroupContribution {
+  readonly id: string;
+  readonly pluginId: string;
+  readonly label: string;
+  readonly order?: number;
+  readonly views: readonly WorkbenchToolWindowViewContribution[];
+}
+
+export type WorkbenchToolWindowHookContribution =
+  | WorkbenchToolWindowContribution
+  | WorkbenchToolWindowGroupContribution;
+
 export interface WorkbenchToolWindowMountContext extends WorkbenchPanelMountContext {
   readonly headerContainer: HTMLElement;
+  readonly tabs: WorkbenchTabApi;
   close(): void;
 }
 
 export interface WorkbenchToolWindowHook {
   readonly id: string;
   readonly pluginId: string;
-  contribute(): readonly WorkbenchToolWindowContribution[];
+  contribute(): readonly WorkbenchToolWindowHookContribution[];
 }
 
 export const WORKBENCH_TOOL_WINDOW_HOOK = "workbench.toolWindow.hook";
+
+export type WorkbenchDialogSize = "medium" | "large" | "full";
+
+export interface WorkbenchDialogMountContext {
+  readonly container: HTMLElement;
+  close(): void;
+}
+
+export interface WorkbenchDialogContribution {
+  readonly id: string;
+  readonly pluginId: string;
+  readonly title: string;
+  readonly description?: string;
+  readonly size?: WorkbenchDialogSize;
+  mount(context: WorkbenchDialogMountContext): void | Disposable | Promise<void | Disposable>;
+}
+
+export interface WorkbenchDialogApi {
+  open(dialog: WorkbenchDialogContribution): Disposable;
+}
+
+export interface WorkbenchTextHighlightRequest {
+  readonly fileName: string;
+  readonly source: string;
+}
+
+export interface WorkbenchTextHighlightResult {
+  readonly languageId?: string;
+  readonly tokens: readonly SyntaxToken[];
+}
+
+export interface WorkbenchTextApi {
+  highlight(request: WorkbenchTextHighlightRequest): WorkbenchTextHighlightResult;
+}
+
+export interface WorkbenchApi {
+  readonly dialogs: WorkbenchDialogApi;
+  readonly text: WorkbenchTextApi;
+  openToolWindow(id: string): void;
+}
+
+export type TextEditorLineDecorationKind =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "information"
+  | "warning"
+  | "error";
+
+export interface TextEditorDocumentSnapshot {
+  readonly id: string;
+  readonly name: string;
+  readonly path?: string;
+  readonly workspaceRoot?: string;
+  readonly content: string;
+}
+
+export interface TextEditorLineDecoration {
+  /** One-based line number in the current document. */
+  readonly line: number;
+  readonly kind: TextEditorLineDecorationKind;
+  readonly label?: string;
+  readonly tooltip?: string;
+  readonly change?: TextEditorLineChangePreview;
+  /** Number of removed lines represented by a deletion marker at this line. */
+  readonly deletedLineCount?: number;
+}
+
+export interface TextEditorLineSnapshot {
+  readonly line: number;
+  readonly content: string;
+}
+
+export interface TextEditorLineChangePreview {
+  readonly before: readonly TextEditorLineSnapshot[];
+  readonly after: readonly TextEditorLineSnapshot[];
+}
+
+export interface TextEditorLineDecorationProvider {
+  readonly id: string;
+  readonly pluginId: string;
+  provideDecorations(
+    document: TextEditorDocumentSnapshot,
+  ): Promise<readonly TextEditorLineDecoration[]> | readonly TextEditorLineDecoration[];
+  onDidChange?(listener: () => void): Disposable;
+}
+
+export const TEXT_EDITOR_LINE_DECORATION_CAPABILITY = "textEditor.lineDecoration";
 
 export interface WorkbenchExtensionApi {
   registerPanelHook(hook: WorkbenchPanelHook): Disposable;
