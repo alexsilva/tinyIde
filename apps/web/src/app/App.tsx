@@ -131,6 +131,7 @@ import {
   resolvePluginSettingValues,
   updatePluginSettingValue,
 } from "./plugin-settings";
+import { reconcileToolWindowLayout } from "./workbench-layout";
 import {
   EMPTY_WORKSPACE_SETTINGS,
   readWorkspaceSettings,
@@ -1195,17 +1196,21 @@ export function App() {
   }, [workspaceName, workspaceRoot, panelTab, panelVisible, activeToolWindowId, toolWindowVisible, selectedEnvironmentId, workspaceSettings.plugins]);
 
   useEffect(() => {
-    const firstToolWindow = workbenchToolWindows[0];
-    if (!firstToolWindow) {
-      setActiveToolWindowId(undefined);
-      setToolWindowVisible(false);
-      return;
+    const next = reconcileToolWindowLayout({
+      initialized: platformSnapshot.initialized,
+      availableIds: workbenchToolWindows.map((toolWindow) => toolWindow.id),
+      current: {
+        ...(activeToolWindowId ? { activeToolWindowId } : {}),
+        toolWindowVisible,
+      },
+    });
+    if (next.activeToolWindowId !== activeToolWindowId) {
+      setActiveToolWindowId(next.activeToolWindowId);
     }
-    if (!activeToolWindowId || !workbenchToolWindows.some((toolWindow) => toolWindow.id === activeToolWindowId)) {
-      setActiveToolWindowId(firstToolWindow.id);
-      setToolWindowVisible(true);
+    if (next.toolWindowVisible !== toolWindowVisible) {
+      setToolWindowVisible(next.toolWindowVisible);
     }
-  }, [platformSnapshot.plugins, activeToolWindowId]);
+  }, [platformSnapshot.plugins, platformSnapshot.initialized, activeToolWindowId, toolWindowVisible]);
 
   const replaceWorkspaceSettings = useCallback((settings: WorkspaceSettings) => {
     workspaceSettingsRef.current = settings;
@@ -1417,8 +1422,6 @@ export function App() {
           .sort((left, right) => right.startedAt - left.startedAt)[0];
         if (!running) return;
         setOutput([...hostProcessOutputLines(running)]);
-        setPanelVisible(true);
-        setPanelTab("output");
         setBusy(true);
         setActiveProcessId(running.id);
         setResumedProcessId(running.id);
