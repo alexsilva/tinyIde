@@ -920,7 +920,7 @@ function InteractiveSessionPanel({
       onIndicatorsChange([]);
       terminal.dispose();
     };
-  }, [provider]);
+  }, [provider, workspaceRoot, selectedEnvironmentId, pluginSettings, onIndicatorsChange]);
 
   return <div className="terminal-surface" ref={containerRef} aria-label="Terminal do workspace" />;
 }
