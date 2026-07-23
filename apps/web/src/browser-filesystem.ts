@@ -22,6 +22,7 @@ export interface BrowserDirectoryHandle {
   values(): AsyncIterableIterator<BrowserFileHandle | BrowserDirectoryHandle>;
   getFileHandle(name: string, options?: { readonly create?: boolean }): Promise<BrowserFileHandle>;
   getDirectoryHandle(name: string, options?: { readonly create?: boolean }): Promise<BrowserDirectoryHandle>;
+  removeEntry?(name: string, options?: { readonly recursive?: boolean }): Promise<void>;
   queryPermission?(descriptor: BrowserPermissionDescriptor): Promise<PermissionState>;
   requestPermission?(descriptor: BrowserPermissionDescriptor): Promise<PermissionState>;
 }
@@ -108,6 +109,19 @@ export async function resolveFileHandle(
   if (!fileName) throw new Error("O caminho do arquivo está vazio.");
   const parent = await resolveDirectoryHandle(workspaceHandle, segments.join("/"));
   return parent.getFileHandle(fileName);
+}
+
+export async function removeWorkspaceEntry(
+  workspaceHandle: BrowserDirectoryHandle,
+  path: string,
+  recursive = false,
+): Promise<void> {
+  const segments = [...workspacePathSegments(path)];
+  const name = segments.pop();
+  if (!name) throw new Error("O caminho do recurso está vazio.");
+  const parent = await resolveDirectoryHandle(workspaceHandle, segments.join("/"));
+  if (!parent.removeEntry) throw new Error("Este navegador não oferece exclusão de arquivos pelo workspace.");
+  await parent.removeEntry(name, { recursive });
 }
 
 export async function readFileDocument(

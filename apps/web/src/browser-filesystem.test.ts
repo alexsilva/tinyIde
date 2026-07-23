@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   listDirectory,
   readFileDocument,
+  removeWorkspaceEntry,
   resolveDirectoryHandle,
   resolveFileHandle,
   writeFileDocument,
@@ -77,6 +78,22 @@ describe("browser filesystem", () => {
     expect(await resolveDirectoryHandle(root, "/packages/src/")).toBe(source);
     expect(await resolveFileHandle(root, "packages/src/main.py")).toBe(main);
     await expect(resolveFileHandle(root, "")).rejects.toThrow("O caminho do arquivo está vazio.");
+  });
+
+  it("removes nested workspace entries and reports unsupported handles", async () => {
+    const removeEntry = vi.fn(async () => undefined);
+    const source: BrowserDirectoryHandle = {
+      ...directoryHandle("src", []),
+      removeEntry,
+    };
+    const root = directoryHandle("root", [source]);
+    await removeWorkspaceEntry(root, "src/main.py");
+    expect(removeEntry).toHaveBeenCalledWith("main.py", { recursive: false });
+    await removeWorkspaceEntry(root, "src/generated", true);
+    expect(removeEntry).toHaveBeenCalledWith("generated", { recursive: true });
+    await expect(removeWorkspaceEntry(root, "")).rejects.toThrow("O caminho do recurso está vazio.");
+    await expect(removeWorkspaceEntry(directoryHandle("unsupported", []), "file.txt"))
+      .rejects.toThrow("Este navegador não oferece exclusão de arquivos pelo workspace.");
   });
 
   it("writes content, closes the stream and updates document metadata", async () => {

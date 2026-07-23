@@ -22,7 +22,7 @@ import {
   FolderRoot,
   HardDrive,
   Info,
-  MoreHorizontal,
+  MoreVertical,
   Package,
   Play,
   Plug,
@@ -66,6 +66,7 @@ import {
   readFileDocument,
   resolveDirectoryHandle,
   resolveFileHandle,
+  removeWorkspaceEntry,
   writeFileDocument,
   type BrowserDirectoryHandle,
   type BrowserFileHandle,
@@ -975,6 +976,7 @@ export function App() {
   const [workspaceAccess, setWorkspaceAccess] = useState<"ready" | "permission-required" | "missing">("ready");
   const [explorerCreation, setExplorerCreation] = useState<"file" | "directory">();
   const [explorerCreationName, setExplorerCreationName] = useState("");
+  const [explorerCreationError, setExplorerCreationError] = useState<string>();
   const [highlightedExplorerPath, setHighlightedExplorerPath] = useState<string>();
   const [selectedExplorerPath, setSelectedExplorerPath] = useState<string>();
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
@@ -1345,6 +1347,14 @@ export function App() {
         order: 100,
         icon: "copy",
       },
+      {
+        id: "core.delete",
+        label: entry.kind === "directory" ? "Excluir pasta" : "Excluir arquivo",
+        command: "core.resource.delete",
+        group: "destructive",
+        order: 1000,
+        icon: "close",
+      },
     ];
     const resource = resourceContext(entry);
     const providers = platform.capabilities.getAll<ResourceContextMenuProvider>("resource.contextMenu");
@@ -1353,6 +1363,7 @@ export function App() {
       ["navigation", 0],
       ["execution", 100],
       ["clipboard", 200],
+      ["destructive", 300],
     ]);
     const items = [...baseItems, ...contributed]
       .filter((item) => item.enabled !== false)
@@ -1615,17 +1626,37 @@ export function App() {
   };
 
   const createWorkspaceEntry = async () => {
-    if (!workspaceHandle) throw new Error("Abra ou reconecte um workspace antes de criar arquivos ou pastas.");
+    setExplorerCreationError(undefined);
+    if (!workspaceHandle) {
+      setExplorerCreationError("Abra ou reconecte um workspace antes de criar arquivos ou pastas.");
+      return;
+    }
     const name = explorerCreationName.trim();
-    if (!name) throw new Error("Informe um nome.");
+    if (!name) {
+      setExplorerCreationError("Informe um nome.");
+      return;
+    }
+    if (name.includes("/") || name.includes("\\")) {
+      setExplorerCreationError("Use apenas o nome, sem barras ou caminho.");
+      return;
+    }
+    if (entries.some((entry) => entry.name === name)) {
+      setExplorerCreationError(`Já existe um item chamado “${name}”.`);
+      return;
+    }
 
-    if (explorerCreation === "file") {
-      const handle = await workspaceHandle.getFileHandle(name, { create: true });
-      const document = await readFileDocument(handle, name, workspaceRoot);
-      setDocuments((current) => current.some((item) => item.id === document.id) ? current : [...current, document]);
-      setActiveDocumentId(document.id);
-    } else if (explorerCreation === "directory") {
-      await workspaceHandle.getDirectoryHandle(name, { create: true });
+    try {
+      if (explorerCreation === "file") {
+        const handle = await workspaceHandle.getFileHandle(name, { create: true });
+        const document = await readFileDocument(handle, name, workspaceRoot);
+        setDocuments((current) => current.some((item) => item.id === document.id) ? current : [...current, document]);
+        setActiveDocumentId(document.id);
+      } else if (explorerCreation === "directory") {
+        await workspaceHandle.getDirectoryHandle(name, { create: true });
+      }
+    } catch (cause) {
+      setExplorerCreationError(cause instanceof Error ? cause.message : String(cause));
+      return;
     }
 
     setEntries(await listDirectory(workspaceHandle));
@@ -1636,6 +1667,32 @@ export function App() {
     }, 5000);
     setExplorerCreation(undefined);
     setExplorerCreationName("");
+    setExplorerCreationError(undefined);
+  };
+
+  const findEntryByPath = (items: readonly WorkspaceEntry[], path: string): WorkspaceEntry | undefined => {
+    for (const item of items) {
+      if (item.path === path) return item;
+      const nested = item.children ? findEntryByPath(item.children, path) : undefined;
+      if (nested) return nested;
+    }
+    return undefined;
+  };
+
+  const deleteWorkspaceEntry = async (entry: WorkspaceEntry) => {
+    if (!workspaceHandle) throw new Error("Restaure o acesso ao workspace antes de excluir recursos.");
+    if (!window.confirm(`Excluir ${entry.kind === "directory" ? "a pasta" : "o arquivo"} “${entry.name}”?`)) return;
+    await removeWorkspaceEntry(workspaceHandle, entry.path, entry.kind === "directory");
+    const removedPrefix = `${entry.path}/`;
+    const removedIds = documents
+      .filter((document) => document.path === entry.path || document.path?.startsWith(removedPrefix))
+      .map((document) => document.id);
+    setDocuments((current) => current.filter((document) => !removedIds.includes(document.id)));
+    if (activeDocumentId && removedIds.includes(activeDocumentId)) setActiveDocumentId(undefined);
+    removedIds.forEach((id) => editorHistoriesRef.current.delete(id));
+    setSelectedExplorerPath(undefined);
+    setExpanded((current) => new Set([...current].filter((path) => path !== entry.path && !path.startsWith(removedPrefix))));
+    setEntries(await listDirectory(workspaceHandle));
   };
 
   const runSelectedProfile = async () => {
@@ -1724,6 +1781,10 @@ export function App() {
       }
       if (item.command === "core.resource.copyPath") {
         await navigator.clipboard?.writeText(entry.path);
+        return;
+      }
+      if (item.command === "core.resource.delete") {
+        await deleteWorkspaceEntry(entry);
         return;
       }
       if (item.command === "core.resource.runScript") {
@@ -1951,6 +2012,22 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editing = target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || Boolean(target?.isContentEditable);
+      if ((event.key === "Delete" || event.key === "Backspace")
+        && !editing
+        && sidebarView === "explorer"
+        && selectedExplorerPath) {
+        const selectedEntry = findEntryByPath(entries, selectedExplorerPath);
+        if (selectedEntry) {
+          event.preventDefault();
+          invoke(() => deleteWorkspaceEntry(selectedEntry));
+        }
+        return;
+      }
       if (!(event.ctrlKey || event.metaKey)) return;
       const key = event.key.toLocaleLowerCase();
       if (key === "n") {
@@ -1966,7 +2043,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [newDocument, openSingleFile, saveDocument, invoke]);
+  }, [newDocument, openSingleFile, saveDocument, invoke, sidebarView, selectedExplorerPath, entries, workspaceHandle, documents, activeDocumentId]);
 
   const beginSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -2129,7 +2206,7 @@ export function App() {
                   {sidebarView === "explorer" ? (
                     <DropdownMenu.Root>
                       <DropdownMenu.Trigger asChild>
-                        <button className="icon-button small" type="button" aria-label="Ações do Explorer"><MoreHorizontal size={15} /></button>
+                        <button className="icon-button small" type="button" aria-label="Ações do Explorer"><MoreVertical size={15} /></button>
                       </DropdownMenu.Trigger>
                       <DropdownMenu.Portal>
                         <DropdownMenu.Content className="menu-content" align="end" sideOffset={6}>
@@ -2156,23 +2233,27 @@ export function App() {
                 <div className="sidebar-content explorer-content">
                   <div className="explorer-actions-sticky">
                     {explorerCreation ? (
-                      <form className="explorer-inline-create" onSubmit={(event) => { event.preventDefault(); invoke(createWorkspaceEntry); }}>
+                      <form className={`explorer-inline-create${explorerCreationError ? " has-error" : ""}`} onSubmit={(event) => { event.preventDefault(); void createWorkspaceEntry(); }}>
                       {explorerCreation === "directory" ? <Folder size={14} /> : <File size={14} />}
                       <input
                         autoFocus
                         value={explorerCreationName}
                         aria-label={explorerCreation === "directory" ? "Nome da nova pasta" : "Nome do novo arquivo"}
                         placeholder={explorerCreation === "directory" ? "Nome da pasta" : "Nome do arquivo"}
-                        onChange={(event) => setExplorerCreationName(event.target.value)}
+                        aria-invalid={Boolean(explorerCreationError)}
+                        aria-describedby={explorerCreationError ? "explorer-creation-error" : undefined}
+                        onChange={(event) => { setExplorerCreationName(event.target.value); setExplorerCreationError(undefined); }}
                         onKeyDown={(event) => {
                           if (event.key === "Escape") {
                             setExplorerCreation(undefined);
                             setExplorerCreationName("");
+                            setExplorerCreationError(undefined);
                           }
                         }}
                       />
                       <button className="icon-button small" type="submit" aria-label="Confirmar criação"><Check size={14} /></button>
-                      <button className="icon-button small" type="button" aria-label="Cancelar criação" onClick={() => { setExplorerCreation(undefined); setExplorerCreationName(""); }}><X size={14} /></button>
+                      <button className="icon-button small" type="button" aria-label="Cancelar criação" onClick={() => { setExplorerCreation(undefined); setExplorerCreationName(""); setExplorerCreationError(undefined); }}><X size={14} /></button>
+                      {explorerCreationError ? <span className="explorer-inline-error" id="explorer-creation-error" role="alert">{explorerCreationError}</span> : null}
                       </form>
                     ) : null}
                   </div>

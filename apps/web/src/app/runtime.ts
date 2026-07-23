@@ -102,6 +102,9 @@ export function mergeTerminalSessionContributions(
     prependPathEntries.push(...(contribution.prependPathEntries ?? []));
     indicators.push(...(contribution.indicators ?? []));
     if (contribution.promptPrefix) promptPrefix = contribution.promptPrefix;
+    else if (!promptPrefix && contribution.indicators?.[0]?.label) {
+      promptPrefix = `(${contribution.indicators[0].label}) `;
+    }
   }
   return {
     options: {

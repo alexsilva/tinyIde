@@ -152,6 +152,8 @@ button { color: inherit; }
 .toolbar-row.spread { justify-content: space-between; color: var(--muted); font-size: 11px; }
 .explorer-inline-create { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 5px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
 .explorer-inline-create input { min-width: 0; height: 26px; }
+.explorer-inline-create.has-error input { border-color: #b85660; box-shadow: 0 0 0 1px rgb(184 86 96 / 20%); }
+.explorer-inline-error { grid-column: 2 / -1; color: #ff9da5; font-size: 10px; line-height: 1.35; }
 .workspace-name { display: flex; align-items: center; gap: 4px; padding: 7px 4px; color: #c8ced8; font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .tree,
 .tree > div { min-width: 0; }
@@ -182,8 +184,8 @@ button { color: inherit; }
 .search-field { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: #10131a; }
 .search-field input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 12px; }
 
-.plugins-view { display: grid; align-content: start; gap: 8px; }
-.plugin-card { position: relative; display: grid; gap: 7px; padding: 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); }
+.plugins-view { display: grid; grid-auto-rows: max-content; align-content: start; align-items: start; gap: 8px; }
+.plugin-card { position: relative; display: grid; align-self: start; gap: 5px; min-height: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); }
 .plugin-card.available { border-style: dashed; }
 .plugin-card-heading { display: flex; align-items: center; gap: 7px; }
 .plugin-card p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
