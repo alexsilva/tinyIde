@@ -25,6 +25,7 @@ import type {
   WorkbenchTextHighlightRequest,
   WorkbenchTextHighlightResult,
   WorkbenchPanelHook,
+  WorkbenchResourceEditorProvider,
   WorkbenchToolWindowHook,
   Disposable,
 } from "@tinyide/plugin-api";
@@ -152,6 +153,7 @@ function pluginContext(platform: TinyIdePlatform, pluginId: string): PluginConte
       registerWorkbenchPanelHook: (hook: WorkbenchPanelHook) => platform.capabilities.register("workbench.panel.hook", hook),
       registerWorkbenchToolWindowHook: (hook: WorkbenchToolWindowHook) => platform.capabilities.register("workbench.toolWindow.hook", hook),
       registerTextEditorLineDecorationProvider: (provider: TextEditorLineDecorationProvider) => platform.capabilities.register("textEditor.lineDecoration", provider),
+      registerWorkbenchResourceEditorProvider: (provider: WorkbenchResourceEditorProvider) => platform.capabilities.register("workbench.resourceEditor", provider),
     },
     subscriptions: [],
   };

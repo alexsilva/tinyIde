@@ -41,12 +41,72 @@ export interface OpenDocument {
   readonly path?: string;
   readonly workspaceRoot?: string;
   readonly handle?: BrowserFileHandle;
+  readonly kind: "text" | "image" | "binary";
+  readonly mediaType: string;
+  readonly size: number;
   readonly content: string;
   readonly savedContent: string;
   readonly selectionStart: number;
   readonly selectionEnd: number;
   readonly scrollTop: number;
   readonly scrollLeft: number;
+}
+
+const IMAGE_MEDIA_TYPES = new Map<string, string>([
+  [".avif", "image/avif"],
+  [".bmp", "image/bmp"],
+  [".gif", "image/gif"],
+  [".ico", "image/x-icon"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".png", "image/png"],
+  [".svg", "image/svg+xml"],
+  [".webp", "image/webp"],
+]);
+
+function fileExtension(name: string): string {
+  const index = name.lastIndexOf(".");
+  return index >= 0 ? name.slice(index).toLocaleLowerCase() : "";
+}
+
+function inferredMediaType(file: File): string {
+  const declared = file.type.trim().toLocaleLowerCase();
+  if (declared) return declared;
+  return IMAGE_MEDIA_TYPES.get(fileExtension(file.name)) ?? "application/octet-stream";
+}
+
+function sampleLooksBinary(bytes: Uint8Array): boolean {
+  if (!bytes.length) return false;
+  if (bytes.includes(0)) return true;
+  let decoded: string;
+  try {
+    decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return true;
+  }
+  let controls = 0;
+  for (const character of decoded) {
+    const code = character.charCodeAt(0);
+    if (code < 32 && code !== 9 && code !== 10 && code !== 12 && code !== 13) controls += 1;
+  }
+  return controls / Math.max(1, decoded.length) > 0.05;
+}
+
+export async function inspectBrowserFile(file: File): Promise<{
+  readonly kind: OpenDocument["kind"];
+  readonly mediaType: string;
+  readonly size: number;
+}> {
+  const mediaType = inferredMediaType(file);
+  if (mediaType.startsWith("image/") || IMAGE_MEDIA_TYPES.has(fileExtension(file.name))) {
+    return { kind: "image", mediaType, size: file.size };
+  }
+  const sample = new Uint8Array(await file.slice(0, 8192).arrayBuffer());
+  return {
+    kind: sampleLooksBinary(sample) ? "binary" : "text",
+    mediaType,
+    size: file.size,
+  };
 }
 
 declare global {
@@ -225,13 +285,15 @@ export async function readFileDocument(
   workspaceRoot?: string,
 ): Promise<OpenDocument> {
   const file = await handle.getFile();
-  const content = await file.text();
+  const inspection = await inspectBrowserFile(file);
+  const content = inspection.kind === "text" ? await file.text() : "";
   return {
     id: path ?? `file:${file.name}`,
     name: file.name,
     ...(path ? { path } : {}),
     ...(workspaceRoot ? { workspaceRoot } : {}),
     handle,
+    ...inspection,
     content,
     savedContent: content,
     selectionStart: 0,
@@ -245,6 +307,9 @@ export async function writeFileDocument(
   document: OpenDocument,
   handle: BrowserFileHandle,
 ): Promise<OpenDocument> {
+  if (document.kind !== "text") {
+    throw new Error("Este recurso não é um documento de texto editável.");
+  }
   const writable = await handle.createWritable();
   try {
     await writable.write(document.content);
@@ -257,6 +322,7 @@ export async function writeFileDocument(
     id: document.path ?? `file:${handle.name}`,
     name: handle.name,
     handle,
+    size: new Blob([document.content]).size,
     savedContent: document.content,
   };
 }

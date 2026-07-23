@@ -13,11 +13,11 @@ import {
   type OpenDocument,
 } from "./browser-filesystem";
 
-function fileHandle(name: string, content = "content"): BrowserFileHandle {
+function fileHandle(name: string, content: BlobPart = "content", type = ""): BrowserFileHandle {
   return {
     kind: "file",
     name,
-    getFile: async () => new File([content], name),
+    getFile: async () => new File([content], name, { type }),
     createWritable: async () => ({ write: async () => undefined, close: async () => undefined }),
   };
 }
@@ -65,10 +65,37 @@ describe("browser filesystem", () => {
       path: "src/main.py",
       workspaceRoot: "/workspace/project",
       name: "main.py",
+      kind: "text",
       content: "print('ok')",
       savedContent: "print('ok')",
     });
     expect(await readFileDocument(handle)).toMatchObject({ id: "file:main.py", name: "main.py" });
+  });
+
+  it("classifies images and binary files without decoding them as editor text", async () => {
+    const image = await readFileDocument(
+      fileHandle("preview.png", new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), "image/png"),
+      "assets/preview.png",
+    );
+    expect(image).toMatchObject({
+      kind: "image",
+      mediaType: "image/png",
+      size: 8,
+      content: "",
+      savedContent: "",
+    });
+
+    const binary = await readFileDocument(
+      fileHandle("payload.bin", new Uint8Array([1, 0, 2, 3, 255])),
+      "fixtures/payload.bin",
+    );
+    expect(binary).toMatchObject({
+      kind: "binary",
+      mediaType: "application/octet-stream",
+      size: 5,
+      content: "",
+      savedContent: "",
+    });
   });
 
   it("resolves nested directory and file handles from the workspace root", async () => {
@@ -108,6 +135,9 @@ describe("browser filesystem", () => {
     const document: OpenDocument = {
       id: "draft",
       name: "draft.py",
+      kind: "text",
+      mediaType: "text/plain",
+      size: 0,
       content: "print(1)",
       savedContent: "",
       selectionStart: 0,
@@ -119,6 +149,23 @@ describe("browser filesystem", () => {
     expect(write).toHaveBeenCalledWith("print(1)");
     expect(close).toHaveBeenCalledOnce();
     expect(saved).toMatchObject({ id: "file:saved.py", name: "saved.py", savedContent: "print(1)" });
+  });
+
+  it("refuses to write non-text resources through the text document writer", async () => {
+    const handle = fileHandle("payload.bin", new Uint8Array([0, 1, 2]));
+    await expect(writeFileDocument({
+      id: "payload.bin",
+      name: "payload.bin",
+      kind: "binary",
+      mediaType: "application/octet-stream",
+      size: 3,
+      content: "",
+      savedContent: "",
+      selectionStart: 0,
+      selectionEnd: 0,
+      scrollTop: 0,
+      scrollLeft: 0,
+    }, handle)).rejects.toThrow("não é um documento de texto");
   });
 
   it("renames files by copying their bytes and removing the original entry", async () => {
@@ -374,6 +421,9 @@ describe("browser filesystem", () => {
       id: "src/failed.py",
       name: "failed.py",
       path: "src/failed.py",
+      kind: "text",
+      mediaType: "text/plain",
+      size: 1,
       content: "x",
       savedContent: "",
       selectionStart: 0,

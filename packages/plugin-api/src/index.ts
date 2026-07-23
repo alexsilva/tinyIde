@@ -113,6 +113,7 @@ export interface PluginExtensionApi {
   registerWorkbenchPanelHook(hook: WorkbenchPanelHook): Disposable;
   registerWorkbenchToolWindowHook(hook: WorkbenchToolWindowHook): Disposable;
   registerTextEditorLineDecorationProvider(provider: TextEditorLineDecorationProvider): Disposable;
+  registerWorkbenchResourceEditorProvider(provider: WorkbenchResourceEditorProvider): Disposable;
 }
 
 export interface PluginModule {
@@ -508,6 +509,36 @@ export interface WorkbenchApi {
   readonly text: WorkbenchTextApi;
   openToolWindow(id: string): void;
 }
+
+export type WorkbenchResourceKind = "text" | "image" | "binary";
+
+export interface WorkbenchResourceDescriptor {
+  readonly id: string;
+  readonly name: string;
+  readonly path?: string;
+  readonly workspaceRoot?: string;
+  readonly mediaType: string;
+  readonly size: number;
+  readonly kind: WorkbenchResourceKind;
+}
+
+export interface WorkbenchResourceEditorMountContext {
+  readonly container: HTMLElement;
+  readonly resource: WorkbenchResourceDescriptor;
+  read(): Promise<Blob>;
+}
+
+export interface WorkbenchResourceEditorProvider {
+  readonly id: string;
+  readonly pluginId: string;
+  readonly priority?: number;
+  canOpen(resource: WorkbenchResourceDescriptor): boolean;
+  mount(
+    context: WorkbenchResourceEditorMountContext,
+  ): void | Disposable | Promise<void | Disposable>;
+}
+
+export const WORKBENCH_RESOURCE_EDITOR_CAPABILITY = "workbench.resourceEditor";
 
 export type TextEditorLineDecorationKind =
   | "added"

@@ -9,7 +9,7 @@ import type {
   OpenDocument,
   WorkspaceEntry,
 } from "../browser-filesystem";
-import { resolveFileHandle } from "../browser-filesystem";
+import { readFileDocument, resolveFileHandle } from "../browser-filesystem";
 
 const SESSION_KEY = "tinyide.react.session.v2";
 
@@ -49,6 +49,9 @@ interface StoredDocument {
   readonly path?: string;
   readonly workspaceRoot?: string;
   readonly handle?: BrowserFileHandle;
+  readonly kind?: OpenDocument["kind"];
+  readonly mediaType?: string;
+  readonly size?: number;
   readonly content: string;
   readonly savedContent: string;
   readonly selectionStart: number;
@@ -189,10 +192,27 @@ export async function restoreWorkspaceDocuments(
       }
     }
 
+    if (handle) {
+      const reopened = await readFileDocument(handle as BrowserFileHandle, document.path, workspaceRoot);
+      return reopened.kind === "text"
+        ? {
+            ...reopened,
+            content: document.content,
+            savedContent: document.savedContent,
+            selectionStart: document.selectionStart,
+            selectionEnd: document.selectionEnd,
+            scrollTop: document.scrollTop,
+            scrollLeft: document.scrollLeft,
+          }
+        : reopened;
+    }
+
     return {
       ...document,
       workspaceRoot,
-      ...(handle ? { handle } : {}),
+      kind: document.kind ?? "text",
+      mediaType: document.mediaType ?? "text/plain",
+      size: document.size ?? new Blob([document.content]).size,
     };
   }));
   return restored.filter((document): document is OpenDocument => Boolean(document));
@@ -219,6 +239,9 @@ export async function writeReactSnapshot(input: {
       ...(document.path ? { path: document.path } : {}),
       ...(document.workspaceRoot ? { workspaceRoot: document.workspaceRoot } : {}),
       ...(document.handle ? { handle: document.handle } : {}),
+      kind: document.kind,
+      mediaType: document.mediaType,
+      size: document.size,
       content: document.content,
       savedContent: document.savedContent,
       selectionStart: document.selectionStart,

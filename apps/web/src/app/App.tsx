@@ -14,6 +14,7 @@ import {
   Eye,
   EyeOff,
   File,
+  FileWarning,
   FilePlus2,
   Files,
   Folder,
@@ -21,6 +22,7 @@ import {
   FolderRoot,
   HardDrive,
   Info,
+  Image as ImageIcon,
   LocateFixed,
   MoreVertical,
   Package,
@@ -65,6 +67,7 @@ import type {
   WorkbenchTabApi,
   WorkbenchTabContribution,
   WorkbenchPanelHook,
+  WorkbenchResourceEditorProvider,
   WorkbenchStateApi,
   WorkbenchStateSnapshot,
   WorkbenchToolWindowContribution,
@@ -128,10 +131,12 @@ import {
   runScript,
   pluginSettingsProviders,
   resourceIconFor,
+  resourceEditorProviderFor,
   scriptExecutionFor,
   setHostWorkspace,
   stopHostProcess,
   textEditorLineDecorationProviders,
+  workbenchResourceDescriptor,
 } from "./runtime";
 import {
   resolvePluginSettingValues,
@@ -1359,6 +1364,140 @@ function WorkbenchDialogHost({
   return <div className="plugin-dialog-host" ref={containerRef} data-dialog-id={provider.id} />;
 }
 
+async function readOpenDocumentBlob(document: OpenDocument): Promise<Blob> {
+  if (document.handle) return document.handle.getFile();
+  if (document.kind === "text") {
+    return new Blob([document.content], { type: document.mediaType || "text/plain;charset=utf-8" });
+  }
+  throw new Error("O conteúdo binário não está mais disponível. Reabra o arquivo pelo workspace.");
+}
+
+function ResourceEditorHost({
+  provider,
+  document,
+}: {
+  readonly provider: WorkbenchResourceEditorProvider;
+  readonly document: OpenDocument;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const documentRef = useRef(document);
+  documentRef.current = document;
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    let disposed = false;
+    let mountedDisposable: { dispose(): void } | void;
+    try {
+      const mounted = provider.mount({
+        container,
+        resource: workbenchResourceDescriptor(document),
+        read: () => readOpenDocumentBlob(documentRef.current),
+      });
+      if (mounted && typeof (mounted as PromiseLike<unknown>).then === "function") {
+        void Promise.resolve(mounted)
+          .then((disposable) => {
+            if (disposed) disposable?.dispose();
+            else mountedDisposable = disposable;
+          })
+          .catch((cause) => {
+            if (!disposed) container.textContent = cause instanceof Error ? cause.message : String(cause);
+          });
+      } else {
+        mountedDisposable = mounted as void | { dispose(): void };
+      }
+    } catch (cause) {
+      container.textContent = cause instanceof Error ? cause.message : String(cause);
+    }
+    return () => {
+      disposed = true;
+      mountedDisposable?.dispose();
+      container.replaceChildren();
+    };
+  }, [provider, document.id]);
+
+  return (
+    <div
+      className="resource-editor resource-editor--plugin"
+      ref={containerRef}
+      data-resource-editor-provider={provider.id}
+    />
+  );
+}
+
+function NativeImageEditor({ document }: { readonly document: OpenDocument }) {
+  const [source, setSource] = useState<string>();
+  const [error, setError] = useState<string>();
+  const [dimensions, setDimensions] = useState<string>();
+
+  useEffect(() => {
+    let disposed = false;
+    let objectUrl: string | undefined;
+    setSource(undefined);
+    setError(undefined);
+    setDimensions(undefined);
+    void readOpenDocumentBlob(document)
+      .then((blob) => {
+        if (disposed) return;
+        objectUrl = URL.createObjectURL(blob);
+        setSource(objectUrl);
+      })
+      .catch((cause) => {
+        if (!disposed) setError(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => {
+      disposed = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [document.id, document.handle, document.size, document.mediaType]);
+
+  return (
+    <section className="resource-editor resource-editor--image" data-resource-kind="image">
+      <div className="resource-editor__viewport">
+        {source ? (
+          <img
+            src={source}
+            alt={document.name}
+            onLoad={(event) => {
+              const image = event.currentTarget;
+              setDimensions(`${image.naturalWidth} × ${image.naturalHeight}`);
+            }}
+          />
+        ) : error ? (
+          <div className="resource-editor__message is-error"><FileWarning size={34} /><strong>Não foi possível exibir a imagem.</strong><p>{error}</p></div>
+        ) : (
+          <div className="resource-editor__message"><ImageIcon size={34} /><strong>Carregando imagem…</strong></div>
+        )}
+      </div>
+      <footer className="resource-editor__meta">
+        <span>{document.mediaType}</span>
+        {dimensions ? <span>{dimensions}</span> : null}
+        <span>{formatByteSize(document.size)}</span>
+      </footer>
+    </section>
+  );
+}
+
+function formatByteSize(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 ** 2) return `${(size / 1024).toFixed(1)} KB`;
+  if (size < 1024 ** 3) return `${(size / 1024 ** 2).toFixed(1)} MB`;
+  return `${(size / 1024 ** 3).toFixed(1)} GB`;
+}
+
+function UnsupportedBinaryEditor({ document }: { readonly document: OpenDocument }) {
+  return (
+    <section className="resource-editor resource-editor--unsupported" data-resource-kind="binary">
+      <div className="resource-editor__message">
+        <FileWarning size={38} />
+        <strong>Este arquivo não pode ser aberto no editor.</strong>
+        <p>Nenhum plugin instalado oferece um visualizador para este formato binário.</p>
+        <small>{document.mediaType} · {formatByteSize(document.size)}</small>
+      </div>
+    </section>
+  );
+}
+
 export function App() {
   const initialSession = useMemo(() => readSession(), []);
   const [platformSnapshot, setPlatformSnapshot] = useState(() => platform.snapshot());
@@ -1460,7 +1599,8 @@ export function App() {
   }), []);
 
   const activeDocument = documents.find((document) => document.id === activeDocumentId);
-  const activeLanguageProvider = languageProviderFor(activeDocument);
+  const activeResourceEditorProvider = resourceEditorProviderFor(activeDocument);
+  const activeLanguageProvider = activeResourceEditorProvider ? undefined : languageProviderFor(activeDocument);
   const workbenchPanels = useMemo(() => platform.capabilities
     .getAll<WorkbenchPanelHook>("workbench.panel.hook")
     .flatMap((hook) => hook.contribute())
@@ -1480,7 +1620,7 @@ export function App() {
     ? undefined
     : settingsProviders.find((provider) => provider.pluginId === settingsSectionId);
   const editorSettings = resolveEditorSettings(workspaceSettings);
-  const editorRulerLines = activeDocument ? editorLineNumbers(activeDocument.content) : ["01"];
+  const editorRulerLines = activeDocument?.kind === "text" ? editorLineNumbers(activeDocument.content) : ["01"];
   const editorDecorationsByLine = useMemo(() => {
     const grouped = new Map<number, TextEditorLineDecoration[]>();
     for (const decoration of editorLineDecorations) {
@@ -1491,7 +1631,9 @@ export function App() {
     }
     return grouped;
   }, [editorLineDecorations]);
-  const showEditorGutter = editorSettings.lineNumbers || editorLineDecorations.length > 0;
+  const showEditorGutter = activeDocument?.kind === "text"
+    && !activeResourceEditorProvider
+    && (editorSettings.lineNumbers || editorLineDecorations.length > 0);
 
   useEffect(() => {
     const snapshot: WorkbenchStateSnapshot = {
@@ -1554,7 +1696,7 @@ export function App() {
   }, [platformSnapshot.plugins]);
 
   useEffect(() => {
-    if (!activeDocument?.path || !workspaceRoot) {
+    if (activeDocument?.kind !== "text" || activeResourceEditorProvider || !activeDocument.path || !workspaceRoot) {
       setEditorLineDecorations([]);
       return;
     }
@@ -1581,7 +1723,7 @@ export function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeDocument?.id, activeDocument?.path, activeDocument?.content, activeDocument?.workspaceRoot, workspaceRoot, editorDecorationRevision, platformSnapshot.plugins]);
+  }, [activeDocument?.id, activeDocument?.kind, activeDocument?.path, activeDocument?.content, activeDocument?.workspaceRoot, activeResourceEditorProvider, workspaceRoot, editorDecorationRevision, platformSnapshot.plugins]);
 
   useEffect(() => {
     setSelectedEditorLineDecoration(undefined);
@@ -2091,7 +2233,7 @@ export function App() {
         group: "file",
         order: 0,
         icon: "save",
-        enabled: document.content !== document.savedContent,
+        enabled: document.kind === "text" && document.content !== document.savedContent,
       },
       {
         id: "core.tab.close",
@@ -2288,6 +2430,9 @@ export function App() {
   };
 
   const saveOpenDocument = async (document: OpenDocument, forceSaveAs = false) => {
+    if (document.kind !== "text") {
+      throw new Error("Este recurso não é um documento de texto editável.");
+    }
     let handle = forceSaveAs ? undefined : document.handle;
     if (!handle) {
       if (!window.showSaveFilePicker) {
@@ -2312,6 +2457,9 @@ export function App() {
     const document: OpenDocument = {
       id: `untitled:${crypto.randomUUID()}`,
       name,
+      kind: "text",
+      mediaType: "text/plain",
+      size: 0,
       content: "",
       savedContent: "",
       selectionStart: 0,
@@ -2640,6 +2788,9 @@ export function App() {
                 id: entry.path,
                 name: entry.name,
                 path: entry.path,
+                kind: "text",
+                mediaType: "text/plain",
+                size: 0,
                 content: "",
                 savedContent: "",
                 selectionStart: 0,
@@ -3462,9 +3613,13 @@ export function App() {
                           invoke(() => openDocumentMenu(document, event.clientX, event.clientY));
                         }}
                       >
-                        <File size={14} />
+                        {document.kind === "image"
+                          ? <ImageIcon size={14} />
+                          : document.kind === "binary"
+                            ? <FileWarning size={14} />
+                            : <File size={14} />}
                         <span>{document.name}</span>
-                        {document.content !== document.savedContent ? <span className="dirty-dot">●</span> : null}
+                        {document.kind === "text" && document.content !== document.savedContent ? <span className="dirty-dot">●</span> : null}
                         <span
                           role="button"
                           tabIndex={0}
@@ -3484,10 +3639,25 @@ export function App() {
                     {activeLanguageProvider?.lintRules?.length ? (
                       <button className="icon-button small" type="button" aria-label="Configurar lint" title="Configurar lint" onClick={() => setLintSettingsOpen(true)}><Code2 size={14} /></button>
                     ) : null}
-                    <button className="icon-button small" type="button" aria-label="Salvar arquivo" title="Salvar arquivo" disabled={!activeDocument} onClick={() => invoke(saveDocument)}><Save size={14} /></button>
+                    <button
+                      className="icon-button small"
+                      type="button"
+                      aria-label="Salvar arquivo"
+                      title="Salvar arquivo"
+                      disabled={!activeDocument || activeDocument.kind !== "text" || Boolean(activeResourceEditorProvider)}
+                      onClick={() => invoke(saveDocument)}
+                    ><Save size={14} /></button>
                   </div>
                 </div>
                 <div className="editor-stack">
+                  {activeDocument && activeResourceEditorProvider ? (
+                    <ResourceEditorHost provider={activeResourceEditorProvider} document={activeDocument} />
+                  ) : activeDocument?.kind === "image" ? (
+                    <NativeImageEditor document={activeDocument} />
+                  ) : activeDocument?.kind === "binary" ? (
+                    <UnsupportedBinaryEditor document={activeDocument} />
+                  ) : (
+                    <>
                   {selectedEditorLineDecoration?.change ? (
                     <EditorLineDiffPeek
                       decoration={selectedEditorLineDecoration}
@@ -3599,6 +3769,8 @@ export function App() {
                       />
                     )}
                   </div>
+                    </>
+                  )}
                 </div>
               </>
             ) : (
@@ -3664,9 +3836,9 @@ export function App() {
           <button type="button" onClick={() => invoke(openSingleFile)}><File size={13} /> Abrir arquivo</button>
           <span>{platformSnapshot.plugins.length} plugin(s)</span>
           <span className="status-spacer" />
-          <span>{activeDocument?.content !== activeDocument?.savedContent ? "Modificado" : "Salvo"}</span>
-          <span>UTF-8</span>
-          <span>{activeLanguageProvider?.name ?? "Texto"}</span>
+          <span>{activeDocument?.kind === "text" && activeDocument.content !== activeDocument.savedContent ? "Modificado" : "Salvo"}</span>
+          <span>{activeDocument?.kind === "text" ? "UTF-8" : activeDocument?.mediaType ?? ""}</span>
+          <span>{activeResourceEditorProvider?.id ?? activeLanguageProvider?.name ?? (activeDocument?.kind === "image" ? "Imagem" : activeDocument?.kind === "binary" ? "Binário" : "Texto")}</span>
         </footer>
 
         <ProfileDialog

@@ -16,6 +16,8 @@ import type {
   ScriptExecutionContribution,
   TextEditorLineDecorationProvider,
   TextDiagnostic,
+  WorkbenchResourceDescriptor,
+  WorkbenchResourceEditorProvider,
 } from "@tinyide/plugin-api";
 import type { OpenDocument } from "../browser-filesystem";
 import { platform } from "./platform";
@@ -62,7 +64,7 @@ export interface RunProfileCallbacks {
 }
 
 export function languageProviderFor(document: OpenDocument | undefined): LanguageProvider | undefined {
-  if (!document) return undefined;
+  if (!document || document.kind !== "text") return undefined;
   const lowerName = document.name.toLocaleLowerCase();
   return platform.capabilities
     .getAll<LanguageProvider>("language.provider")
@@ -94,6 +96,36 @@ export function pluginSettingsProviders(): readonly PluginSettingsProvider[] {
 
 export function textEditorLineDecorationProviders(): readonly TextEditorLineDecorationProvider[] {
   return platform.capabilities.getAll<TextEditorLineDecorationProvider>("textEditor.lineDecoration");
+}
+
+export function workbenchResourceDescriptor(document: OpenDocument): WorkbenchResourceDescriptor {
+  return {
+    id: document.id,
+    name: document.name,
+    ...(document.path ? { path: document.path } : {}),
+    ...(document.workspaceRoot ? { workspaceRoot: document.workspaceRoot } : {}),
+    mediaType: document.mediaType,
+    size: document.size,
+    kind: document.kind,
+  };
+}
+
+export function resourceEditorProviderFor(
+  document: OpenDocument | undefined,
+): WorkbenchResourceEditorProvider | undefined {
+  if (!document) return undefined;
+  const resource = workbenchResourceDescriptor(document);
+  return platform.capabilities
+    .getAll<WorkbenchResourceEditorProvider>("workbench.resourceEditor")
+    .slice()
+    .sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0) || left.id.localeCompare(right.id))
+    .find((provider) => {
+      try {
+        return provider.canOpen(resource);
+      } catch {
+        return false;
+      }
+    });
 }
 
 export function environmentProviderFor(document: OpenDocument | undefined): ExecutionEnvironmentProvider | undefined {

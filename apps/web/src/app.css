@@ -545,6 +545,20 @@ button { color: inherit; }
 
 .editor-stack { display: flex; min-width: 0; min-height: 0; overflow: hidden; flex-direction: column; }
 .editor-stack > .editor-canvas { flex: 1 1 auto; min-height: 0; }
+.resource-editor { display: flex; min-width: 0; min-height: 0; height: 100%; flex: 1 1 auto; overflow: hidden; background: #0f1218; color: var(--text); }
+.resource-editor--plugin { position: relative; }
+.resource-editor--image { flex-direction: column; }
+.resource-editor__viewport { display: grid; min-width: 0; min-height: 0; flex: 1 1 auto; place-items: center; overflow: auto; padding: 24px; background-color: #11151c; background-image: linear-gradient(45deg, #171c24 25%, transparent 25%), linear-gradient(-45deg, #171c24 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #171c24 75%), linear-gradient(-45deg, transparent 75%, #171c24 75%); background-position: 0 0, 0 8px, 8px -8px, -8px 0; background-size: 16px 16px; }
+.resource-editor__viewport img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; box-shadow: 0 10px 34px rgb(0 0 0 / 35%); }
+.resource-editor__meta { display: flex; min-height: 28px; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 14px; border-top: 1px solid var(--border); padding: 0 10px; background: #171c25; color: var(--muted); font-size: 10px; }
+.resource-editor--unsupported { align-items: center; justify-content: center; padding: 32px; }
+.resource-editor__message { display: grid; max-width: 520px; justify-items: center; gap: 8px; color: #aeb8c7; text-align: center; }
+.resource-editor__message svg { color: #7f8ca0; }
+.resource-editor__message strong { color: #e4e9f1; font-size: 14px; }
+.resource-editor__message p { margin: 0; color: #8d98a8; line-height: 1.5; }
+.resource-editor__message small { color: #657184; }
+.resource-editor__message.is-error svg,
+.resource-editor__message.is-error strong { color: #e58a95; }
 .editor-canvas { display: grid; min-width: 0; min-height: 0; overflow: hidden; grid-template-columns: minmax(0, 1fr); background: #0f1218; }
 .editor-canvas.has-editor-gutter { grid-template-columns: 52px minmax(0, 1fr); }
 .editor-canvas.has-editor-gutter:not(.has-line-numbers) { grid-template-columns: 8px minmax(0, 1fr); }
