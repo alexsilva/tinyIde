@@ -173,6 +173,7 @@ import {
   undoEditorHistory,
   type EditorHistory,
 } from "./editor-history";
+import { applyEditorTab } from "./editor-indentation";
 
 const PROFILE_KEY = "tinyide.react.executionProfiles.v1";
 const LINT_SETTINGS_KEY = "tinyide.react.lintSettings.v1";
@@ -2824,6 +2825,27 @@ export function App() {
   };
 
   const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Tab" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      const textarea = event.currentTarget;
+      const result = applyEditorTab(
+        textarea.value,
+        textarea.selectionStart,
+        textarea.selectionEnd,
+        event.shiftKey,
+      );
+      if (result.content === textarea.value
+        && result.selectionStart === textarea.selectionStart
+        && result.selectionEnd === textarea.selectionEnd) return;
+      textarea.value = result.content;
+      textarea.setSelectionRange(result.selectionStart, result.selectionEnd);
+      updateDocument(textarea);
+      requestAnimationFrame(() => {
+        textarea.focus();
+        textarea.setSelectionRange(result.selectionStart, result.selectionEnd);
+      });
+      return;
+    }
     if (!(event.ctrlKey || event.metaKey)) return;
     const key = event.key.toLocaleLowerCase();
     const undo = key === "z" && !event.shiftKey;
