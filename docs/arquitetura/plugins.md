@@ -179,6 +179,7 @@ interface PluginContext {
   readonly commands: CommandRegistryApi;
   readonly events: EventBusApi;
   readonly extensions: PluginExtensionApi;
+  readonly workbench: WorkbenchApi;
   readonly subscriptions: Disposable[];
 }
 ```
@@ -197,11 +198,35 @@ context.extensions.registerResourceContextMenuProvider(provider);
 context.extensions.registerInteractiveSessionProvider(provider);
 context.extensions.registerInteractiveSessionHook(provider);
 context.extensions.registerPluginSettingsProvider(provider);
+context.extensions.registerWorkbenchSidebarHook(hook);
 context.extensions.registerWorkbenchPanelHook(hook);
 context.extensions.registerWorkbenchToolWindowHook(hook);
+context.extensions.registerTextEditorLineDecorationProvider(provider);
+context.extensions.registerWorkbenchResourceEditorProvider(provider);
 ```
 
 O plugin não recebe acesso direto ao `CapabilityRegistry`. O host converte chamadas da API pública em registros internos.
+
+### workbench
+
+`context.workbench` oferece operações de interação com o host que não pertencem ao domínio de um plugin específico: abrir uma sidebar ou tool window, abrir um diálogo contribuído e solicitar destaque de texto. Contribuições visuais maiores devem ser registradas por `extensions`, para que o host possa descartá-las junto com o plugin.
+
+Os contratos de `@tinyide/plugin-api` que recebem `HTMLElement`, `Blob` ou contextos de montagem são deliberadamente específicos do workbench web. Plugins que precisem ser portáveis devem manter sua lógica de domínio separada e concentrar a adaptação visual nesses providers.
+
+## Acoplamento e limites de portabilidade
+
+O acoplamento entre plugins e o core de domínio é mantido baixo: plugins dependem do contrato público, enquanto `@tinyide/core` administra ciclo de vida, comandos, eventos e capabilities sem conhecer plugins específicos.
+
+O acoplamento restante está no host e na API visual:
+
+- `apps/web` adapta cada registro público para uma capability interna e monta sidebars, painéis, tool windows e editores de recursos;
+- os identificadores das capabilities precisam permanecer estáveis entre `plugin-api`, o adaptador do host e o runtime;
+- a API visual usa tipos do navegador, portanto não deve ser tratada como contrato agnóstico para hosts desktop ou headless;
+- uma nova superfície visual exige uma alteração correspondente no host, mesmo que os plugins continuem isolados.
+
+Ao adicionar uma extensão, prefira este limite: tipos e comportamento genérico em `@tinyide/plugin-api`, adaptação de registro em `apps/web` e implementação específica dentro do plugin. Não introduza imports de `apps/web` ou `@tinyide/core` nos plugins.
+
+As constantes de capability exportadas pelo SDK são a referência para novos adaptadores; evite repetir strings literais em consumidores quando houver uma constante pública equivalente.
 
 ### commands
 
