@@ -742,6 +742,8 @@ export interface WorkbenchExtensionApi {
 
 export interface TerminalSessionInfo {
   readonly id: string;
+  readonly title?: string;
+  readonly createdAt?: string;
   readonly status: "running" | "exited";
   readonly workspaceRoot: string;
   readonly shell: string;
@@ -757,6 +759,7 @@ export interface TerminalSessionOutput {
 }
 
 export interface TerminalSessionCreateOptions {
+  readonly title?: string;
   readonly cols?: number;
   readonly rows?: number;
   readonly environmentVariables?: Readonly<Record<string, string>>;
@@ -796,6 +799,7 @@ export interface TerminalSessionHookProvider {
 export interface TerminalProvider {
   readonly id: string;
   readonly label: string;
+  list?(): Promise<readonly TerminalSessionInfo[]>;
   create(options?: TerminalSessionCreateOptions): Promise<TerminalSessionInfo>;
   read(sessionId: string, offset?: number): Promise<TerminalSessionOutput>;
   write(sessionId: string, data: string): Promise<void>;
