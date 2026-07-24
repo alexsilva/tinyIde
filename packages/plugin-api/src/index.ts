@@ -833,6 +833,7 @@ export interface ExecutionEnvironment {
   readonly name: string;
   readonly type: ExecutionEnvironmentType;
   readonly status: ExecutionEnvironmentStatus;
+  readonly managed?: boolean;
   readonly executable?: string;
   readonly path?: string;
   readonly version?: string;
@@ -860,6 +861,23 @@ export interface ExecutionEnvironmentUpdateRequest {
   readonly name: string;
   readonly path?: string;
   readonly executable?: string;
+}
+
+export interface ExecutionEnvironmentPackage {
+  readonly name: string;
+  readonly version: string;
+  readonly latestVersion?: string;
+}
+
+export interface ExecutionEnvironmentPackageInventory {
+  readonly packages: readonly ExecutionEnvironmentPackage[];
+  readonly health: "healthy" | "issues" | "unknown";
+  readonly issues?: readonly string[];
+}
+
+export interface ExecutionEnvironmentPackageOperationResult {
+  readonly inventory: ExecutionEnvironmentPackageInventory;
+  readonly output?: string;
 }
 
 export interface ExecutionEnvironmentDirectoryEntry {
@@ -912,6 +930,19 @@ export interface ExecutionEnvironmentProvider {
   validateExecutable?(path: string): Promise<{ readonly executable: string; readonly version?: string }>;
   remove(environmentId: string): Promise<void>;
   installDependencies(environmentId: string, dependencies: readonly string[]): Promise<ExecutionEnvironment>;
+  listPackages?(environmentId: string): Promise<ExecutionEnvironmentPackageInventory>;
+  installPackages?(
+    environmentId: string,
+    packages: readonly string[],
+  ): Promise<ExecutionEnvironmentPackageOperationResult>;
+  upgradePackages?(
+    environmentId: string,
+    packages?: readonly string[],
+  ): Promise<ExecutionEnvironmentPackageOperationResult>;
+  uninstallPackages?(
+    environmentId: string,
+    packages: readonly string[],
+  ): Promise<ExecutionEnvironmentPackageOperationResult>;
   run(
     environmentId: string,
     request: ExecutionEnvironmentRunRequest,

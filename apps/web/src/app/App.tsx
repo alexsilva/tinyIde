@@ -3,8 +3,11 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import {
+  ArrowLeft,
+  ArrowUpCircle,
   Box,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -28,6 +31,7 @@ import {
   LocateFixed,
   MoreVertical,
   Package,
+  PackageCheck,
   PanelBottom,
   Play,
   Plug,
@@ -38,6 +42,7 @@ import {
   Settings2,
   Square,
   Terminal,
+  Trash2,
   Undo2,
   Upload,
   X,
@@ -58,6 +63,7 @@ import {
 import type {
   ExecutionEnvironment,
   ExecutionEnvironmentDirectoryListing,
+  ExecutionEnvironmentPackageInventory,
   ExecutionEnvironmentProvider,
   ExecutionProfile,
   ExecutionProfileExecutableOption,
@@ -501,6 +507,28 @@ function IconButton({
       </Tooltip.Trigger>
       <Tooltip.Portal>
         <Tooltip.Content className="tooltip" side="right" sideOffset={8}>
+          {label}
+          <Tooltip.Arrow className="tooltip-arrow" />
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  );
+}
+
+function ButtonTooltip({
+  label,
+  children,
+  side = "bottom",
+}: {
+  readonly label: string;
+  readonly children: React.ReactElement;
+  readonly side?: "top" | "right" | "bottom" | "left";
+}) {
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content className="tooltip" side={side} sideOffset={6}>
           {label}
           <Tooltip.Arrow className="tooltip-arrow" />
         </Tooltip.Content>
@@ -1794,6 +1822,163 @@ function UnsupportedBinaryEditor({ document }: { readonly document: OpenDocument
   );
 }
 
+function EnvironmentPackageManager({
+  environment,
+  provider,
+  onClose,
+  onEnvironmentChanged,
+}: {
+  readonly environment: ExecutionEnvironment;
+  readonly provider: ExecutionEnvironmentProvider;
+  readonly onClose: () => void;
+  readonly onEnvironmentChanged: () => Promise<void>;
+}) {
+  const [inventory, setInventory] = useState<ExecutionEnvironmentPackageInventory>();
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "updates">("all");
+  const [packageSpecs, setPackageSpecs] = useState("");
+  const [busy, setBusy] = useState<string>();
+  const [feedback, setFeedback] = useState<string>();
+  const [operationOutput, setOperationOutput] = useState("");
+  const [packageToRemove, setPackageToRemove] = useState<string>();
+  const [packageError, setPackageError] = useState<string>();
+
+  const loadPackages = useCallback(async () => {
+    if (!provider.listPackages) return;
+    setBusy("refresh");
+    setPackageError(undefined);
+    try {
+      setInventory(await provider.listPackages(environment.id));
+    } catch (cause) {
+      setPackageError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(undefined);
+    }
+  }, [environment.id, provider]);
+
+  useEffect(() => {
+    void loadPackages();
+  }, [loadPackages]);
+
+  const execute = async (
+    label: string,
+    operation: () => Promise<{ readonly inventory: ExecutionEnvironmentPackageInventory; readonly output?: string }>,
+  ) => {
+    setBusy(label);
+    setPackageError(undefined);
+    setFeedback(`${label}...`);
+    try {
+      const result = await operation();
+      setInventory(result.inventory);
+      setOperationOutput(result.output ?? "");
+      setFeedback(`${label} concluído.`);
+      await onEnvironmentChanged();
+      return true;
+    } catch (cause) {
+      setPackageError(cause instanceof Error ? cause.message : String(cause));
+      setFeedback(undefined);
+      return false;
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  const installedPackages = inventory?.packages ?? [];
+  const visiblePackages = installedPackages.filter((item) => {
+    if (filter === "updates" && !item.latestVersion) return false;
+    return !query.trim() || item.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
+  });
+  const updates = installedPackages.filter((item) => item.latestVersion);
+  const packageManagementAvailable = Boolean(
+    provider.listPackages && provider.installPackages && provider.upgradePackages && provider.uninstallPackages,
+  );
+
+  return (
+    <section className="package-manager" aria-label={`Pacotes de ${environment.name}`}>
+      <header className="package-manager__header">
+        <button className="icon-button small" type="button" aria-label="Voltar para ambientes" title="Voltar para ambientes" onClick={onClose}><ArrowLeft size={15} /></button>
+        <div><strong>{environment.name}</strong><span>{environment.version ?? "Python"} · Pacotes</span></div>
+        <button className="icon-button small" type="button" aria-label="Atualizar pacotes" title="Atualizar pacotes" disabled={Boolean(busy)} onClick={() => void loadPackages()}><RefreshCw className={busy === "refresh" ? "is-spinning" : undefined} size={14} /></button>
+      </header>
+
+      <div className="package-manager__summary">
+        <span><PackageCheck size={14} /><strong>{installedPackages.length}</strong> instalados</span>
+        <span className={updates.length ? "has-updates" : ""}><ArrowUpCircle size={14} /><strong>{updates.length}</strong> atualizações</span>
+        <span className={inventory?.health === "issues" ? "has-issues" : ""}>{inventory?.health === "healthy" ? <CheckCircle2 size={14} /> : <CircleAlert size={14} />}{inventory?.health === "healthy" ? "Saudável" : inventory?.health === "issues" ? "Conflitos" : "Verificando"}</span>
+      </div>
+
+      {packageManagementAvailable ? (
+        <form
+          className="package-install"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const packages = packageSpecs.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
+            if (!packages.length || !provider.installPackages) return;
+            void execute("Instalação", () => provider.installPackages!(environment.id, packages))
+              .then((succeeded) => { if (succeeded) setPackageSpecs(""); });
+          }}
+        >
+          <label htmlFor="package-specs">Instalar pacotes</label>
+          <div>
+            <input id="package-specs" value={packageSpecs} onChange={(event) => setPackageSpecs(event.target.value)} placeholder="requests ou django==5.2" />
+            <button className="button primary compact" type="submit" disabled={Boolean(busy) || !packageSpecs.trim()}><Plus size={14} /> Instalar</button>
+          </div>
+          <small>Aceita vários nomes ou versões, separados por espaço.</small>
+        </form>
+      ) : <p className="package-manager__unsupported">Este provedor não oferece gerenciamento detalhado de pacotes.</p>}
+
+      <div className="package-manager__controls">
+        <div className="segmented-control" aria-label="Filtrar pacotes">
+          <button type="button" className={filter === "all" ? "is-active" : ""} onClick={() => setFilter("all")}><Package size={13} /> Todos</button>
+          <button type="button" className={filter === "updates" ? "is-active" : ""} onClick={() => setFilter("updates")}><ArrowUpCircle size={13} /> Atualizações</button>
+        </div>
+        <label className="package-search"><Search size={13} /><input aria-label="Buscar pacote instalado" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filtrar" /></label>
+      </div>
+
+      {updates.length && provider.upgradePackages ? (
+        <button className="package-update-all" type="button" disabled={Boolean(busy)} onClick={() => void execute("Atualização", () => provider.upgradePackages!(environment.id))}><ArrowUpCircle size={14} /> Atualizar todos ({updates.length})</button>
+      ) : null}
+
+      {packageError ? <div className="package-feedback is-error" role="alert"><CircleAlert size={14} /><span>{packageError}</span><button type="button" onClick={() => void loadPackages()}><RefreshCw size={13} /> Tentar novamente</button></div> : null}
+      {feedback ? <div className="package-feedback" role="status">{busy ? <RefreshCw className="is-spinning" size={14} /> : <CheckCircle2 size={14} />}<span>{feedback}</span></div> : null}
+      {inventory?.issues?.length ? <details className="package-issues"><summary><CircleAlert size={13} /> Ver conflitos ({inventory.issues.length})</summary>{inventory.issues.map((issue) => <code key={issue}>{issue}</code>)}</details> : null}
+      {operationOutput ? <details className="package-output"><summary><Terminal size={13} /> Saída da última operação</summary><pre>{operationOutput}</pre></details> : null}
+
+      <div className="package-list" aria-busy={busy === "refresh"}>
+        {busy === "refresh" && !inventory ? <div className="package-empty"><RefreshCw className="is-spinning" size={20} /><span>Carregando pacotes...</span></div> : null}
+        {inventory && !visiblePackages.length ? <div className="package-empty"><Package size={20} /><span>{query ? "Nenhum pacote corresponde à busca." : filter === "updates" ? "Todos os pacotes estão atualizados." : "Nenhum pacote instalado."}</span></div> : null}
+        {visiblePackages.map((item) => (
+          <article className="package-row" key={item.name}>
+            <div><strong>{item.name}</strong><span>{item.version}{item.latestVersion ? ` → ${item.latestVersion}` : ""}</span></div>
+            <div>
+              {item.latestVersion && provider.upgradePackages ? <button className="icon-button small" type="button" aria-label={`Atualizar ${item.name}`} title={`Atualizar ${item.name}`} disabled={Boolean(busy)} onClick={() => void execute(`Atualização de ${item.name}`, () => provider.upgradePackages!(environment.id, [item.name]))}><ArrowUpCircle size={14} /></button> : null}
+              {provider.uninstallPackages ? <button className="icon-button small danger" type="button" aria-label={`Desinstalar ${item.name}`} title={`Desinstalar ${item.name}`} disabled={Boolean(busy)} onClick={() => setPackageToRemove(item.name)}><Trash2 size={14} /></button> : null}
+            </div>
+          </article>
+        ))}
+      </div>
+
+      <Dialog.Root open={Boolean(packageToRemove)} onOpenChange={(open) => { if (!open) setPackageToRemove(undefined); }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-overlay" />
+          <Dialog.Content className="dialog-content dialog-content--small package-remove-dialog">
+            <Dialog.Title>Desinstalar pacote</Dialog.Title>
+            <Dialog.Description>Remover <strong>{packageToRemove}</strong> de {environment.name}? Dependências usadas por outros pacotes não serão removidas automaticamente.</Dialog.Description>
+            <div className="dialog-actions">
+              <button className="button secondary compact" type="button" onClick={() => setPackageToRemove(undefined)}><X size={14} /> Cancelar</button>
+              <button className="button danger compact" type="button" onClick={() => {
+                const name = packageToRemove;
+                setPackageToRemove(undefined);
+                if (name && provider.uninstallPackages) void execute(`Remoção de ${name}`, () => provider.uninstallPackages!(environment.id, [name]));
+              }}><Trash2 size={14} /> Desinstalar</button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </section>
+  );
+}
+
 export function App() {
   const initialSession = useMemo(() => readSession(), []);
   const [platformSnapshot, setPlatformSnapshot] = useState(() => platform.snapshot());
@@ -1824,6 +2009,8 @@ export function App() {
   const [environmentForm, setEnvironmentForm] = useState<"addExecutable" | "importEnvironment" | "createEnvironment" | "dependencies" | "edit">();
   const [editingEnvironmentId, setEditingEnvironmentId] = useState<string>();
   const [environmentPath, setEnvironmentPath] = useState("");
+  const [environmentSearch, setEnvironmentSearch] = useState("");
+  const [packageManagerEnvironmentId, setPackageManagerEnvironmentId] = useState<string>();
   const [environmentBrowserMode, setEnvironmentBrowserMode] = useState<"directory" | "file">();
   const [environmentListing, setEnvironmentListing] = useState<ExecutionEnvironmentDirectoryListing>();
   const [environmentBrowserFilter, setEnvironmentBrowserFilter] = useState("");
@@ -3853,6 +4040,22 @@ export function App() {
   const editingEnvironment = editingEnvironmentId
     ? environments.find((environment) => environment.id === editingEnvironmentId)
     : undefined;
+  const packageManagerEnvironment = packageManagerEnvironmentId
+    ? environments.find((environment) => environment.id === packageManagerEnvironmentId)
+    : undefined;
+  const visibleEnvironments = environments.filter((environment) => {
+    const query = environmentSearch.trim().toLocaleLowerCase();
+    if (!query) return true;
+    return [
+      environment.name,
+      environment.version ?? "",
+      environment.executable ?? "",
+      environment.path ?? "",
+    ].some((value) => value.toLocaleLowerCase().includes(query));
+  });
+  const managedEnvironmentCount = environments.filter((environment) => environment.type === "venv" && environment.managed !== false).length;
+  const importedEnvironmentCount = environments.filter((environment) => environment.type === "venv" && environment.managed === false).length;
+  const executableEnvironmentCount = environments.filter((environment) => environment.type === "process").length;
 
   const openSettings = (sectionId = "editor") => {
     setSettingsSectionId(sectionId);
@@ -4250,17 +4453,44 @@ export function App() {
 
               {sidebarView === "environments" ? (
                 <div className="sidebar-content environment-manager">
+                  {packageManagerEnvironment && environmentProvider() ? (
+                    <EnvironmentPackageManager
+                      environment={packageManagerEnvironment}
+                      provider={environmentProvider()!}
+                      onClose={() => setPackageManagerEnvironmentId(undefined)}
+                      onEnvironmentChanged={() => refreshEnvironments(packageManagerEnvironment.id)}
+                    />
+                  ) : (
+                  <>
                   <div className="environment-manager__intro">
                     <div>
                       <strong>{environmentProvider()?.name ?? "Ambientes de execução"}</strong>
-                      <p>Gerencie runtimes e ambientes fornecidos pelo plugin ativo.</p>
+                      <p>Gerencie intérpretes, ambientes e pacotes do workspace atual.</p>
                     </div>
-                    <button className="icon-button small" type="button" aria-label="Atualizar ambientes" onClick={() => invoke(refreshEnvironments)}><RefreshCw size={14} /></button>
+                    <ButtonTooltip label="Atualizar ambientes" side="left">
+                      <button className="icon-button small" type="button" aria-label="Atualizar ambientes" onClick={() => invoke(refreshEnvironments)}><RefreshCw size={14} /></button>
+                    </ButtonTooltip>
                   </div>
+                  <div className="environment-manager__summary">
+                    <span><CheckCircle2 size={13} /> {environments.length} ambientes</span>
+                    <span><Package size={13} /> {managedEnvironmentCount} gerenciados</span>
+                    <span><FolderOpen size={13} /> {importedEnvironmentCount} importados</span>
+                    <span><Terminal size={13} /> {executableEnvironmentCount} executáveis</span>
+                  </div>
+                  <label className="search-field environment-manager__search">
+                    <Search size={14} />
+                    <input value={environmentSearch} onChange={(event) => setEnvironmentSearch(event.target.value)} placeholder="Buscar ambiente por nome, versão ou caminho" />
+                  </label>
                   <div className="environment-manager__toolbar">
-                    <button className="button secondary compact" type="button" onClick={() => { setEnvironmentForm("addExecutable"); setEnvironmentPath(""); }}><Terminal size={14} /> Adicionar executável</button>
-                    <button className="button secondary compact" type="button" onClick={() => { setEnvironmentForm("importEnvironment"); setEnvironmentPath(""); }}><FolderOpen size={14} /> Importar ambiente</button>
-                    <button className="button primary compact" type="button" onClick={() => { setEnvironmentForm("createEnvironment"); setEnvironmentPath(""); }}><Plus size={14} /> Criar ambiente</button>
+                    <ButtonTooltip label="Criar ambiente">
+                      <button className="button primary compact" type="button" aria-label="Criar ambiente" onClick={() => { setEnvironmentForm("createEnvironment"); setEnvironmentPath(""); }}><Plus size={14} /><span className="responsive-action__label">Criar</span></button>
+                    </ButtonTooltip>
+                    <ButtonTooltip label="Importar ambiente">
+                      <button className="button secondary compact" type="button" aria-label="Importar ambiente" onClick={() => { setEnvironmentForm("importEnvironment"); setEnvironmentPath(""); }}><FolderOpen size={14} /><span className="responsive-action__label">Importar</span></button>
+                    </ButtonTooltip>
+                    <ButtonTooltip label="Adicionar executável Python">
+                      <button className="button secondary compact" type="button" aria-label="Adicionar executável Python" onClick={() => { setEnvironmentForm("addExecutable"); setEnvironmentPath(""); }}><Terminal size={14} /><span className="responsive-action__label">Executável</span></button>
+                    </ButtonTooltip>
                   </div>
 
                   {environmentForm ? (
@@ -4269,13 +4499,13 @@ export function App() {
                       {environmentForm === "addExecutable" ? (
                         <>
                           <label>Nome<input name="name" placeholder="Runtime local" /></label>
-                          <label>Executável<div className="path-row"><input readOnly value={environmentPath} placeholder="Nenhum executável selecionado" /><button className="button secondary compact" type="button" onClick={() => invoke(async () => { const path = await pickHostPath("file", true); if (path) setEnvironmentPath(path); })}>Procurar</button></div></label>
+                          <label>Executável<div className="path-row"><input readOnly value={environmentPath} placeholder="Nenhum executável selecionado" /><button className="button secondary compact" type="button" onClick={() => invoke(async () => { const path = await pickHostPath("file", true); if (path) setEnvironmentPath(path); })}><Search size={13} /> Procurar</button></div></label>
                         </>
                       ) : null}
                       {environmentForm === "importEnvironment" ? (
                         <>
                           <label>Nome opcional<input name="name" /></label>
-                          <label>Pasta<div className="path-row"><input readOnly value={environmentPath} placeholder="Nenhum venv selecionado" /><button className="button secondary compact" type="button" onClick={() => invoke(async () => { const path = await pickHostPath("directory"); if (path) setEnvironmentPath(path); })}>Procurar</button></div></label>
+                          <label>Pasta<div className="path-row"><input readOnly value={environmentPath} placeholder="Nenhum venv selecionado" /><button className="button secondary compact" type="button" onClick={() => invoke(async () => { const path = await pickHostPath("directory"); if (path) setEnvironmentPath(path); })}><FolderOpen size={13} /> Procurar</button></div></label>
                         </>
                       ) : null}
                       {environmentForm === "createEnvironment" ? (
@@ -4288,28 +4518,48 @@ export function App() {
                       {environmentForm === "edit" && editingEnvironment ? (
                         <>
                           <label>Nome<input name="name" defaultValue={editingEnvironment.name} /></label>
-                          <label>{editingEnvironment.type === "venv" ? "Pasta" : "Executável"}<div className="path-row"><input readOnly value={environmentPath} /><button className="button secondary compact" type="button" onClick={() => invoke(async () => { const path = await pickHostPath(editingEnvironment.type === "venv" ? "directory" : "file", editingEnvironment.type === "process"); if (path) setEnvironmentPath(path); })}>Procurar</button></div></label>
+                          <label>{editingEnvironment.type === "venv" ? "Pasta" : "Executável"}<div className="path-row"><input readOnly value={environmentPath} /><button className="button secondary compact" type="button" onClick={() => invoke(async () => { const path = await pickHostPath(editingEnvironment.type === "venv" ? "directory" : "file", editingEnvironment.type === "process"); if (path) setEnvironmentPath(path); })}><Search size={13} /> Procurar</button></div></label>
                         </>
                       ) : null}
                       {environmentForm === "dependencies" ? <label>Dependências<input name="dependencies" placeholder="pacote-a pacote-b" /></label> : null}
-                      <div className="dialog-actions"><button className="button secondary compact" type="button" onClick={() => setEnvironmentForm(undefined)}>Cancelar</button><button className="button primary compact" disabled={environmentBusy} type="submit">Confirmar</button></div>
+                      <div className="dialog-actions"><button className="button secondary compact" type="button" onClick={() => setEnvironmentForm(undefined)}><X size={13} /> Cancelar</button><button className="button primary compact" disabled={environmentBusy} type="submit"><Check size={13} /> Confirmar</button></div>
                     </form>
                   ) : null}
 
                   <div className="environment-list">
-                    {environments.map((environment) => (
+                    {visibleEnvironments.map((environment) => (
                       <article className={`environment-card${selectedEnvironmentId === environment.id ? " is-active" : ""}`} key={environment.id}>
                         <button className="card-delete" type="button" aria-label={`Remover ${environment.name}`} title={`Remover ${environment.name}`} onClick={() => invoke(() => removeEnvironment(environment.id))}><X size={14} /></button>
-                        <div><strong>{environment.name}</strong><span>{environment.type === "venv" ? "Ambiente isolado" : "Executável"}{environment.version ? ` · ${environment.version}` : ""}</span><small>{environment.executable}</small></div>
+                        <div>
+                          <strong>{environment.name}</strong>
+                          <div className="environment-card__badges">
+                            <span className={`environment-chip is-${environment.status}`}>{environment.status === "ready" ? <CheckCircle2 size={12} /> : <CircleAlert size={12} />}{environment.status === "ready" ? "Pronto" : environment.status === "creating" ? "Criando" : "Erro"}</span>
+                            <span className="environment-chip">{environment.type === "venv" ? environment.managed === false ? <FolderOpen size={12} /> : <Package size={12} /> : <Terminal size={12} />}{environment.type === "venv" ? environment.managed === false ? "Importado" : "Gerenciado" : "Executável"}</span>
+                            {environment.version ? <span className="environment-chip"><Box size={12} /> {environment.version}</span> : null}
+                          </div>
+                          <small>{environment.executable ?? environment.path}</small>
+                        </div>
                         <div className="environment-card__actions">
-                          <button className="button secondary compact" disabled={selectedEnvironmentId === environment.id} type="button" onClick={() => selectEnvironment(environment.id)}>{selectedEnvironmentId === environment.id ? "Selecionado" : "Selecionar"}</button>
-                          {environmentProvider()?.update ? <button className="button secondary compact" type="button" onClick={() => { setEditingEnvironmentId(environment.id); setEnvironmentPath(environment.type === "venv" ? environment.path ?? "" : environment.executable ?? ""); setEnvironmentForm("edit"); }}>Editar</button> : null}
-                          {environment.type === "venv" ? <button className="button secondary compact" type="button" onClick={() => { selectEnvironment(environment.id); setEnvironmentForm("dependencies"); }}>Dependências</button> : null}
+                          <ButtonTooltip label={selectedEnvironmentId === environment.id ? "Ambiente selecionado" : `Selecionar ${environment.name}`}>
+                            <button className="button secondary compact" aria-label={selectedEnvironmentId === environment.id ? "Ambiente selecionado" : `Selecionar ${environment.name}`} disabled={selectedEnvironmentId === environment.id} type="button" onClick={() => selectEnvironment(environment.id)}><Check size={13} /><span className="responsive-action__label">{selectedEnvironmentId === environment.id ? "Selecionado" : "Selecionar"}</span></button>
+                          </ButtonTooltip>
+                          {environmentProvider()?.update ? (
+                            <ButtonTooltip label={`Editar ${environment.name}`}>
+                              <button className="button secondary compact" type="button" aria-label={`Editar ${environment.name}`} onClick={() => { setEditingEnvironmentId(environment.id); setEnvironmentPath(environment.type === "venv" ? environment.path ?? "" : environment.executable ?? ""); setEnvironmentForm("edit"); }}><Settings2 size={13} /><span className="responsive-action__label">Editar</span></button>
+                            </ButtonTooltip>
+                          ) : null}
+                          {environment.type === "venv" ? (
+                            <ButtonTooltip label={`Gerenciar pacotes de ${environment.name}`}>
+                              <button className="button secondary compact" type="button" aria-label={`Gerenciar pacotes de ${environment.name}`} onClick={() => { selectEnvironment(environment.id); setPackageManagerEnvironmentId(environment.id); }}><Package size={13} /><span className="responsive-action__label">Pacotes</span></button>
+                            </ButtonTooltip>
+                          ) : null}
                         </div>
                       </article>
                     ))}
-                    {!environments.length ? <div className="empty-sidebar"><HardDrive size={26} /><p>Nenhum ambiente cadastrado.</p></div> : null}
+                    {!visibleEnvironments.length ? <div className="empty-sidebar"><HardDrive size={26} /><p>{environmentSearch ? "Nenhum ambiente corresponde à busca." : "Nenhum ambiente cadastrado."}</p></div> : null}
                   </div>
+                  </>
+                  )}
                 </div>
               ) : null}
 
