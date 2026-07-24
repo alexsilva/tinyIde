@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WorkspaceEntry } from "../browser-filesystem";
+import type { BrowserFileHandle, OpenDocument, WorkspaceEntry } from "../browser-filesystem";
 import {
   collapseDeepestExplorerLevel,
   expandNextExplorerLevel,
@@ -15,7 +15,9 @@ import {
   nearestRemainingItemId,
   nextExplorerHiddenVisibility,
   parentEntryPath,
+  remapOpenDocumentResource,
   replaceWorkspacePathPrefix,
+  workspacePathBelongsToResource,
   workspacePathName,
   workspacePathParent,
   workspacePathContainsHiddenSegment,
@@ -119,6 +121,41 @@ describe("explorer model", () => {
     expect(explorerAncestorDirectoryPaths("README.md")).toEqual([]);
     expect(workspacePathContainsHiddenSegment("src/.cache/data.json")).toBe(true);
     expect(workspacePathContainsHiddenSegment("src/main.py")).toBe(false);
+  });
+
+  it("remaps open document identities after file and directory moves", () => {
+    const handle = { kind: "file", name: "main.py" } as BrowserFileHandle;
+    const nextHandle = { kind: "file", name: "app.py" } as BrowserFileHandle;
+    const document = {
+      id: "src/lib/main.py",
+      name: "main.py",
+      path: "src/lib/main.py",
+      handle,
+      kind: "text",
+      mediaType: "text/x-python",
+      size: 8,
+      content: "print(1)",
+      savedContent: "print(1)",
+      selectionStart: 0,
+      selectionEnd: 0,
+      scrollTop: 0,
+      scrollLeft: 0,
+    } satisfies OpenDocument;
+
+    expect(workspacePathBelongsToResource(document.path, "src")).toBe(true);
+    expect(workspacePathBelongsToResource(document.path, "tests")).toBe(false);
+    expect(remapOpenDocumentResource(document, "src", "source", nextHandle)).toMatchObject({
+      id: "source/lib/main.py",
+      path: "source/lib/main.py",
+      name: "main.py",
+      handle: nextHandle,
+    });
+    expect(remapOpenDocumentResource(document, "src/lib/main.py", "src/lib/app.py", nextHandle)).toMatchObject({
+      id: "src/lib/app.py",
+      path: "src/lib/app.py",
+      name: "app.py",
+      handle: nextHandle,
+    });
   });
 
   it("expands and collapses one tree level at a time", () => {

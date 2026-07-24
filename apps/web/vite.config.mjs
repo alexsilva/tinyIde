@@ -80,9 +80,6 @@ function developmentPluginServer() {
   }
 
   async function resolveBackend(pluginId) {
-    const cacheKey = `${pluginId}:${activeWorkspaceRoot}`;
-    if (backendHandlers.has(cacheKey)) return backendHandlers.get(cacheKey);
-
     for (const directoryName of readdirSync(pluginsRoot)) {
       const manifestPath = join(pluginsRoot, directoryName, "plugin.json");
       if (!existsSync(manifestPath)) continue;
@@ -90,12 +87,17 @@ function developmentPluginServer() {
       if (manifest.id !== pluginId || !manifest.entrypoints?.backend) continue;
 
       const backendPath = resolve(dirname(manifestPath), manifest.entrypoints.backend);
-      const imported = await import(`${pathToFileURL(backendPath).href}?v=${statSync(backendPath).mtimeMs}`);
+      const backendMtime = statSync(backendPath).mtimeMs;
+      const cacheKey = `${pluginId}:${activeWorkspaceRoot}`;
+      const cached = backendHandlers.get(cacheKey);
+      if (cached?.mtime === backendMtime) return cached.handler;
+
+      const imported = await import(`${pathToFileURL(backendPath).href}?v=${backendMtime}`);
       if (typeof imported.createBackend !== "function") {
         throw new Error(`Plugin backend must export createBackend(): ${pluginId}`);
       }
       const handler = imported.createBackend({ workspaceRoot: activeWorkspaceRoot });
-      backendHandlers.set(cacheKey, handler);
+      backendHandlers.set(cacheKey, { mtime: backendMtime, handler });
       return handler;
     }
 
@@ -190,6 +192,25 @@ function developmentPluginServer() {
     name: "tinyide-development-plugin-server",
     configureServer(server) {
       server.middlewares.use(middleware);
+      const watchedPluginFiles = readdirSync(pluginsRoot).flatMap((directoryName) => [
+        join(pluginsRoot, directoryName, "plugin.json"),
+        join(pluginsRoot, directoryName, "dist/frontend.js"),
+        join(pluginsRoot, directoryName, "src/backend.mjs"),
+      ]).filter(existsSync);
+      server.watcher.add(watchedPluginFiles);
+      server.watcher.on("all", (eventName, changedPath) => {
+        if (!["add", "change", "unlink"].includes(eventName)) return;
+        const normalizedChangedPath = normalize(changedPath);
+        if (!normalizedChangedPath.startsWith(`${pluginsRoot}${sep}`)) return;
+        if (
+          normalizedChangedPath.endsWith(`${sep}plugin.json`)
+          || normalizedChangedPath.endsWith(`${sep}dist${sep}frontend.js`)
+          || normalizedChangedPath.endsWith(`${sep}src${sep}backend.mjs`)
+        ) {
+          backendHandlers.clear();
+          server.ws.send({ type: "full-reload", path: "*" });
+        }
+      });
     },
     configurePreviewServer(server) {
       server.middlewares.use(middleware);

@@ -1,4 +1,4 @@
-import type { WorkspaceEntry } from "../browser-filesystem";
+import type { BrowserFileHandle, OpenDocument, WorkspaceEntry } from "../browser-filesystem";
 
 export function workspacePathParent(path: string): string {
   const segments = path.split("/").filter(Boolean);
@@ -170,6 +170,27 @@ export function replaceWorkspacePathPrefix(path: string, previousPath: string, n
   if (path === previousPath) return nextPath;
   if (!path.startsWith(`${previousPath}/`)) return path;
   return `${nextPath}${path.slice(previousPath.length)}`;
+}
+
+export function workspacePathBelongsToResource(path: string | undefined, resourcePath: string): boolean {
+  return Boolean(path && (path === resourcePath || path.startsWith(`${resourcePath}/`)));
+}
+
+export function remapOpenDocumentResource(
+  document: OpenDocument,
+  previousPath: string,
+  nextPath: string,
+  handle: BrowserFileHandle,
+): OpenDocument {
+  if (!workspacePathBelongsToResource(document.path, previousPath)) return document;
+  const path = replaceWorkspacePathPrefix(document.path!, previousPath, nextPath);
+  return {
+    ...document,
+    id: path,
+    path,
+    name: workspacePathName(path),
+    handle,
+  };
 }
 
 export function parentEntryPath(path: string): string | undefined {

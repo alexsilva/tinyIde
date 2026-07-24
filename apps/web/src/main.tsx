@@ -6,6 +6,10 @@ import "./app.css";
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Application root was not found.");
 
+document.addEventListener("contextmenu", (event) => event.preventDefault(), {
+  capture: true,
+});
+
 createRoot(root).render(
   <StrictMode>
     <App />

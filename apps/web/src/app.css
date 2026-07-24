@@ -72,8 +72,8 @@ button { color: inherit; }
   padding: 0 8px;
 }
 
-.app-brand { display: inline-flex; align-items: center; gap: 7px; width: 76px; padding-left: 7px; font-size: 12px; }
-.app-brand img { width: 18px; height: 18px; border-radius: 4px; object-fit: cover; }
+.app-brand { display: inline-flex; width: 38px; align-items: center; justify-content: center; }
+.app-brand img { width: 24px; height: 24px; border-radius: 5px; object-fit: cover; }
 .menu-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 11px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text); font-size: 12px; cursor: pointer; }
 .menu-button:hover { border-color: var(--border); background: var(--surface-3); }
 .version-label { color: var(--muted); font-size: 11px; }

@@ -681,6 +681,10 @@ export interface WorkspaceResourcesChangedEvent {
   readonly operation?: string;
   readonly workspaceRoot?: string;
   readonly paths?: readonly string[];
+  readonly renames?: readonly {
+    readonly from: string;
+    readonly to: string;
+  }[];
 }
 
 export const WORKSPACE_RESOURCES_CHANGED_EVENT = "workspace.resources.changed";

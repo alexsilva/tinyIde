@@ -367,6 +367,7 @@ export class TinyIdePlatform {
         console.warn(`Não foi possível restaurar o plugin ${entry.manifest.id}.`, error);
       }
     }
+    this.#persist();
   }
 
   #persist(): void {

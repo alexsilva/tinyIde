@@ -134,11 +134,14 @@ import {
   nearestRemainingItemId,
   nextExplorerHiddenVisibility,
   parentEntryPath,
+  remapOpenDocumentResource,
   replaceWorkspacePathPrefix,
+  workspacePathBelongsToResource,
   workspacePathName,
   workspacePathParent,
   workspacePathContainsHiddenSegment,
 } from "./explorer";
+import { reconcileOpenDocumentsAfterWorkspaceChange } from "./workspace-resource-reconciliation";
 import { platform } from "./platform";
 import {
   DEFAULT_LAYOUT,
@@ -3060,6 +3063,40 @@ export function App() {
       if (event.workspaceRoot && workspaceRoot && event.workspaceRoot !== workspaceRoot) return;
       const nextEntries = await listDirectory(workspaceHandle);
       setEntries(await hydrateExpandedEntries(nextEntries, expanded));
+      const sourceDocuments = documentsRef.current;
+      const reconciliation = await reconcileOpenDocumentsAfterWorkspaceChange({
+        documents: sourceDocuments,
+        workspaceHandle,
+        ...(workspaceRoot ? {workspaceRoot} : {}),
+        ...(event.renames?.length ? {renames: event.renames} : {}),
+      });
+      documentsRef.current = reconciliation.documents;
+      setDocuments(reconciliation.documents);
+
+      for (const {from, to} of reconciliation.remappedIds) {
+        const history = editorHistoriesRef.current.get(from);
+        if (!history) continue;
+        editorHistoriesRef.current.delete(from);
+        editorHistoriesRef.current.set(to, history);
+      }
+      for (const id of reconciliation.removedIds) editorHistoriesRef.current.delete(id);
+
+      if (reconciliation.remappedIds.length || reconciliation.removedIds.length) {
+        const remapped = new Map(reconciliation.remappedIds.map(({from, to}) => [from, to]));
+        const removed = new Set(reconciliation.removedIds);
+        setActiveDocumentId((current) => {
+          if (!current) return current;
+          const next = remapped.get(current);
+          if (next) return next;
+          if (!removed.has(current)) return current;
+          const nearest = nearestRemainingItemId(
+            sourceDocuments.map((document) => document.id),
+            removed,
+            current,
+          );
+          return nearest ? remapped.get(nearest) ?? nearest : undefined;
+        });
+      }
     },
   ).dispose, [platform.events, workspaceHandle, workspaceRoot, expanded]);
 
@@ -3205,15 +3242,18 @@ export function App() {
 
     try {
       const nextPath = await renameWorkspaceEntry(workspaceHandle, entry.path, name);
-      const nextDocuments = await Promise.all(documents.map(async (document) => {
-        if (!document.path || (document.path !== entry.path && !document.path.startsWith(`${entry.path}/`))) return document;
-        const path = replaceWorkspacePathPrefix(document.path, entry.path, nextPath);
+      const sourceDocuments = documentsRef.current;
+      const nextDocuments = await Promise.all(sourceDocuments.map(async (document) => {
+        if (!workspacePathBelongsToResource(document.path, entry.path)) return document;
+        const path = replaceWorkspacePathPrefix(document.path!, entry.path, nextPath);
         const handle = await resolveFileHandle(workspaceHandle, path);
-        return { ...document, id: path, path, name: workspacePathName(path), handle };
+        return remapOpenDocumentResource(document, entry.path, nextPath, handle);
       }));
+      documentsRef.current = nextDocuments;
       setDocuments(nextDocuments);
-      const nextActiveDocumentId = activeDocumentId
-        ? replaceWorkspacePathPrefix(activeDocumentId, entry.path, nextPath)
+      const currentActiveDocumentId = activeDocumentId;
+      const nextActiveDocumentId = currentActiveDocumentId
+        ? replaceWorkspacePathPrefix(currentActiveDocumentId, entry.path, nextPath)
         : undefined;
       setActiveDocumentId(nextActiveDocumentId);
       const nextExpanded = new Set([...expanded].map((path) => replaceWorkspacePathPrefix(path, entry.path, nextPath)));
@@ -3237,16 +3277,19 @@ export function App() {
     if (!workspaceHandle) throw new Error("Restaure o acesso ao workspace antes de excluir recursos.");
     await removeWorkspaceEntry(workspaceHandle, entry.path, entry.kind === "directory");
     const removedPrefix = `${entry.path}/`;
-    const removedIds = documents
-      .filter((document) => document.path === entry.path || document.path?.startsWith(removedPrefix))
+    const sourceDocuments = documentsRef.current;
+    const removedIds = sourceDocuments
+      .filter((document) => workspacePathBelongsToResource(document.path, entry.path))
       .map((document) => document.id);
     const removedIdSet = new Set(removedIds);
     const nextActiveDocumentId = nearestRemainingItemId(
-      documents.map((document) => document.id),
+      sourceDocuments.map((document) => document.id),
       removedIdSet,
       activeDocumentId,
     );
-    setDocuments((current) => current.filter((document) => !removedIds.includes(document.id)));
+    const nextDocuments = sourceDocuments.filter((document) => !removedIdSet.has(document.id));
+    documentsRef.current = nextDocuments;
+    setDocuments(nextDocuments);
     if (activeDocumentId && removedIdSet.has(activeDocumentId)) setActiveDocumentId(nextActiveDocumentId);
     removedIds.forEach((id) => editorHistoriesRef.current.delete(id));
     setSelectedExplorerPath(undefined);
@@ -3273,11 +3316,12 @@ export function App() {
     const nextPath = await moveWorkspaceEntry(workspaceHandle, sourcePath, targetDirectoryPath);
     const nextExpanded = new Set([...expanded].map((path) => replaceWorkspacePathPrefix(path, sourcePath, nextPath)));
     nextExpanded.add(targetDirectoryPath);
-    const nextDocuments = await Promise.all(documents.map(async (document) => {
-      if (!document.path || (document.path !== sourcePath && !document.path.startsWith(`${sourcePath}/`))) return document;
-      const path = replaceWorkspacePathPrefix(document.path, sourcePath, nextPath);
+    const sourceDocuments = documentsRef.current;
+    const nextDocuments = await Promise.all(sourceDocuments.map(async (document) => {
+      if (!workspacePathBelongsToResource(document.path, sourcePath)) return document;
+      const path = replaceWorkspacePathPrefix(document.path!, sourcePath, nextPath);
       const handle = await resolveFileHandle(workspaceHandle, path);
-      return { ...document, id: path, path, name: workspacePathName(path), handle };
+      return remapOpenDocumentResource(document, sourcePath, nextPath, handle);
     }));
     const movedHistories = [...editorHistoriesRef.current.entries()]
       .filter(([id]) => id === sourcePath || id.startsWith(`${sourcePath}/`));
@@ -3285,6 +3329,7 @@ export function App() {
       editorHistoriesRef.current.delete(id);
       editorHistoriesRef.current.set(replaceWorkspacePathPrefix(id, sourcePath, nextPath), history);
     });
+    documentsRef.current = nextDocuments;
     setDocuments(nextDocuments);
     setActiveDocumentId((current) => current ? replaceWorkspacePathPrefix(current, sourcePath, nextPath) : current);
     setSelectedExplorerPath(nextPath);
@@ -3857,7 +3902,7 @@ export function App() {
     <Tooltip.Provider delayDuration={350}>
       <div className="ide-shell">
         <header className="titlebar">
-          <div className="app-brand"><img src="/icon.png" alt="" /><strong>tinyIde</strong></div>
+          <div className="app-brand"><img src="/icon.png" alt="tinyIde" /></div>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button className="menu-button" type="button">
