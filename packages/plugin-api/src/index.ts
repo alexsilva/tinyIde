@@ -115,6 +115,7 @@ export interface PluginExtensionApi {
   registerWorkbenchPanelHook(hook: WorkbenchPanelHook): Disposable;
   registerWorkbenchToolWindowHook(hook: WorkbenchToolWindowHook): Disposable;
   registerWorkbenchTitlebarContribution(contribution: WorkbenchTitlebarContribution): Disposable;
+  registerWorkbenchEditorToolbarProvider(provider: WorkbenchEditorToolbarProvider): Disposable;
   registerTextEditorLineDecorationProvider(provider: TextEditorLineDecorationProvider): Disposable;
   registerWorkbenchResourceEditorProvider(provider: WorkbenchResourceEditorProvider): Disposable;
 }
@@ -535,6 +536,22 @@ export interface WorkbenchTitlebarContribution {
 
 export const WORKBENCH_TITLEBAR_CAPABILITY = "workbench.titlebar";
 
+export interface WorkbenchEditorToolbarItem {
+  readonly id: string;
+  readonly label: string;
+  readonly command: string;
+  readonly icon?: ResourceContextMenuIcon;
+  readonly enabled?: boolean;
+  readonly order?: number;
+}
+
+export interface WorkbenchEditorToolbarProvider {
+  readonly id: string;
+  provideItems(document: TextEditorDocumentSnapshot): readonly WorkbenchEditorToolbarItem[] | Promise<readonly WorkbenchEditorToolbarItem[]>;
+}
+
+export const WORKBENCH_EDITOR_TOOLBAR_CAPABILITY = "workbench.editorToolbar";
+
 export type WorkbenchDialogSize = "medium" | "large" | "full";
 
 export interface WorkbenchDialogMountContext {
@@ -574,6 +591,8 @@ export interface WorkbenchTextEditorReplaceContentRequest {
   readonly content: string;
   readonly selectionStart?: number;
   readonly selectionEnd?: number;
+  /** Marks the replacement as the persisted baseline instead of a dirty editor edit. */
+  readonly markSaved?: boolean;
 }
 
 export interface WorkbenchTextEditorSaveRequest {

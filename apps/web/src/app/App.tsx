@@ -69,10 +69,13 @@ import type {
   ResourceContextMenuItem,
   ResourceContextMenuProvider,
   TextEditorDocumentChangedEvent,
+  TextEditorDocumentSnapshot,
   TextEditorDocumentSavedEvent,
   TextEditorLineDecoration,
   TextDiagnostic,
   WorkbenchDialogContribution,
+  WorkbenchEditorToolbarItem,
+  WorkbenchEditorToolbarProvider,
   WorkbenchActivityIcon,
   WorkbenchPanelContribution,
   WorkbenchPanelHookContribution,
@@ -104,6 +107,18 @@ import {
   type OpenDocument,
   type WorkspaceEntry,
 } from "../browser-filesystem";
+
+export function editorToolbarDocumentSnapshot(document: OpenDocument): TextEditorDocumentSnapshot {
+  return {
+    id: document.id,
+    name: document.name,
+    ...(document.path ? { path: document.path } : {}),
+    ...(document.workspaceRoot ? { workspaceRoot: document.workspaceRoot } : {}),
+    content: document.content,
+    isDirty: document.content !== document.savedContent,
+  };
+}
+
 import {
   collapseDeepestExplorerLevel,
   expandNextExplorerLevel,
@@ -1883,6 +1898,7 @@ export function App() {
   }), []);
 
   const activeDocument = documents.find((document) => document.id === activeDocumentId);
+  const [editorToolbarItems, setEditorToolbarItems] = useState<readonly WorkbenchEditorToolbarItem[]>([]);
   const activeResourceEditorProvider = resourceEditorProviderFor(activeDocument);
   const activeLanguageProvider = activeResourceEditorProvider ? undefined : languageProviderFor(activeDocument);
   const workbenchSidebars = useMemo(() => platform.capabilities
@@ -1907,6 +1923,20 @@ export function App() {
     .getAll<WorkbenchTitlebarContribution>("workbench.titlebar")
     .slice()
     .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id)), [platformSnapshot]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeDocument || activeDocument.kind !== "text") {
+      setEditorToolbarItems([]);
+      return;
+    }
+    const snapshot = editorToolbarDocumentSnapshot(activeDocument);
+    const providers = platform.capabilities.getAll<WorkbenchEditorToolbarProvider>("workbench.editorToolbar");
+    void Promise.all(providers.map((provider) => provider.provideItems(snapshot))).then((items) => {
+      if (cancelled) return;
+      setEditorToolbarItems(items.flat().filter((item) => item.enabled !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)));
+    });
+    return () => { cancelled = true; };
+  }, [activeDocument, platformSnapshot]);
   const activeToolWindow = workbenchToolWindows.find((toolWindow) => toolWindow.id === activeToolWindowId);
   const selectedProfile = profilesState.profiles.find((profile) => profile.id === profilesState.selectedId);
   const settingsProviders = pluginSettingsProviders();
@@ -1993,11 +2023,14 @@ export function App() {
     },
     async replaceEditorContent(request) {
       const currentDocument = documentsRef.current.find((document) => document.id === request.documentId);
-      if (!currentDocument || currentDocument.kind !== "text" || currentDocument.content === request.content) return;
+      if (!currentDocument || currentDocument.kind !== "text") return;
+      const nextSavedContent = request.markSaved ? request.content : currentDocument.savedContent;
+      if (currentDocument.content === request.content && currentDocument.savedContent === nextSavedContent) return;
       const previousContent = currentDocument.content;
       const changedDocument: OpenDocument = {
         ...currentDocument,
         content: request.content,
+        savedContent: nextSavedContent,
         selectionStart: Math.min(request.selectionStart ?? currentDocument.selectionStart, request.content.length),
         selectionEnd: Math.min(request.selectionEnd ?? currentDocument.selectionEnd, request.content.length),
       };
@@ -2018,6 +2051,18 @@ export function App() {
         reason: "edit",
         isDirty: changedDocument.content !== changedDocument.savedContent,
       });
+      if (request.markSaved) {
+        await platform.events.emit<TextEditorDocumentSavedEvent>(TEXT_EDITOR_DOCUMENT_SAVED_EVENT, {
+          document: {
+            id: changedDocument.id,
+            name: changedDocument.name,
+            ...(changedDocument.path ? { path: changedDocument.path } : {}),
+            ...(changedDocument.workspaceRoot ? { workspaceRoot: changedDocument.workspaceRoot } : {}),
+            content: changedDocument.content,
+            isDirty: false,
+          },
+        });
+      }
     },
     async saveEditorDocument(request) {
       const currentDocument = documentsRef.current.find((document) => document.id === request.documentId);
@@ -2973,7 +3018,7 @@ export function App() {
         content: saved.content,
       },
     };
-    void platform.events.emit(TEXT_EDITOR_DOCUMENT_SAVED_EVENT, savedEvent);
+    await platform.events.emit(TEXT_EDITOR_DOCUMENT_SAVED_EVENT, savedEvent);
     return saved;
   };
 
@@ -4272,6 +4317,25 @@ export function App() {
                 <div className="editor-toolbar">
                   <div className="breadcrumb">{activeDocument?.path ?? activeDocument?.name}</div>
                   <div className="editor-actions">
+                    {editorToolbarItems.map((item) => {
+                      const icon = item.icon === "undo" ? <Undo2 size={14} />
+                        : item.icon === "diff" ? <Code2 size={14} />
+                          : item.icon === "plus" ? <Plus size={14} />
+                            : <File size={14} />;
+                      return (
+                        <button
+                          key={item.id}
+                          className="icon-button small"
+                          type="button"
+                          aria-label={item.label}
+                          title={item.label}
+                          onClick={() => invoke(() => {
+                            if (!activeDocument) return Promise.resolve();
+                            return platform.commands.execute(item.command, editorToolbarDocumentSnapshot(activeDocument));
+                          })}
+                        >{icon}</button>
+                      );
+                    })}
                     {activeLanguageProvider?.lintRules?.length ? (
                       <button className="icon-button small" type="button" aria-label="Configurar lint" title="Configurar lint" onClick={() => setLintSettingsOpen(true)}><Code2 size={14} /></button>
                     ) : null}
