@@ -114,6 +114,7 @@ export interface PluginExtensionApi {
   registerWorkbenchSidebarHook(hook: WorkbenchSidebarHook): Disposable;
   registerWorkbenchPanelHook(hook: WorkbenchPanelHook): Disposable;
   registerWorkbenchToolWindowHook(hook: WorkbenchToolWindowHook): Disposable;
+  registerWorkbenchTitlebarContribution(contribution: WorkbenchTitlebarContribution): Disposable;
   registerTextEditorLineDecorationProvider(provider: TextEditorLineDecorationProvider): Disposable;
   registerWorkbenchResourceEditorProvider(provider: WorkbenchResourceEditorProvider): Disposable;
 }
@@ -331,7 +332,7 @@ export interface ResourceDecorationProvider {
 
 export const RESOURCE_DECORATION_CAPABILITY = "resource.decoration";
 
-export type ResourceContextMenuIcon = "file" | "folder" | "play" | "copy" | "terminal" | "save" | "close" | "diff";
+export type ResourceContextMenuIcon = "file" | "folder" | "play" | "copy" | "terminal" | "save" | "close" | "diff" | "plus" | "undo";
 
 export type ResourceContextMenuAction = "runScript";
 
@@ -525,6 +526,15 @@ export interface WorkbenchToolWindowHook {
 
 export const WORKBENCH_TOOL_WINDOW_HOOK = "workbench.toolWindow.hook";
 
+export interface WorkbenchTitlebarContribution {
+  readonly id: string;
+  readonly pluginId: string;
+  readonly order?: number;
+  mount(context: WorkbenchPanelMountContext): void | Disposable | Promise<void | Disposable>;
+}
+
+export const WORKBENCH_TITLEBAR_CAPABILITY = "workbench.titlebar";
+
 export type WorkbenchDialogSize = "medium" | "large" | "full";
 
 export interface WorkbenchDialogMountContext {
@@ -645,6 +655,16 @@ export interface TextEditorDocumentSavedEvent {
 
 export const TEXT_EDITOR_DOCUMENT_CHANGED_EVENT = "textEditor.document.changed";
 export const TEXT_EDITOR_DOCUMENT_SAVED_EVENT = "textEditor.document.saved";
+
+export interface WorkspaceResourcesChangedEvent {
+  readonly source: string;
+  readonly reason: "source-control" | "external";
+  readonly operation?: string;
+  readonly workspaceRoot?: string;
+  readonly paths?: readonly string[];
+}
+
+export const WORKSPACE_RESOURCES_CHANGED_EVENT = "workspace.resources.changed";
 
 export interface TextEditorLineDecoration {
   /** One-based line number in the current document. */

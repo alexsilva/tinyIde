@@ -91,6 +91,7 @@ button { color: inherit; }
 .brand-button:hover { background: var(--surface-3); }
 .window-title { flex: 1; overflow: hidden; color: var(--muted); font-size: 12px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .titlebar-actions, .editor-actions, .toolbar-row, .plugin-actions, .dialog-actions { display: flex; align-items: center; gap: 6px; }
+.titlebar-plugin-actions { display:flex; align-items:center; min-width:0; }
 .titlebar-actions select { height: 27px; min-width: 170px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); color: var(--text); font-size: 11px; }
 
 .button, .icon-button {

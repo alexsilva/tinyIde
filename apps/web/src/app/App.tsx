@@ -53,6 +53,7 @@ import { formatCommandLineArguments, parseCommandLineArguments } from "@tinyide/
 import {
   TEXT_EDITOR_DOCUMENT_CHANGED_EVENT,
   TEXT_EDITOR_DOCUMENT_SAVED_EVENT,
+  WORKSPACE_RESOURCES_CHANGED_EVENT,
 } from "@tinyide/plugin-api";
 import type {
   ExecutionEnvironment,
@@ -83,9 +84,11 @@ import type {
   WorkbenchSidebarHook,
   WorkbenchStateApi,
   WorkbenchStateSnapshot,
+  WorkbenchTitlebarContribution,
   WorkbenchToolWindowContribution,
   WorkbenchToolWindowHookContribution,
   WorkbenchToolWindowHook,
+  WorkspaceResourcesChangedEvent,
 } from "@tinyide/plugin-api";
 import {
   listDirectory,
@@ -1608,6 +1611,37 @@ function WorkbenchDialogHost({
   return <div className="plugin-dialog-host" ref={containerRef} data-dialog-id={provider.id} />;
 }
 
+function WorkbenchTitlebarHost({
+  provider,
+  state,
+}: {
+  readonly provider: WorkbenchTitlebarContribution;
+  readonly state: WorkbenchStateApi;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    let disposed = false;
+    let mountedDisposable: { dispose(): void } | void;
+    const mounted = provider.mount({container, state});
+    if (mounted && typeof (mounted as PromiseLike<unknown>).then === "function") {
+      void Promise.resolve(mounted).then((disposable) => {
+        if (disposed) disposable?.dispose();
+        else mountedDisposable = disposable;
+      });
+    } else {
+      mountedDisposable = mounted as void | {dispose(): void};
+    }
+    return () => {
+      disposed = true;
+      mountedDisposable?.dispose();
+      container.replaceChildren();
+    };
+  }, [provider, state]);
+  return <div className="titlebar-plugin-actions" data-titlebar-contribution={provider.id} ref={containerRef} />;
+}
+
 async function readOpenDocumentBlob(document: OpenDocument): Promise<Blob> {
   if (document.handle) return document.handle.getFile();
   if (document.kind === "text") {
@@ -1869,6 +1903,10 @@ export function App() {
     .flatMap(expandWorkbenchToolWindowContribution)
     .slice()
     .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.label.localeCompare(right.label)), [platformSnapshot]);
+  const workbenchTitlebarContributions = useMemo(() => platform.capabilities
+    .getAll<WorkbenchTitlebarContribution>("workbench.titlebar")
+    .slice()
+    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id)), [platformSnapshot]);
   const activeToolWindow = workbenchToolWindows.find((toolWindow) => toolWindow.id === activeToolWindowId);
   const selectedProfile = profilesState.profiles.find((profile) => profile.id === profilesState.selectedId);
   const settingsProviders = pluginSettingsProviders();
@@ -2627,6 +2665,7 @@ export function App() {
       ["file", 100],
       ["execution", 100],
       ["clipboard", 200],
+      ["git", 250],
       ["destructive", 300],
     ]);
     const items = [...baseItems, ...contributed]
@@ -2710,6 +2749,7 @@ export function App() {
       ["execution", 100],
       ["close", 150],
       ["clipboard", 200],
+      ["git", 250],
     ]);
     const items = [...baseItems, ...contributed]
       .filter((item) => item.enabled !== false)
@@ -2967,6 +3007,16 @@ export function App() {
     const nextEntries = await listDirectory(workspaceHandle);
     setEntries(await hydrateExpandedEntries(nextEntries, expandedPaths));
   };
+
+  useEffect(() => platform.events.on<WorkspaceResourcesChangedEvent>(
+    WORKSPACE_RESOURCES_CHANGED_EVENT,
+    async (event) => {
+      if (!workspaceHandle) return;
+      if (event.workspaceRoot && workspaceRoot && event.workspaceRoot !== workspaceRoot) return;
+      const nextEntries = await listDirectory(workspaceHandle);
+      setEntries(await hydrateExpandedEntries(nextEntries, expanded));
+    },
+  ).dispose, [platform.events, workspaceHandle, workspaceRoot, expanded]);
 
   const expandExplorerLevel = async () => {
     if (!workspaceHandle) return;
@@ -3830,6 +3880,9 @@ export function App() {
           </DropdownMenu.Root>
           <div className="window-title">{workspaceName}</div>
           <div className="titlebar-actions">
+            {workbenchTitlebarContributions.map((provider) => (
+              <WorkbenchTitlebarHost key={provider.id} provider={provider} state={workbenchState} />
+            ))}
             <select
               aria-label="Perfil de execução"
               value={profilesState.selectedId ?? ""}
@@ -4727,7 +4780,10 @@ export function App() {
                       : item.icon === "terminal" ? <Terminal size={14} />
                         : item.icon === "save" ? <Save size={14} />
                           : item.icon === "close" ? <X size={14} />
-                            : <File size={14} />;
+                            : item.icon === "plus" ? <Plus size={14} />
+                              : item.icon === "undo" ? <Undo2 size={14} />
+                                : item.icon === "diff" ? <Code2 size={14} />
+                                  : <File size={14} />;
                 return (
                   <div key={item.id}>
                     {separated ? <div className="menu-separator" /> : null}
