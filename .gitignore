@@ -4,6 +4,7 @@ site/
 .repos/
 .tinyide/
 node_modules/
+release/
 dist/
 coverage/
 .vite/

@@ -171,6 +171,7 @@ import {
   readHostProcess,
   runExecutionProfile,
   runScript,
+  clearHostWorkspace,
   pluginSettingsProviders,
   resourceIconFor,
   resourceDecorationProviders,
@@ -181,6 +182,13 @@ import {
   textEditorLineDecorationProviders,
   workbenchResourceDescriptor,
 } from "./runtime";
+import {
+  isDesktopHost,
+  isDesktopWorkspaceHandle,
+  pickWorkspaceDirectory,
+  restoreDesktopWorkspaceHandle,
+  workspaceRootHintForHandle,
+} from "./workspace-host";
 import {
   resolvePluginSettingValues,
   updatePluginSettingValue,
@@ -2530,31 +2538,49 @@ export function App() {
       .then(async () => {
         const snapshot = await readReactSnapshot();
         let restoredDocuments: readonly OpenDocument[] = [];
-        const restoredWorkspaceName = snapshot?.workspaceName ?? initialSession.workspaceName;
+        let restoredWorkspaceName = snapshot?.workspaceName ?? initialSession.workspaceName;
         let restoredWorkspaceRoot = snapshot?.workspaceRoot ?? initialSession.workspaceRoot;
-        if (restoredWorkspaceName !== "Sem workspace") {
-          const hostWorkspace = await setHostWorkspace(restoredWorkspaceName, restoredWorkspaceRoot);
-          restoredWorkspaceRoot = hostWorkspace.workspaceRoot;
-          setWorkspaceRoot(hostWorkspace.workspaceRoot);
-          await loadLocalWorkspaceSettings(
-            restoredWorkspaceName,
-            hostWorkspace.workspaceRoot,
-            initialSession.selectedEnvironmentId,
-          );
+        let restoredWorkspaceHandle = isDesktopHost() ? undefined : snapshot?.workspaceHandle;
+        if (isDesktopHost() && !restoredWorkspaceRoot) {
+          restoredWorkspaceName = "Sem workspace";
+          restoredWorkspaceHandle = undefined;
+        } else if (isDesktopHost() && restoredWorkspaceRoot && !restoredWorkspaceHandle) {
+          restoredWorkspaceHandle = await restoreDesktopWorkspaceHandle(restoredWorkspaceRoot).catch(() => undefined);
+        }
+        if (restoredWorkspaceName !== "Sem workspace" && (!isDesktopHost() || Boolean(restoredWorkspaceRoot))) {
+          try {
+            const hostWorkspace = await setHostWorkspace(restoredWorkspaceName, restoredWorkspaceRoot);
+            restoredWorkspaceRoot = hostWorkspace.workspaceRoot;
+            setWorkspaceRoot(hostWorkspace.workspaceRoot);
+            await loadLocalWorkspaceSettings(
+              restoredWorkspaceName,
+              hostWorkspace.workspaceRoot,
+              initialSession.selectedEnvironmentId,
+            );
+          } catch (cause) {
+            restoredWorkspaceRoot = undefined;
+            setWorkspaceRoot(undefined);
+            setWorkspaceAccess("missing");
+            await clearHostWorkspace().catch(() => undefined);
+            setError(cause instanceof Error ? cause.message : String(cause));
+          }
+        } else {
+          await clearHostWorkspace();
+          setWorkspaceRoot(undefined);
         }
         if (snapshot) {
-          setWorkspaceName(snapshot.workspaceName);
-          setWorkspaceHandle(snapshot.workspaceHandle);
-          if (snapshot.workspaceHandle) {
-            const permission = await snapshot.workspaceHandle.queryPermission?.({ mode: "readwrite" });
+          setWorkspaceName(restoredWorkspaceName);
+          setWorkspaceHandle(restoredWorkspaceHandle);
+          if (restoredWorkspaceHandle) {
+            const permission = await restoredWorkspaceHandle.queryPermission?.({ mode: "readwrite" });
             if (permission === "granted" || permission === undefined) {
-              const rootEntries = await listDirectory(snapshot.workspaceHandle);
+              const rootEntries = await listDirectory(restoredWorkspaceHandle);
               setEntries(await hydrateExpandedEntries(rootEntries, new Set(initialSession.expandedDirectories)));
               setWorkspaceAccess("ready");
               restoredDocuments = await restoreWorkspaceDocuments(
                 snapshot.documents,
                 restoredWorkspaceRoot,
-                snapshot.workspaceHandle,
+                restoredWorkspaceHandle,
               );
             } else {
               setEntries(deserializeEntries(snapshot.workspaceEntries));
@@ -2563,7 +2589,7 @@ export function App() {
             }
           } else {
             setEntries(deserializeEntries(snapshot.workspaceEntries));
-            if (snapshot.workspaceName !== "Sem workspace") setWorkspaceAccess("missing");
+            if (restoredWorkspaceName !== "Sem workspace") setWorkspaceAccess("missing");
             restoredDocuments = await restoreWorkspaceDocuments(snapshot.documents, restoredWorkspaceRoot);
           }
           setDocuments(restoredDocuments);
@@ -2576,7 +2602,7 @@ export function App() {
               : restoredDocuments[0]?.id,
           );
         }
-        const loadedEnvironments = await loadEnvironments();
+        const loadedEnvironments = restoredWorkspaceRoot ? await loadEnvironments() : [];
         setEnvironments(loadedEnvironments);
         const configuredEnvironmentId = workspaceSettingsRef.current.environment?.selectedId;
         const restoredSelectedEnvironmentId = configuredEnvironmentId && loadedEnvironments.some((environment) => environment.id === configuredEnvironmentId)
@@ -2591,11 +2617,13 @@ export function App() {
           replaceWorkspaceSettings(await writeWorkspaceSettings(restoredWorkspaceRoot, nextSettings));
         }
         const restoredActive = restoredDocuments[0];
-        const contributions = await loadProfileContributions({
-          workspaceName: restoredWorkspaceName,
-          ...(restoredWorkspaceRoot ? { workspaceRoot: restoredWorkspaceRoot } : {}),
-          ...(restoredActive ? { activeDocument: restoredActive } : {}),
-        });
+        const contributions = restoredWorkspaceRoot
+          ? await loadProfileContributions({
+              workspaceName: restoredWorkspaceName,
+              workspaceRoot: restoredWorkspaceRoot,
+              ...(restoredActive ? { activeDocument: restoredActive } : {}),
+            })
+          : { executableOptions: [], variables: [] };
         setExecutableOptions(contributions.executableOptions);
         restoredRef.current = true;
       })
@@ -2683,7 +2711,7 @@ export function App() {
       void writeReactSnapshot({
         workspaceName,
         ...(workspaceRoot ? { workspaceRoot } : {}),
-        ...(workspaceHandle ? { workspaceHandle } : {}),
+        ...(workspaceHandle && !isDesktopWorkspaceHandle(workspaceHandle) ? { workspaceHandle } : {}),
         workspaceEntries: entries,
         documents,
         diagnostics,
@@ -2697,6 +2725,12 @@ export function App() {
 
   useEffect(() => {
     if (!platformSnapshot.initialized || !restorationComplete) return;
+    if (!workspaceRoot) {
+      setEnvironments([]);
+      setSelectedEnvironmentId(undefined);
+      setExecutableOptions([]);
+      return;
+    }
     void loadEnvironments().then((loaded) => {
       setEnvironments(loaded);
       const configured = workspaceSettingsRef.current.environment?.selectedId;
@@ -2717,7 +2751,7 @@ export function App() {
     });
     void loadProfileContributions({
       workspaceName,
-      ...(workspaceRoot ? { workspaceRoot } : {}),
+      workspaceRoot,
       ...(activeDocument ? { activeDocument } : {}),
     }).then((contributions) => {
       setExecutableOptions(contributions.executableOptions);
@@ -2734,9 +2768,9 @@ export function App() {
   };
 
   const openFolder = async () => {
-    if (!window.showDirectoryPicker) throw new Error("Este navegador não oferece seleção de pastas.");
-    const handle = await window.showDirectoryPicker();
-    const hostWorkspace = await setHostWorkspace(handle.name);
+    const handle = await pickWorkspaceDirectory();
+    const workspaceRootHint = await workspaceRootHintForHandle(handle);
+    const hostWorkspace = await setHostWorkspace(handle.name, workspaceRootHint);
     const localSettings = await loadLocalWorkspaceSettings(handle.name, hostWorkspace.workspaceRoot);
     setWorkspaceHandle(handle);
     setWorkspaceName(handle.name);

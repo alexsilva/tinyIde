@@ -1,6 +1,9 @@
 {
   "name": "tinyide",
   "version": "0.1.0",
+  "description": "IDE extensível baseada em navegador, empacotada para Linux.",
+  "main": "apps/desktop/main.cjs",
+  "author": "tinyIde",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -10,7 +13,13 @@
   "scripts": {
     "dev": "vite --config apps/web/vite.config.mjs apps/web",
     "start": "npm run dev",
+    "start:desktop": "electron .",
     "build": "npm run build --workspaces --if-present",
+    "build:web": "npm run build --workspace @tinyide/web",
+    "prepare:plugins": "npm ci --prefix plugins/terminal",
+    "build:plugins": "npm run prepare:plugins && npm run build --prefix plugins/git && npm run build --prefix plugins/terminal",
+    "build:desktop": "npm run build:web && npm run build:plugins",
+    "build:deb": "npm run build:desktop && electron-builder --linux deb --x64 --publish never",
     "preview": "vite preview --config apps/web/vite.config.mjs apps/web",
     "test": "vitest run packages apps/web/src --exclude '**/*.performance.test.ts'",
     "test:performance": "vitest run apps/web/src/file-browser.performance.test.ts && npm run test:performance --prefix plugins/python-venv",
@@ -22,12 +31,56 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && npm run typecheck:plugins",
     "check": "npm run typecheck && npm run test && npm run test:performance && npm run coverage && npm run build"
   },
+  "dependencies": {
+    "node-pty": "^1.1.0"
+  },
   "devDependencies": {
     "@types/node": "^26.1.1",
     "@vitest/coverage-v8": "^4.1.10",
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12",
     "jsdom": "^29.1.1",
     "typescript": "latest",
     "vite": "latest",
     "vitest": "latest"
+  },
+  "build": {
+    "appId": "dev.tinyide.desktop",
+    "productName": "tinyIde",
+    "artifactName": "tinyide_${version}_${arch}.${ext}",
+    "asar": false,
+    "npmRebuild": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "apps/desktop/**/*",
+      "apps/web/dist/**/*",
+      "packages/runtime-server/**/*",
+      "plugins/*/plugin.json",
+      "plugins/*/dist/**/*",
+      "plugins/*/src/index.js",
+      "plugins/*/src/backend.mjs",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Development",
+      "executableName": "tinyide",
+      "icon": "build/icon.png",
+      "maintainer": "tinyIde"
+    },
+    "deb": {
+      "priority": "optional",
+      "afterInstall": "build/after-install.sh",
+      "afterRemove": "build/after-remove.sh"
+    }
   }
 }

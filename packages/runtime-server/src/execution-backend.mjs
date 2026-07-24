@@ -27,9 +27,7 @@ async function readJson(request) {
 }
 
 function requiredString(value, field) {
-  if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
-    throw new Error(`Campo inválido: ${field}`);
-  }
+  if (typeof value !== "string" || !value.trim() || value.includes("\0")) throw new Error(`Campo inválido: ${field}`);
   return value;
 }
 
@@ -42,28 +40,20 @@ function stringArray(value, field) {
 
 function environmentRecord(value) {
   if (value === undefined) return {};
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Variáveis de ambiente inválidas.");
-  }
-  return Object.fromEntries(
-    Object.entries(value).map(([name, item]) => {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof item !== "string" || item.includes("\0")) {
-        throw new Error(`Variável de ambiente inválida: ${name}`);
-      }
-      return [name, item];
-    }),
-  );
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Variáveis de ambiente inválidas.");
+  return Object.fromEntries(Object.entries(value).map(([name, item]) => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof item !== "string" || item.includes("\0")) {
+      throw new Error(`Variável de ambiente inválida: ${name}`);
+    }
+    return [name, item];
+  }));
 }
 
 function processPresentation(value) {
   if (value === undefined) return undefined;
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Apresentação do processo inválida.");
-  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Apresentação do processo inválida.");
   const kind = requiredString(value.kind, "presentation.kind");
-  if (kind !== "profile" && kind !== "script") {
-    throw new Error("Tipo de apresentação do processo inválido.");
-  }
+  if (kind !== "profile" && kind !== "script") throw new Error("Tipo de apresentação do processo inválido.");
   const outputPrefix = stringArray(value.outputPrefix ?? [], "presentation.outputPrefix");
   return {
     kind,
@@ -104,30 +94,18 @@ function workspaceSettingsPath(workspaceRoot) {
 }
 
 function normalizeWorkspaceSettings(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Configuração do workspace inválida.");
-  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Configuração do workspace inválida.");
   const serialized = JSON.stringify(value);
-  if (serialized.length > MAX_BODY_BYTES) {
-    throw new Error("Configuração do workspace excede o limite permitido.");
-  }
-  return {
-    ...value,
-    version: WORKSPACE_SETTINGS_VERSION,
-  };
+  if (serialized.length > MAX_BODY_BYTES) throw new Error("Configuração do workspace excede o limite permitido.");
+  return { ...value, version: WORKSPACE_SETTINGS_VERSION };
 }
 
 async function readWorkspaceSettings(workspaceRoot) {
   try {
-    const parsed = JSON.parse(await readFile(workspaceSettingsPath(workspaceRoot), "utf8"));
-    return normalizeWorkspaceSettings(parsed);
+    return normalizeWorkspaceSettings(JSON.parse(await readFile(workspaceSettingsPath(workspaceRoot), "utf8")));
   } catch (error) {
-    if (error?.code === "ENOENT") {
-      return writeWorkspaceSettings(workspaceRoot, { version: WORKSPACE_SETTINGS_VERSION });
-    }
-    if (error instanceof SyntaxError) {
-      throw new Error("O arquivo .tinyide/settings.json contém JSON inválido.");
-    }
+    if (error?.code === "ENOENT") return writeWorkspaceSettings(workspaceRoot, { version: WORKSPACE_SETTINGS_VERSION });
+    if (error instanceof SyntaxError) throw new Error("O arquivo .tinyide/settings.json contém JSON inválido.");
     throw error;
   }
 }
@@ -150,14 +128,15 @@ function assertExpectedWorkspace(request, workspaceRoot) {
 }
 
 export function createExecutionBackend({ workspaceRoot }) {
-  const getWorkspaceRoot = typeof workspaceRoot === "function"
-    ? workspaceRoot
-    : () => workspaceRoot;
+  const getWorkspaceRoot = typeof workspaceRoot === "function" ? workspaceRoot : () => workspaceRoot;
   const processes = new Map();
-
-  function resolvedWorkspaceRoot() {
-    return resolve(getWorkspaceRoot());
-  }
+  const resolvedWorkspaceRoot = () => {
+    const current = getWorkspaceRoot();
+    if (typeof current !== "string" || !current.trim()) {
+      throw new Error("Abra um workspace antes de executar esta operação.");
+    }
+    return resolve(current);
+  };
 
   function startProcess(payload) {
     const workspaceRoot = resolvedWorkspaceRoot();
@@ -177,29 +156,12 @@ export function createExecutionBackend({ workspaceRoot }) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const record = {
-      id,
-      workspaceRoot,
-      child,
-      status: "running",
-      executable,
-      arguments: args,
-      workingDirectory,
-      presentation,
-      stdout: "",
-      stderr: "",
-      exitCode: undefined,
-      signal: undefined,
-      startedAt,
-      finishedAt: undefined,
+      id, workspaceRoot, child, status: "running", executable, arguments: args, workingDirectory, presentation,
+      stdout: "", stderr: "", exitCode: undefined, signal: undefined, startedAt, finishedAt: undefined,
     };
     processes.set(id, record);
-
-    child.stdout.on("data", (chunk) => {
-      record.stdout = appendOutput(record.stdout, chunk);
-    });
-    child.stderr.on("data", (chunk) => {
-      record.stderr = appendOutput(record.stderr, chunk);
-    });
+    child.stdout.on("data", (chunk) => { record.stdout = appendOutput(record.stdout, chunk); });
+    child.stderr.on("data", (chunk) => { record.stderr = appendOutput(record.stderr, chunk); });
     child.on("error", (error) => {
       record.stderr = appendOutput(record.stderr, `${error.message}\n`);
       record.status = "exited";
@@ -212,7 +174,6 @@ export function createExecutionBackend({ workspaceRoot }) {
       record.signal = signal ?? undefined;
       record.finishedAt = Date.now();
     });
-
     return processSnapshot(record);
   }
 
@@ -223,7 +184,6 @@ export function createExecutionBackend({ workspaceRoot }) {
         writeJson(response, 200, { workspaceRoot });
         return;
       }
-
       if (relativePath === "/workspace/settings") {
         assertExpectedWorkspace(request, workspaceRoot);
         if (request.method === "GET") {
@@ -237,21 +197,17 @@ export function createExecutionBackend({ workspaceRoot }) {
         writeJson(response, 405, { error: "Método não permitido para configuração do workspace." });
         return;
       }
-
       if (request.method === "POST" && relativePath === "/execution/processes") {
         writeJson(response, 201, startProcess(await readJson(request)));
         return;
       }
-
       if (request.method === "GET" && relativePath === "/execution/processes") {
-        const snapshots = [...processes.values()]
+        writeJson(response, 200, [...processes.values()]
           .filter((record) => record.workspaceRoot === workspaceRoot)
           .sort((left, right) => right.startedAt - left.startedAt)
-          .map(processSnapshot);
-        writeJson(response, 200, snapshots);
+          .map(processSnapshot));
         return;
       }
-
       const match = /^\/execution\/processes\/([^/]+)$/.exec(relativePath);
       if (match) {
         const record = processes.get(decodeURIComponent(match[1]));
@@ -266,15 +222,12 @@ export function createExecutionBackend({ workspaceRoot }) {
         if (request.method === "DELETE") {
           if (record.status === "running") {
             record.child.kill("SIGTERM");
-            setTimeout(() => {
-              if (record.status === "running") record.child.kill("SIGKILL");
-            }, 1500).unref();
+            setTimeout(() => { if (record.status === "running") record.child.kill("SIGKILL"); }, 1500).unref();
           }
           writeJson(response, 202, processSnapshot(record));
           return;
         }
       }
-
       writeJson(response, 404, { error: "Endpoint do core não encontrado." });
     } catch (error) {
       writeJson(response, 400, { error: error instanceof Error ? error.message : String(error) });

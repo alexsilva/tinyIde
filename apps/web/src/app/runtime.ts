@@ -22,6 +22,7 @@ import type {
 } from "@tinyide/plugin-api";
 import type { OpenDocument } from "../browser-filesystem";
 import { platform } from "./platform";
+import { setActiveHostWorkspaceRoot } from "./host-workspace-state";
 
 export interface HostProcessSnapshot {
   readonly id: string;
@@ -186,7 +187,9 @@ export async function lintDocument(
 export async function readHostContext(): Promise<{ readonly workspaceRoot: string }> {
   const response = await fetch("/core-api/context", { cache: "no-store" });
   if (!response.ok) throw new Error("Não foi possível obter o contexto de execução do host.");
-  return response.json() as Promise<{ readonly workspaceRoot: string }>;
+  const context = await response.json() as { readonly workspaceRoot: string };
+  setActiveHostWorkspaceRoot(context.workspaceRoot);
+  return context;
 }
 
 export async function setHostWorkspace(
@@ -205,7 +208,17 @@ export async function setHostWorkspace(
   if (!response.ok || !payload.workspaceRoot) {
     throw new Error(payload.error ?? "Não foi possível definir a raiz do workspace no host.");
   }
+  setActiveHostWorkspaceRoot(payload.workspaceRoot);
   return { workspaceRoot: payload.workspaceRoot };
+}
+
+export async function clearHostWorkspace(): Promise<void> {
+  setActiveHostWorkspaceRoot(undefined);
+  const response = await fetch("/core-api/workspace", { method: "DELETE" });
+  if (!response.ok && response.status !== 204) {
+    const payload = await response.json().catch(() => undefined) as { readonly error?: string } | undefined;
+    throw new Error(payload?.error ?? "Não foi possível limpar o workspace ativo no host.");
+  }
 }
 
 export async function startHostProcess(request: HostProcessStartRequest): Promise<HostProcessSnapshot> {

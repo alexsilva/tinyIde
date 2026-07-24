@@ -36,6 +36,7 @@ import type {
   Disposable,
 } from "@tinyide/plugin-api";
 import { AppPluginHost } from "./plugin-host";
+import { getActiveHostWorkspaceRoot } from "./host-workspace-state";
 
 const PLATFORM_VERSION = "0.4.0";
 const STORAGE_KEY = "tinyide.react.plugins.v1";
@@ -50,6 +51,7 @@ interface StoredPlugin {
 export interface PluginCatalogEntry {
   readonly manifest: PluginManifest;
   readonly manifestUrl: string;
+  readonly bundled?: boolean;
 }
 
 export interface PlatformSnapshot {
@@ -129,6 +131,9 @@ function pluginSourceUrl(manifest: PluginManifest, manifestUrl: string): string 
 function pluginBackend(pluginId: string): PluginBackendApi {
   return {
     async request<Response>(path: string, options: PluginBackendRequestOptions = {}): Promise<Response> {
+      if (!getActiveHostWorkspaceRoot()) {
+        throw new Error("Abra um workspace antes de usar este plugin.");
+      }
       const suffix = path.startsWith("/") ? path : `/${path}`;
       const pathname = suffix.split(/[?#]/, 1)[0] ?? "";
       if (suffix.startsWith("//") || pathname.split("/").includes("..")) {
@@ -255,6 +260,7 @@ export class TinyIdePlatform {
     this.#initializationPromise = (async () => {
       await this.#restore();
       await this.discoverPlugins();
+      await this.#installBundledPlugins();
       this.#initialized = true;
       this.#notify();
     })();
@@ -272,19 +278,21 @@ export class TinyIdePlatform {
     try {
       const response = await fetch("/dev-plugins/index.json", { cache: "no-store" });
       if (!response.ok) throw new Error(`Catálogo indisponível: HTTP ${response.status}`);
-      const payload = (await response.json()) as { readonly plugins?: readonly { readonly manifestUrl?: unknown }[] };
-      const manifestUrls = (payload.plugins ?? [])
-        .map((entry) => entry.manifestUrl)
-        .filter((value): value is string => typeof value === "string");
+      const payload = (await response.json()) as {
+        readonly plugins?: readonly { readonly manifestUrl?: unknown; readonly bundled?: unknown }[];
+      };
+      const catalogSources = (payload.plugins ?? [])
+        .filter((entry): entry is {readonly manifestUrl: string; readonly bundled?: unknown} => typeof entry.manifestUrl === "string");
 
       const entries = await Promise.all(
-        manifestUrls.map(async (manifestUrl): Promise<PluginCatalogEntry | undefined> => {
+        catalogSources.map(async ({manifestUrl, bundled}): Promise<PluginCatalogEntry | undefined> => {
           const absoluteUrl = new URL(manifestUrl, window.location.href).href;
           const manifestResponse = await fetch(absoluteUrl, { cache: "no-store" });
           if (!manifestResponse.ok) return undefined;
           return {
             manifest: (await manifestResponse.json()) as PluginManifest,
             manifestUrl: absoluteUrl,
+            ...(bundled === true ? {bundled: true} : {}),
           };
         }),
       );
@@ -292,6 +300,27 @@ export class TinyIdePlatform {
     } finally {
       this.#catalogLoading = false;
       this.#notify();
+    }
+  }
+
+  async #installBundledPlugins(): Promise<void> {
+    let pending = this.#catalog.filter((entry) => (
+      entry.bundled && !this.plugins.list().some((plugin) => plugin.manifest.id === entry.manifest.id)
+    ));
+    while (pending.length) {
+      const next: PluginCatalogEntry[] = [];
+      let installed = 0;
+      for (const entry of pending) {
+        try {
+          await this.install(entry.manifestUrl);
+          installed += 1;
+        } catch (error) {
+          next.push(entry);
+          console.warn(`Não foi possível ativar o plugin empacotado ${entry.manifest.id}.`, error);
+        }
+      }
+      if (!installed) break;
+      pending = next;
     }
   }
 
