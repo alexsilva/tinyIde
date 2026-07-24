@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
-// @ts-expect-error The development backend is an ESM JavaScript module.
-import { createExecutionBackend } from "../execution-backend.mjs";
+// @ts-expect-error The runtime backend is an ESM JavaScript module.
+import { createExecutionBackend } from "../../../packages/runtime-server/src/execution-backend.mjs";
 
 interface BackendResponse<Value = unknown> {
   readonly status: number;
