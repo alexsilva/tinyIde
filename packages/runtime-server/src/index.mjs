@@ -16,6 +16,16 @@ const CONTENT_TYPES = {
   ".svg": "image/svg+xml",
   ".webp": "image/webp",
 };
+const MAX_JSON_BODY_BYTES = 1024 * 1024;
+const MANIFEST_CACHE_TTL_MS = 1000;
+
+function applySecurityHeaders(response) {
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("X-Frame-Options", "DENY");
+  response.setHeader("Referrer-Policy", "no-referrer");
+  response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+}
 
 function writeJson(response, status, payload) {
   response.statusCode = status;
@@ -24,9 +34,37 @@ function writeJson(response, status, payload) {
   response.end(JSON.stringify(payload));
 }
 
+function isLoopbackHostname(hostname) {
+  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+}
+
+function requestOriginAllowed(request) {
+  const origin = request.headers.origin;
+  if (!origin) return true;
+  const host = request.headers.host;
+  if (!host) return false;
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === "http:"
+      && isLoopbackHostname(parsed.hostname)
+      && parsed.host === host;
+  } catch {
+    return false;
+  }
+}
+
 async function readJson(request) {
   const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
+  let totalBytes = 0;
+  for await (const chunk of request) {
+    totalBytes += chunk.length;
+    if (totalBytes > MAX_JSON_BODY_BYTES) {
+      const error = new Error("O corpo da requisição excede o limite permitido.");
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
 }
 
@@ -52,6 +90,23 @@ export function createTinyIdeRuntime(options) {
   const webRoot = options.webRoot ? resolve(options.webRoot) : undefined;
   const workspaceSearchRoot = resolve(options.workspaceSearchRoot ?? process.env.TINYIDE_WORKSPACES_ROOT ?? dirname(hostRoot));
   const backendHandlers = new Map();
+  let manifestCache = { expiresAt: 0, descriptors: [] };
+  function cachedPluginDescriptors() {
+    const now = Date.now();
+    if (manifestCache.expiresAt > now) return manifestCache.descriptors;
+    const descriptors = [];
+    for (const directory of manifestDirectories(pluginsRoot)) {
+      try {
+        const manifest = JSON.parse(readFileSync(join(directory, "plugin.json"), "utf8"));
+        descriptors.push({ directory, manifest });
+      } catch {
+        // Invalid manifests are ignored here and reported by the plugin host when explicitly loaded.
+      }
+    }
+    manifestCache = { expiresAt: now + MANIFEST_CACHE_TTL_MS, descriptors };
+    return descriptors;
+  }
+
   let activeWorkspaceRoot = options.initialWorkspaceRoot
     ? resolve(options.initialWorkspaceRoot)
     : undefined;
@@ -67,10 +122,17 @@ export function createTinyIdeRuntime(options) {
     const ignored = new Set([".git", ".venv", "node_modules", "dist", "coverage"]);
     const queue = [{path: workspaceSearchRoot, depth: 0}];
     const matches = [];
-    while (queue.length) {
-      const current = queue.shift();
+    let cursor = 0;
+    while (cursor < queue.length) {
+      const current = queue[cursor++];
       if (!current || current.depth >= 4) continue;
-      for (const entry of readdirSync(current.path, {withFileTypes: true})) {
+      let entries;
+      try {
+        entries = readdirSync(current.path, {withFileTypes: true});
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
         if (!entry.isDirectory() || ignored.has(entry.name)) continue;
         const directoryPath = join(current.path, entry.name);
         if (entry.name === name) matches.push({path: directoryPath, depth: current.depth + 1});
@@ -108,11 +170,12 @@ export function createTinyIdeRuntime(options) {
 
   async function resolveBackend(pluginId) {
     if (!activeWorkspaceRoot) throw new Error("Abra um workspace antes de usar este plugin.");
-    for (const directory of manifestDirectories(pluginsRoot)) {
-      const manifestPath = join(directory, "plugin.json");
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    for (const { directory, manifest } of cachedPluginDescriptors()) {
       if (manifest.id !== pluginId || !manifest.entrypoints?.backend) continue;
-      const backendPath = resolve(directory, manifest.entrypoints.backend);
+      const backendPath = safeFile(directory, manifest.entrypoints.backend);
+      if (!backendPath || !existsSync(backendPath) || !statSync(backendPath).isFile()) {
+        throw new Error(`Caminho de backend inválido para o plugin: ${pluginId}`);
+      }
       const backendMtime = statSync(backendPath).mtimeMs;
       const cacheKey = `${pluginId}:${activeWorkspaceRoot}`;
       const cached = backendHandlers.get(cacheKey);
@@ -130,7 +193,10 @@ export function createTinyIdeRuntime(options) {
     if (!existsSync(absolutePath) || !statSync(absolutePath).isFile()) return false;
     response.statusCode = 200;
     response.setHeader("Content-Type", CONTENT_TYPES[extname(absolutePath)] ?? "application/octet-stream");
-    response.setHeader("Cache-Control", "no-store");
+    const immutableAsset = /-[A-Za-z0-9_-]{8,}\.[^.]+$/.test(basename(absolutePath));
+    response.setHeader("Cache-Control", immutableAsset
+      ? "public, max-age=31536000, immutable"
+      : extname(absolutePath) === ".html" ? "no-cache" : "no-store");
     createReadStream(absolutePath).pipe(response);
     return true;
   }
@@ -139,14 +205,25 @@ export function createTinyIdeRuntime(options) {
     response.statusCode = 404;
     response.end("Not found.");
   }) => {
+    applySecurityHeaders(response);
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
+
+    if ((requestUrl.pathname.startsWith("/core-api/") || requestUrl.pathname.startsWith("/plugin-api/"))
+      && !requestOriginAllowed(request)) {
+      writeJson(response, 403, {error: "Origem da requisição não autorizada."});
+      return;
+    }
 
     if (request.method === "POST" && requestUrl.pathname === "/core-api/workspace") {
       void readJson(request).then((payload) => {
         activeWorkspaceRoot = resolveWorkspaceSelection(payload);
         backendHandlers.clear();
         writeJson(response, 200, {workspaceRoot: activeWorkspaceRoot});
-      }).catch((error) => writeJson(response, 400, {error: error instanceof Error ? error.message : String(error)}));
+      }).catch((error) => writeJson(
+        response,
+        Number.isInteger(error?.statusCode) ? error.statusCode : 400,
+        {error: error instanceof Error ? error.message : String(error)},
+      ));
       return;
     }
 
@@ -168,7 +245,17 @@ export function createTinyIdeRuntime(options) {
         return;
       }
       const segments = requestUrl.pathname.slice("/plugin-api/".length).split("/");
-      const pluginId = decodeURIComponent(segments.shift() ?? "");
+      let pluginId;
+      try {
+        pluginId = decodeURIComponent(segments.shift() ?? "");
+      } catch {
+        writeJson(response, 400, {error: "Identificador de plugin inválido."});
+        return;
+      }
+      if (!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(pluginId)) {
+        writeJson(response, 400, {error: "Identificador de plugin inválido."});
+        return;
+      }
       const relativePath = `/${segments.join("/")}`;
       void resolveBackend(pluginId).then((handler) => {
         if (!handler) {
@@ -182,7 +269,7 @@ export function createTinyIdeRuntime(options) {
 
     if (requestUrl.pathname === "/dev-plugins/index.json") {
       writeJson(response, 200, {
-        plugins: manifestDirectories(pluginsRoot).map((directory) => ({
+        plugins: cachedPluginDescriptors().map(({ directory }) => ({
           manifestUrl: `/dev-plugins/${encodeURIComponent(basename(directory))}/plugin.json`,
           bundled: Boolean(options.bundledPlugins),
         })),
@@ -191,7 +278,14 @@ export function createTinyIdeRuntime(options) {
     }
 
     if (requestUrl.pathname.startsWith("/dev-plugins/")) {
-      const absolutePath = safeFile(pluginsRoot, decodeURIComponent(requestUrl.pathname.slice("/dev-plugins/".length)));
+      let requestedPluginPath;
+      try {
+        requestedPluginPath = decodeURIComponent(requestUrl.pathname.slice("/dev-plugins/".length));
+      } catch {
+        writeJson(response, 400, {error: "Caminho de plugin inválido."});
+        return;
+      }
+      const absolutePath = safeFile(pluginsRoot, requestedPluginPath);
       if (!absolutePath || !serveFile(response, absolutePath)) {
         response.statusCode = 404;
         response.end("Plugin asset not found.");
@@ -200,7 +294,13 @@ export function createTinyIdeRuntime(options) {
     }
 
     if (webRoot) {
-      const requestedPath = requestUrl.pathname === "/" ? "index.html" : decodeURIComponent(requestUrl.pathname.slice(1));
+      let requestedPath;
+      try {
+        requestedPath = requestUrl.pathname === "/" ? "index.html" : decodeURIComponent(requestUrl.pathname.slice(1));
+      } catch {
+        writeJson(response, 400, {error: "Caminho inválido."});
+        return;
+      }
       const absolutePath = safeFile(webRoot, requestedPath);
       if (absolutePath && serveFile(response, absolutePath)) return;
       const indexPath = join(webRoot, "index.html");
@@ -221,26 +321,31 @@ export function createTinyIdeRuntime(options) {
       return activeWorkspaceRoot;
     },
     clearBackendCache() { backendHandlers.clear(); },
+    clearManifestCache() { manifestCache = { expiresAt: 0, descriptors: [] }; },
   };
 }
 
 export async function startTinyIdeRuntime(options) {
   const runtime = createTinyIdeRuntime(options);
   const server = createServer((request, response) => runtime.middleware(request, response));
+  server.maxHeadersCount = 100;
+  server.headersTimeout = 10_000;
+  server.requestTimeout = 30_000;
+  server.keepAliveTimeout = 5_000;
   await new Promise((resolveListen, reject) => {
     server.once("error", reject);
     server.listen(options.port ?? 0, options.host ?? "127.0.0.1", resolveListen);
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Não foi possível determinar a porta do runtime.");
-  return {
-    ...runtime,
+  return Object.assign(runtime, {
     server,
     host: address.address,
     port: address.port,
     url: `http://127.0.0.1:${address.port}`,
     async close() {
+      server.closeAllConnections?.();
       await new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
     },
-  };
+  });
 }

@@ -74,8 +74,10 @@ button { color: inherit; }
 
 .app-brand { display: inline-flex; width: 38px; align-items: center; justify-content: center; }
 .app-brand img { width: 24px; height: 24px; border-radius: 5px; object-fit: cover; }
-.menu-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 11px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text); font-size: 12px; cursor: pointer; }
-.menu-button:hover { border-color: var(--border); background: var(--surface-3); }
+.menu-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 11px; border: 1px solid transparent; border-radius: 5px; outline: none; background: transparent; color: var(--text); font-size: 12px; cursor: pointer; }
+.menu-button:hover,
+.menu-button[data-state="open"] { border-color: var(--border); background: var(--surface-3); }
+.menu-button:focus-visible:not([data-state="open"]) { outline: 2px solid rgb(108 140 255 / 45%); outline-offset: 1px; }
 .version-label { color: var(--muted); font-size: 11px; }
 
 .brand-button, .statusbar button {

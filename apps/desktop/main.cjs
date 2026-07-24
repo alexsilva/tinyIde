@@ -2,8 +2,10 @@ const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { randomUUID } = require("node:crypto");
 const { existsSync, statSync } = require("node:fs");
 const { mkdir, readFile, readdir, rm, stat, writeFile } = require("node:fs/promises");
-const { basename, dirname, isAbsolute, join, relative, resolve, sep } = require("node:path");
+const { basename, dirname, join, resolve } = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { allowedExternalUrl, safeWorkspacePath: resolveSafeWorkspacePath, sameOriginUrl } = require("./security.cjs");
+const { installWindowVisibilityFallback } = require("./startup.cjs");
 
 let runtime;
 let mainWindow;
@@ -15,14 +17,9 @@ function registeredWorkspace(token) {
   return root;
 }
 
-function safeWorkspacePath(token, workspacePath = "") {
+async function safeWorkspacePath(token, workspacePath = "") {
   const root = registeredWorkspace(token);
-  const candidate = resolve(root, workspacePath);
-  const relativePath = relative(root, candidate);
-  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    throw new Error("O caminho solicitado está fora do workspace.");
-  }
-  return candidate;
+  return resolveSafeWorkspacePath(root, workspacePath);
 }
 
 function registerDesktopWorkspace(rootPath) {
@@ -31,6 +28,7 @@ function registerDesktopWorkspace(rootPath) {
     throw new Error("O diretório selecionado não está disponível.");
   }
   const token = randomUUID();
+  desktopWorkspaces.clear();
   desktopWorkspaces.set(token, root);
   return { token, name: basename(root), path: root };
 }
@@ -53,7 +51,7 @@ function installDesktopFileSystemHandlers() {
   });
 
   ipcMain.handle("tinyide:workspace:list", async (_event, token, workspacePath) => {
-    const directory = safeWorkspacePath(token, workspacePath);
+    const directory = await safeWorkspacePath(token, workspacePath);
     const entries = await readdir(directory, { withFileTypes: true });
     const result = [];
     for (const entry of entries) {
@@ -71,7 +69,7 @@ function installDesktopFileSystemHandlers() {
   });
 
   ipcMain.handle("tinyide:workspace:ensure-file", async (_event, token, workspacePath, create) => {
-    const filePath = safeWorkspacePath(token, workspacePath);
+    const filePath = await safeWorkspacePath(token, workspacePath);
     if (create && !existsSync(filePath)) {
       await mkdir(dirname(filePath), { recursive: true });
       await writeFile(filePath, new Uint8Array());
@@ -82,7 +80,7 @@ function installDesktopFileSystemHandlers() {
   });
 
   ipcMain.handle("tinyide:workspace:ensure-directory", async (_event, token, workspacePath, create) => {
-    const directoryPath = safeWorkspacePath(token, workspacePath);
+    const directoryPath = await safeWorkspacePath(token, workspacePath);
     if (create) await mkdir(directoryPath, { recursive: true });
     const info = await stat(directoryPath);
     if (!info.isDirectory()) throw new Error("O recurso solicitado não é um diretório.");
@@ -90,7 +88,7 @@ function installDesktopFileSystemHandlers() {
   });
 
   ipcMain.handle("tinyide:workspace:read-file", async (_event, token, workspacePath) => {
-    const filePath = safeWorkspacePath(token, workspacePath);
+    const filePath = await safeWorkspacePath(token, workspacePath);
     const [data, info] = await Promise.all([readFile(filePath), stat(filePath)]);
     return {
       bytes: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
@@ -99,14 +97,14 @@ function installDesktopFileSystemHandlers() {
   });
 
   ipcMain.handle("tinyide:workspace:write-file", async (_event, token, workspacePath, bytes) => {
-    const filePath = safeWorkspacePath(token, workspacePath);
+    const filePath = await safeWorkspacePath(token, workspacePath);
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, Buffer.from(bytes));
     return true;
   });
 
   ipcMain.handle("tinyide:workspace:remove", async (_event, token, workspacePath, recursive) => {
-    const target = safeWorkspacePath(token, workspacePath);
+    const target = await safeWorkspacePath(token, workspacePath);
     await rm(target, { recursive: recursive === true, force: false });
     return true;
   });
@@ -163,15 +161,15 @@ function createWindow(url) {
   });
 
   window.webContents.setWindowOpenHandler(({ url: target }) => {
-    void shell.openExternal(target);
+    if (allowedExternalUrl(target)) void shell.openExternal(target);
     return { action: "deny" };
   });
   window.webContents.on("will-navigate", (event, target) => {
-    if (target.startsWith(url)) return;
+    if (sameOriginUrl(target, url)) return;
     event.preventDefault();
-    void shell.openExternal(target);
+    if (allowedExternalUrl(target)) void shell.openExternal(target);
   });
-  window.once("ready-to-show", () => window.show());
+  installWindowVisibilityFallback(window);
   window.on("closed", () => {
     if (mainWindow === window) mainWindow = undefined;
   });

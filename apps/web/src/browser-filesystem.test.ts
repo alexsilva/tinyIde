@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   listDirectory,
+  inspectBrowserFile,
   moveWorkspaceEntry,
   readFileDocument,
   renameWorkspaceEntry,
@@ -96,6 +97,20 @@ describe("browser filesystem", () => {
       content: "",
       savedContent: "",
     });
+  });
+
+  it("classifies empty, extensionless, invalid UTF-8 and control-heavy files", async () => {
+    await expect(inspectBrowserFile(new File([], "README"))).resolves.toEqual({
+      kind: "text",
+      mediaType: "application/octet-stream",
+      size: 0,
+    });
+    await expect(inspectBrowserFile(new File([new Uint8Array([0xc3, 0x28])], "invalid")))
+      .resolves.toMatchObject({ kind: "binary" });
+    await expect(inspectBrowserFile(new File(["\u0001\u0002\u0003\t\n\f\r"], "controls.txt")))
+      .resolves.toMatchObject({ kind: "binary" });
+    await expect(inspectBrowserFile(new File(["\t\n\f\rregular text"], "allowed-controls.txt")))
+      .resolves.toMatchObject({ kind: "text" });
   });
 
   it("resolves nested directory and file handles from the workspace root", async () => {
